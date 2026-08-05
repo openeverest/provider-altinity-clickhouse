@@ -18,21 +18,25 @@ import (
 	"fmt"
 	"time"
 
-	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
+	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/scaledb-io/provider-altinity-clickhouse/internal/common"
 )
 
-// Compile-time check.
-var _ controller.ProviderInterface = (*Provider)(nil)
+// Compile-time checks.
+var (
+	_ controller.ProviderInterface = (*Provider)(nil)
+	_ controller.BackupProvider    = (*Provider)(nil)
+)
 
 // Provider implements controller.ProviderInterface for ClickHouse via the Altinity operator.
 type Provider struct {
@@ -47,6 +51,7 @@ func New() *Provider {
 			SchemeFuncs: []func(*runtime.Scheme) error{
 				chiv1.AddToScheme,
 				chkv1.AddToScheme,
+				backupv1alpha1.AddToScheme,
 			},
 			// NOTE: We intentionally do NOT watch CHI/CHK here.
 			// Watching them causes a tight feedback loop: operator updates
@@ -87,6 +92,50 @@ func (p *Provider) Validate(c *controller.Context) error {
 		if engine.Replicas != nil && *engine.Replicas < 2 {
 			return fmt.Errorf("replicated topology requires at least 2 engine replicas")
 		}
+	}
+
+	if err := validateBackup(c); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateBackup enforces the v1 constraints on Instance.Spec.Backup:
+// exactly one storage, no schedules (ProviderManaged classes get no free
+// CronJob scheduling from the runtime — the provider would need its own
+// scheduler, deferred), and no enabling backups on an instance that wasn't
+// created with them (the clickhouse-backup sidecar's storage config is baked
+// into the CHI pod template at creation and can't be redirected in place).
+func validateBackup(c *controller.Context) error {
+	backup := c.Instance().Spec.Backup
+	if backup == nil || !backup.Enabled {
+		return nil
+	}
+
+	for _, s := range backup.Storages {
+		if len(s.Schedules) > 0 {
+			return fmt.Errorf("scheduled backups are not yet supported by this provider")
+		}
+	}
+
+	bc, err := c.BackupClassForInstance()
+	if err != nil {
+		return fmt.Errorf("resolve BackupClass: %w", err)
+	}
+	if err := controller.ValidateInstanceBackupAgainstClass(c.Instance(), bc); err != nil {
+		return err
+	}
+
+	existing := &chiv1.ClickHouseInstallation{}
+	switch err := c.Get(existing, c.Name()); {
+	case err == nil:
+		if !chiHasBackupContainer(existing) {
+			return fmt.Errorf("enabling backups on an existing instance is not supported: " +
+				"recreate the instance with spec.backup set")
+		}
+	case !controller.IsNotFound(err):
+		return fmt.Errorf("checking existing ClickHouseInstallation during backup validation: %w", err)
 	}
 
 	return nil
@@ -288,6 +337,15 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 			Requests: corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
 		},
 	}
+	containers := []corev1.Container{container}
+
+	backupContainer, err := buildBackupContainer(c)
+	if err != nil {
+		return nil, fmt.Errorf("build backup sidecar: %w", err)
+	}
+	if backupContainer != nil {
+		containers = append(containers, *backupContainer)
+	}
 
 	pvcSpec := corev1.PersistentVolumeClaimSpec{
 		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -314,7 +372,7 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 			Clusters: []*chiv1.Cluster{cluster},
 		},
 		Templates: &chiv1.Templates{
-			PodTemplates:         []chiv1.PodTemplate{{Name: common.PodTemplateName, Spec: corev1.PodSpec{Containers: []corev1.Container{container}}}},
+			PodTemplates:         []chiv1.PodTemplate{{Name: common.PodTemplateName, Spec: corev1.PodSpec{Containers: containers}}},
 			VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{{Name: common.DataVolumeClaimTemplateName, Spec: pvcSpec}},
 		},
 	}
@@ -393,6 +451,100 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 			},
 		},
 	}
+}
+
+const (
+	backupContainerName = "clickhouse-backup"
+	// Backup image is fixed, not user-configurable — same rationale as the
+	// Keeper image above.
+	backupImage        = "altinity/clickhouse-backup:2.6.5"
+	backupRESTPort     = 7171
+	backupRESTPortName = "backup-rest"
+)
+
+// buildBackupContainer returns the clickhouse-backup sidecar container for
+// Instance.Spec.Backup, or nil if backups are not enabled.
+//
+// clickhouse-backup's REST API exposes a single, static storage destination
+// fixed via env vars at sidecar startup — it cannot be redirected per backup
+// request. Validate() only allows exactly one storage entry and rejects
+// enabling backups on an already-provisioned CHI, so this only ever runs at
+// Instance creation.
+func buildBackupContainer(c *controller.Context) (*corev1.Container, error) {
+	backup := c.Instance().Spec.Backup
+	if backup == nil || !backup.Enabled || len(backup.Storages) == 0 {
+		return nil, nil
+	}
+
+	bs, err := c.BackupStorage(backup.Storages[0].StorageRef.Name)
+	if err != nil {
+		return nil, fmt.Errorf("resolve BackupStorage: %w", err)
+	}
+	if bs.Spec.S3 == nil {
+		return nil, fmt.Errorf("BackupStorage %q: only s3 storage is supported", bs.Name)
+	}
+	s3 := bs.Spec.S3
+
+	forcePathStyle := "false"
+	if s3.ForcePathStyle != nil && *s3.ForcePathStyle {
+		forcePathStyle = "true"
+	}
+	disableCertVerification := "false"
+	if s3.VerifyTLS != nil && !*s3.VerifyTLS {
+		disableCertVerification = "true"
+	}
+
+	return &corev1.Container{
+		Name:  backupContainerName,
+		Image: backupImage,
+		Args:  []string{"server"},
+		Env: []corev1.EnvVar{
+			{Name: "API_LISTEN", Value: fmt.Sprintf("0.0.0.0:%d", backupRESTPort)},
+			{Name: "REMOTE_STORAGE", Value: "s3"},
+			{Name: "S3_ENDPOINT", Value: s3.EndpointURL},
+			{Name: "S3_BUCKET", Value: s3.Bucket},
+			{Name: "S3_REGION", Value: s3.Region},
+			{Name: "S3_FORCE_PATH_STYLE", Value: forcePathStyle},
+			{Name: "S3_DISABLE_CERT_VERIFICATION", Value: disableCertVerification},
+			{
+				Name: "S3_ACCESS_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: s3.CredentialsSecretRef.Name},
+						Key:                  "AWS_ACCESS_KEY_ID",
+					},
+				},
+			},
+			{
+				Name: "S3_SECRET_KEY",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: s3.CredentialsSecretRef.Name},
+						Key:                  "AWS_SECRET_ACCESS_KEY",
+					},
+				},
+			},
+		},
+		Ports: []corev1.ContainerPort{
+			{Name: backupRESTPortName, ContainerPort: backupRESTPort},
+		},
+	}, nil
+}
+
+// chiHasBackupContainer reports whether an existing CHI's pod template
+// already carries the clickhouse-backup sidecar.
+func chiHasBackupContainer(chi *chiv1.ClickHouseInstallation) bool {
+	if chi.Spec.Templates == nil {
+		return false
+	}
+	for _, pt := range chi.Spec.Templates.PodTemplates {
+		for _, ctr := range pt.Spec.Containers {
+			if ctr.Name == backupContainerName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // =============================================================================

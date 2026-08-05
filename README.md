@@ -53,6 +53,55 @@ Supports `ReplicatedMergeTree` and all replicated table engines.
 | `24.8`  | LTS    |         |
 | `25.5`  | Latest |         |
 
+## Backups
+
+Backup and restore is implemented via [clickhouse-backup](https://github.com/Altinity/clickhouse-backup),
+run as a sidecar container on the ClickHouse pod and driven through its REST
+API (`ProviderManaged` execution mode).
+
+The chart does not yet ship a `BackupClass` CR (tracked as a follow-up) — apply
+one by hand first:
+
+```yaml
+apiVersion: backup.openeverest.io/v1alpha1
+kind: BackupClass
+metadata:
+  name: altinity-clickhouse-backups
+spec:
+  displayName: "ClickHouse Backups"
+  executionMode: ProviderManaged
+  supportedProviders:
+    - altinity-clickhouse
+  providerManaged:
+    supportsPITR: false
+    limits:
+      maxStorages: 1
+```
+
+Then enable it by setting `spec.backup` on the Instance, referencing a
+namespaced `BackupStorage` (S3-compatible):
+
+```yaml
+spec:
+  backup:
+    enabled: true
+    classRef:
+      name: altinity-clickhouse-backups
+    storages:
+      - storageRef:
+          name: my-s3-storage
+```
+
+v1 limitations:
+
+- Exactly one storage — clickhouse-backup's REST API only supports one
+  static storage destination, fixed via env vars when the sidecar starts.
+- No point-in-time recovery and no scheduled backups yet (on-demand `Backup`/
+  `Restore` CRs only).
+- Backups must be configured at Instance creation. The sidecar is wired into
+  the CHI pod template once, at creation time; enabling backups on an
+  already-running Instance is rejected — recreate the instance instead.
+
 ## Quick Start
 
 ```bash
