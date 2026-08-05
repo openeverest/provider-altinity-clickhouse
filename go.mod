@@ -1,4 +1,4 @@
-module github.com/scaledb-io/provider-altinity-clickhouse
+module github.com/openeverest/provider-altinity-clickhouse
 
 go 1.26.3
 

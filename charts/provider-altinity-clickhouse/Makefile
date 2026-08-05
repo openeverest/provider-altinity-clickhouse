@@ -1,7 +1,7 @@
 HELM ?= helm
 
 # values to override
-IMAGE_PREFIX ?= ghcr.io/scaledb-io
+IMAGE_PREFIX ?= ghcr.io/openeverest
 PROVIDER_IMAGE_NAME ?= provider-altinity-clickhouse
 VERSION ?= 0.1.0
 CHART_VERSION ?= $(VERSION)
@@ -12,6 +12,7 @@ prepare-chart:
 	yq eval -i '.appVersion = "$(VERSION)"' Chart.yaml
 	yq eval -i '.image.repository = "$(IMAGE_PREFIX)/$(PROVIDER_IMAGE_NAME)"' values.yaml
 	yq eval -i '.image.tag = "$(VERSION)"' values.yaml
+	$(MAKE) deps
 
 .PHONY: release
 release: prepare-chart
@@ -23,3 +24,5 @@ release-dev: prepare-chart
 .PHONY: deps
 deps:
 	$(HELM) version
+	$(HELM) repo add altinity https://helm.altinity.com/
+	$(HELM) dependency update .

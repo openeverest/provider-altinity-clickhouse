@@ -53,6 +53,36 @@ Supports `ReplicatedMergeTree` and all replicated table engines.
 | `24.8`  | LTS    |         |
 | `25.5`  | Latest |         |
 
+## Installation
+
+The provider chart is published as an OCI artifact to the GitHub Container
+Registry. It bundles the Altinity ClickHouse operator as a subchart, so a single
+install brings up both the provider and the operator.
+
+```bash
+helm install provider-altinity-clickhouse \
+  oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
+  --version 0.1.0 \
+  --create-namespace
+```
+
+Upgrade to a newer chart version:
+
+```bash
+helm upgrade provider-altinity-clickhouse \
+  oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
+  --version 0.1.0
+```
+
+Uninstall:
+
+```bash
+helm uninstall provider-altinity-clickhouse
+```
+
+> Browse available versions on the
+> [chart package page](https://github.com/openeverest/provider-altinity-clickhouse/pkgs/container/charts%2Fprovider-altinity-clickhouse).
+
 ## Quick Start
 
 ```bash
@@ -132,7 +162,10 @@ replace github.com/imdario/mergo => github.com/sunsingerus/mergo v0.3.12
 
 ## Deployment
 
-### Helm
+### Helm (from source)
+
+For local development you can install the chart directly from the checked-out
+source tree instead of the published OCI artifact:
 
 ```bash
 # Install
@@ -144,6 +177,8 @@ helm upgrade provider-altinity-clickhouse charts/provider-altinity-clickhouse/
 # Uninstall
 helm uninstall provider-altinity-clickhouse
 ```
+
+> For installing a published release, see [Installation](#installation).
 
 ### Local Development (k3d)
 
