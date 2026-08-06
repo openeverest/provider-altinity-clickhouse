@@ -51,12 +51,15 @@ never manages pods directly — all lifecycle work is delegated to the operator.
 
 ## Capabilities
 
+What you can do to a running instance through the `Instance` API. Upgrading the
+provider itself is covered under [Installation](#installation).
+
 | Capability | Status | Notes |
 |---|---|---|
 | Provisioning | ✅ | |
 | Horizontal scaling | ✅ | `spec.components.engine.replicas` (minimum 2 in the `replicated` topology) |
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` |
-| Version upgrades | ✅ | change `spec.version`; see [Versions](#versions) |
+| Version upgrades | ✅ | of the deployed ClickHouse version — change `spec.version`; see [Versions](#versions) |
 | Custom configuration | ❌ | not yet exposed through the Instance API |
 | Monitoring | ❌ | planned |
 | TLS | ❌ | not exposed through the Instance API |
