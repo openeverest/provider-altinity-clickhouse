@@ -47,7 +47,7 @@ never manages pods directly — all lifecycle work is delegated to the operator.
 
 | provider-altinity-clickhouse | OpenEverest | Altinity ClickHouse operator | Kubernetes |
 |---|---|---|---|
-| `0.1.0` | `>= 2.0.0` | `0.27.x` | `1.30` – `1.34` |
+| `0.1.x` | `>= 2.0.0` | `0.27.x` | `1.30` – `1.34` |
 
 ## Capabilities
 
@@ -98,14 +98,37 @@ helm uninstall provider-altinity-clickhouse --namespace everest-system
 
 Uninstalling the chart does **not** delete running `Instance` resources or their data.
 
-> [!NOTE]
-> **k3d and kind users:** the Altinity operator relies heavily on inotify. The default
-> `fs.inotify.max_user_instances=128` causes silent reconciliation failures. Raise it before
-> installing:
-> ```bash
-> echo "fs.inotify.max_user_instances = 8192" | sudo tee /etc/sysctl.d/99-k8s.conf
-> sudo sysctl --system
-> ```
+## Installation
+
+The provider chart is published as an OCI artifact to the GitHub Container
+Registry. It bundles the Altinity ClickHouse operator as a subchart, so a single
+install brings up both the provider and the operator.
+
+```bash
+helm install provider-altinity-clickhouse \
+  oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
+  --version 0.1.0 \
+  --create-namespace
+```
+
+Upgrade to a newer chart version:
+
+```bash
+helm upgrade provider-altinity-clickhouse \
+  oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
+  --version 0.1.0
+```
+
+Uninstall:
+
+```bash
+helm uninstall provider-altinity-clickhouse
+```
+
+> Browse available versions on the
+> [chart package page](https://github.com/openeverest/provider-altinity-clickhouse/pkgs/container/charts%2Fprovider-altinity-clickhouse).
+
+## Quick Start
 
 ## Usage
 
@@ -175,7 +198,10 @@ required. It supports `ReplicatedMergeTree` and the other replicated table engin
 
 Source of truth: [definition/versions.yaml](definition/versions.yaml).
 
-## Configuration
+### Helm (from source)
+
+For local development you can install the chart directly from the checked-out
+source tree instead of the published OCI artifact:
 
 - **Chart values:** [charts/provider-altinity-clickhouse/values.yaml](charts/provider-altinity-clickhouse/values.yaml)
 - **Instance parameters:** per-component and per-topology `parameters` schemas, defined under
@@ -188,9 +214,9 @@ component fields (replicas, resources, storage).
 
 ## Development
 
-Requires Go (see [go.mod](go.mod)), Docker, Helm, kubectl, and a Kubernetes cluster you can
-reach. [dev/README.md](dev/README.md) covers the environment end to end: the recommended
-local k3d setup, running against a cluster you already have, and every `dev/.env` setting.
+> For installing a published release, see [Installation](#installation).
+
+### Local Development (k3d)
 
 ```bash
 make dev-up             # local cluster + Tilt dev environment (see dev/README.md)

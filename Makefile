@@ -7,7 +7,7 @@ $(LOCALBIN):
 CONTAINER_TOOL ?= docker
 
 # Image URL to use for building/pushing image targets
-IMG ?= ghcr.io/scaledb-io/provider-altinity-clickhouse-dev:latest
+IMG ?= ghcr.io/openeverest/provider-altinity-clickhouse-dev:latest
 
 # controller-gen version
 CONTROLLER_TOOLS_VERSION ?= v0.18.0
