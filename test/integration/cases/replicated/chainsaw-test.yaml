@@ -1,0 +1,118 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: replicated
+spec:
+  steps:
+    - name: provision-and-assert
+      try:
+        - apply:
+            resource:
+              apiVersion: core.openeverest.io/v1alpha1
+              kind: Instance
+              metadata:
+                name: itest-ch-replicated
+                namespace: default
+              spec:
+                provider: altinity-clickhouse
+                topology:
+                  type: replicated
+                components:
+                  engine:
+                    type: clickhouse
+                    replicas: 2
+                    resources:
+                      limits:
+                        cpu: "1"
+                        memory: 2G
+                    storage:
+                      size: 10Gi
+        - assert:
+            resource:
+              apiVersion: clickhouse-keeper.altinity.com/v1
+              kind: ClickHouseKeeperInstallation
+              metadata:
+                name: itest-ch-replicated-keeper
+                namespace: default
+              status:
+                status: Completed
+        - assert:
+            resource:
+              apiVersion: clickhouse.altinity.com/v1
+              kind: ClickHouseInstallation
+              metadata:
+                name: itest-ch-replicated
+                namespace: default
+              spec:
+                configuration:
+                  clusters:
+                    - layout:
+                        replicasCount: 2
+              status:
+                status: Completed
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-replicated
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+    - name: replication-check
+      try:
+        # chainsaw runs scripts with /bin/sh (dash on Debian) — POSIX sh only,
+        # no bash arrays/mapfile/pipefail.
+        - script:
+            content: |
+              set -eu
+              NS="default"
+              CHI="itest-ch-replicated"
+
+              PODS=$(kubectl get pods -n "$NS" \
+                -l "clickhouse.altinity.com/chi=$CHI" \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort)
+              P0=$(echo "$PODS" | sed -n 1p)
+              P1=$(echo "$PODS" | sed -n 2p)
+              if [ -z "$P1" ]; then
+                echo "expected >=2 ClickHouse replica pods, got: $PODS"
+                exit 1
+              fi
+
+              RETRIES=36
+              SLEEP=5
+
+              # Wait for replica-0 to see both replicas registered before
+              # issuing an ON CLUSTER DDL (config reload lags pod-Ready).
+              i=0
+              while [ "$i" -lt "$RETRIES" ]; do
+                members=$(kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+                  "SELECT count() FROM system.clusters WHERE cluster = (SELECT substitution FROM system.macros WHERE macro = 'cluster')" 2>/dev/null || echo 0)
+                if [ "$members" -ge 2 ] 2>/dev/null; then
+                  break
+                fi
+                i=$((i + 1))
+                if [ "$i" -ge "$RETRIES" ]; then
+                  echo "cluster did not register 2 replicas within $((RETRIES * SLEEP))s (saw: $members)"
+                  exit 1
+                fi
+                sleep "$SLEEP"
+              done
+
+              kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+                "CREATE TABLE IF NOT EXISTS default.itest_repl ON CLUSTER '{cluster}' (id UInt64) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/itest_repl', '{replica}') ORDER BY id"
+              kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+                "INSERT INTO default.itest_repl VALUES (42)"
+
+              i=0
+              while [ "$i" -lt "$RETRIES" ]; do
+                n=$(kubectl exec -n "$NS" "$P1" -c clickhouse -- clickhouse-client -q \
+                  "SELECT count() FROM default.itest_repl" 2>/dev/null || echo 0)
+                if [ "$n" = "1" ]; then echo "replication OK on $P1"; exit 0; fi
+                i=$((i + 1))
+                sleep "$SLEEP"
+              done
+              echo "row did not replicate to $P1 within $((RETRIES * SLEEP))s"
+              exit 1

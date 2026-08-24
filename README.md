@@ -232,6 +232,10 @@ and code generation are documented once for all providers in
 
 ## Troubleshooting
 
+Integration tests use [chainsaw](https://kyverno.github.io/chainsaw/); install it
+with `go install github.com/kyverno/chainsaw@v0.2.15`. See
+[`test/integration/README.md`](test/integration/README.md) for the test cases.
+
 ```bash
 kubectl logs -n everest-system deploy/provider-altinity-clickhouse -f
 ```

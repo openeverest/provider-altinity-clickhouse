@@ -1,0 +1,14 @@
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: provider-altinity-clickhouse
+spec:
+  namespace:
+    name: default
+  timeouts:
+    apply: 30s
+    assert: 10m
+    error: 30s
+    cleanup: 2m
+    exec: 10m
+    delete: 30s

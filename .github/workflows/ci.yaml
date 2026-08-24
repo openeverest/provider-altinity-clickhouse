@@ -49,6 +49,21 @@ jobs:
       - name: Compile binary
         run: go build -o /dev/null ./cmd/provider
 
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run unit tests
+        run: make test
+
   verify:
     name: Verify generated files
     runs-on: ubuntu-latest
