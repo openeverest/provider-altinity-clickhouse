@@ -1,0 +1,61 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: standalone
+spec:
+  steps:
+    - name: provision-and-assert
+      try:
+        - apply:
+            resource:
+              apiVersion: core.openeverest.io/v1alpha1
+              kind: Instance
+              metadata:
+                name: itest-ch-standalone
+                namespace: default
+              spec:
+                provider: altinity-clickhouse
+                topology:
+                  type: standalone
+                components:
+                  engine:
+                    type: clickhouse
+                    replicas: 1
+                    resources:
+                      limits:
+                        cpu: "1"
+                        memory: 2G
+                    storage:
+                      size: 10Gi
+        - assert:
+            resource:
+              apiVersion: clickhouse.altinity.com/v1
+              kind: ClickHouseInstallation
+              metadata:
+                name: itest-ch-standalone
+                namespace: default
+              spec:
+                configuration:
+                  clusters:
+                    - layout:
+                        replicasCount: 1
+              status:
+                status: Completed
+        - error:
+            resource:
+              apiVersion: clickhouse-keeper.altinity.com/v1
+              kind: ClickHouseKeeperInstallation
+              metadata:
+                name: itest-ch-standalone-keeper
+                namespace: default
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-standalone
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false

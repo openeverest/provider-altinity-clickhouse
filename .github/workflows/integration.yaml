@@ -1,0 +1,103 @@
+---
+name: Integration
+
+# Heavy (k3d + image pulls + rollout), so opt-in only: workflow_dispatch, or a
+# PR labelled `run-integration` — never per-commit, never on merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      openeverest_version:
+        description: >-
+          OpenEverest core chart version to install (pre-release tags are not
+          picked up by Helm's "latest" resolution, so pin one explicitly).
+        required: false
+        default: "2.0.0-dev.1"
+  pull_request:
+    types: [labeled, opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  OPENEVEREST_VERSION: ${{ github.event.inputs.openeverest_version || '2.0.0-dev.1' }}
+
+jobs:
+  integration:
+    name: chainsaw (k3d)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-integration'))
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Install k3d
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh \
+            | TAG=v5.8.3 bash
+          k3d version
+
+      - name: Install Tilt
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh \
+            | bash
+          tilt version
+
+      - name: Install chainsaw
+        run: |
+          go install github.com/kyverno/chainsaw@v0.2.15
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # The Altinity operator uses inotify heavily; the runner default of
+      # fs.inotify.max_user_instances=128 causes silent reconciliation
+      # failures on k3d (see README Prerequisites).
+      - name: Bump inotify limits
+        run: |
+          sudo sysctl -w fs.inotify.max_user_instances=8192
+          sudo sysctl -w fs.inotify.max_user_watches=524288
+
+      - name: Create k3d cluster
+        run: make k3d-cluster-up
+
+      - name: Bring up OpenEverest core + provider (tilt ci)
+        run: tilt ci -f dev/Tiltfile
+        env:
+          INSTALL_OPENEVEREST: "true"
+
+      - name: Run integration suite (chainsaw)
+        run: make test-integration
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "===== pods (all namespaces) ====="
+          kubectl get pods -A -o wide || true
+          echo "===== instances ====="
+          kubectl get instances -A -o yaml || true
+          echo "===== clickhouseinstallations ====="
+          kubectl get clickhouseinstallations -A -o yaml || true
+          echo "===== clickhousekeeperinstallations ====="
+          kubectl get clickhousekeeperinstallations -A -o yaml || true
+          echo "===== provider logs ====="
+          kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse \
+            -A --tail=300 || true
+          echo "===== recent events ====="
+          kubectl get events -A --sort-by=.lastTimestamp | tail -60 || true
+
+      - name: Tear down k3d cluster
+        if: always()
+        run: make k3d-cluster-down || true

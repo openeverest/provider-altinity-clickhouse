@@ -105,8 +105,8 @@ helm-template: ## Render Helm chart templates locally (dry-run).
 ##@ Testing
 
 .PHONY: test-integration
-test-integration: ## Run integration tests (kuttl) against a running cluster.
-	. ./test/vars.sh && kubectl kuttl test --config ./test/integration/kuttl.yaml
+test-integration: ## Run integration tests (chainsaw) against a running cluster.
+	chainsaw test test/integration/cases --config test/integration/chainsaw-config.yaml
 
 ##@ Local Development Cluster
 
