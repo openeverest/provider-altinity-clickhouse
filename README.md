@@ -47,7 +47,7 @@ never manages pods directly — all lifecycle work is delegated to the operator.
 
 | provider-altinity-clickhouse | OpenEverest | Altinity ClickHouse operator | Kubernetes |
 |---|---|---|---|
-| `0.1.0` | `>= 2.0.0` | `0.27.x` | `1.30` – `1.34` |
+| `0.1.x` | `>= 2.0.0` | `0.27.x` | `1.30` – `1.34` |
 
 ## Capabilities
 
