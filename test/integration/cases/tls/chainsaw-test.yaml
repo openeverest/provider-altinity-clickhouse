@@ -13,7 +13,7 @@ spec:
     - script:
         content: kubectl -n $NAMESPACE get instance,chi,secret,certificate,issuer -o yaml
     - script:
-        content: kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse -A --tail=100
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
   steps:
     - name: provision-and-assert
       try:

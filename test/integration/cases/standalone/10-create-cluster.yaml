@@ -4,7 +4,8 @@ metadata:
   name: itest-ch-standalone
   namespace: default
 spec:
-  provider: altinity-clickhouse
+  providerRef:
+    name: altinity-clickhouse
   topology:
     type: standalone
   components:

@@ -113,12 +113,45 @@ func (p *Provider) Validate(c *controller.Context) error {
 	return nil
 }
 
-// Sync creates and polls the required resources for the selected topology.
+// Sync provisions the required resources and, while the operator is still
+// working, publishes the intermediate phase onto the Instance.
+//
+// The runtime only persists status after Sync returns nil; on the WaitError
+// (requeue) path it short-circuits before computing status. Without this the
+// Instance would sit in Unknown for the whole provisioning window and then jump
+// straight to Ready. We therefore surface the same Provisioning status that
+// Status() would report each time we ask the runtime to requeue.
+func (p *Provider) Sync(c *controller.Context) error {
+	err := p.sync(c)
+	if controller.IsWaitError(err) {
+		if st, statusErr := p.Status(c); statusErr == nil {
+			reportProvisioningStatus(c, st)
+		}
+	}
+	return err
+}
+
+// reportProvisioningStatus best-effort publishes an intermediate status to the
+// Instance while Sync is still waiting on the operator. The metadata carried by
+// c.Instance() is preserved by the runtime's prepare step, so a status-only
+// update targets the live object safely.
+func reportProvisioningStatus(c *controller.Context, st controller.Status) {
+	in := c.Instance()
+	desired := st.ToV2Alpha1()
+	if in.Status.Phase == desired.Phase && in.Status.Message == desired.Message {
+		return
+	}
+	in.Status.Phase = desired.Phase
+	in.Status.Message = desired.Message
+	_ = c.Client().Status().Update(c.Context(), in)
+}
+
+// sync creates and polls the required resources for the selected topology.
 //
 // Create-only semantics: once created, the Altinity operator owns the CHI/CHK
 // and we must not overwrite its changes on every reconcile. WaitError is
 // returned while provisioning is in progress so the runtime requeues after 15s.
-func (p *Provider) Sync(c *controller.Context) error {
+func (p *Provider) sync(c *controller.Context) error {
 	l := log.FromContext(c.Context())
 	topology := c.Instance().GetTopologyType()
 	l.Info("Syncing ClickHouse instance", "name", c.Name(), "topology", topology)

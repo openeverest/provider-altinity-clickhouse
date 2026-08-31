@@ -4,7 +4,8 @@ metadata:
   name: itest-ch-replicated
   namespace: default
 spec:
-  provider: altinity-clickhouse
+  providerRef:
+    name: altinity-clickhouse
   topology:
     type: replicated
   components:
