@@ -35,4 +35,32 @@ type ClickHouseParameters struct {
 	// pods. The native metrics endpoint is always exposed; this only controls
 	// whether the operator manages a PodMonitor. One of "enabled" or "disabled".
 	PodMonitor string `json:"podMonitor,omitempty"`
+
+	// TLS configures encrypted client connections. When enabled, the provider
+	// uses cert-manager to issue a server certificate and exposes the secure
+	// HTTPS/native ports additively alongside the plaintext ports.
+	TLS *TLSParameters `json:"tls,omitempty"`
+}
+
+// TLSParameters configures TLS for client connections to ClickHouse.
+type TLSParameters struct {
+	// Enabled turns on TLS. Requires cert-manager to be installed in the cluster.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// IssuerRef optionally references an existing cert-manager Issuer or
+	// ClusterIssuer to sign the server certificate. When omitted, the provider
+	// creates a self-signed CA chain scoped to this Instance.
+	IssuerRef *IssuerRef `json:"issuerRef,omitempty"`
+}
+
+// IssuerRef references a cert-manager issuer used to sign the server certificate.
+type IssuerRef struct {
+	// Name is the name of the Issuer or ClusterIssuer.
+	Name string `json:"name"`
+
+	// Kind is the issuer kind, either "Issuer" or "ClusterIssuer". Defaults to "Issuer".
+	Kind string `json:"kind,omitempty"`
+
+	// Group is the API group of the issuer. Defaults to "cert-manager.io".
+	Group string `json:"group,omitempty"`
 }

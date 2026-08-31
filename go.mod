@@ -3,6 +3,7 @@ module github.com/openeverest/provider-altinity-clickhouse
 go 1.26.3
 
 require (
+	github.com/cert-manager/cert-manager v1.20.2
 	github.com/openeverest/openeverest/v2 v2.0.0-dev.2
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.93.1
 	k8s.io/api v0.36.3
@@ -16,7 +17,6 @@ require (
 	github.com/Percona-Lab/percona-version-service v0.0.0-20240311164804-ffbc02387a1b // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
 	github.com/aws/smithy-go v1.25.1 // indirect
-	github.com/cert-manager/cert-manager v1.20.2 // indirect
 	github.com/flosch/pongo2/v6 v6.1.0 // indirect
 	github.com/go-ini/ini v1.67.0 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
