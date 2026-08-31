@@ -1,0 +1,32 @@
+# The provider generates a credentials Secret for the application `admin` user.
+# The password is random, so we assert the username and that the password and
+# its SHA256 digest (64 hex chars) are present rather than exact values.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-user-credentials
+  namespace: default
+type: Opaque
+data:
+  username: YWRtaW4= # base64("admin")
+(data.password != null): true
+(length(base64_decode(data.password_sha256_hex))): 64
+---
+# The CHI provisions the `admin` user, referencing the password digest from the
+# credentials Secret so the plaintext never lands in the ClickHouse config.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-user
+  namespace: default
+spec:
+  configuration:
+    users:
+      admin/access_management: "1"
+      admin/password_sha256_hex:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-user-credentials
+            key: password_sha256_hex
+status:
+  status: Completed

@@ -16,7 +16,7 @@ package provider
 
 import (
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 
@@ -53,8 +53,9 @@ func ensureCredentials(c *controller.Context) (*corev1.Secret, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate password: %w", err)
 	}
-	first := sha1.Sum([]byte(password))
-	second := sha1.Sum(first[:])
+	// ClickHouse's password_sha256_hex form mandates SHA256; the input is a
+	// freshly generated cryptographically random secret, not a human password.
+	digest := sha256.Sum256([]byte(password))
 
 	secret := &corev1.Secret{
 		ObjectMeta: c.ObjectMeta(name),
@@ -62,7 +63,7 @@ func ensureCredentials(c *controller.Context) (*corev1.Secret, error) {
 		Data: map[string][]byte{
 			common.CredentialsKeyUsername:       []byte(common.AppUserName),
 			common.CredentialsKeyPassword:       []byte(password),
-			common.CredentialsKeyPasswordSHA256: []byte(hex.EncodeToString(second[:])),
+			common.CredentialsKeyPasswordSHA256: []byte(hex.EncodeToString(digest[:])),
 		},
 	}
 	if err := c.Apply(secret); err != nil {
@@ -87,7 +88,7 @@ func credentialsSecretName(instanceName string) string {
 func buildUserSettings(secretName string) *chiv1.Settings {
 	user := common.AppUserName
 	users := chiv1.NewSettings()
-	users.Set(user+"/password_double_sha1_hex", chiv1.NewSettingSource(&chiv1.SettingSource{
+	users.Set(user+"/password_sha256_hex", chiv1.NewSettingSource(&chiv1.SettingSource{
 		ValueFrom: &chtypes.DataSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},

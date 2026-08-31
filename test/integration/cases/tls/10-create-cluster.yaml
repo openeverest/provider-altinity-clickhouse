@@ -1,0 +1,22 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-tls
+  namespace: default
+spec:
+  provider: altinity-clickhouse
+  topology:
+    type: standalone
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2G
+      storage:
+        size: 10Gi
+      parameters:
+        tls:
+          enabled: enabled

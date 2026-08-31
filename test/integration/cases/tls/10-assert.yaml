@@ -1,0 +1,38 @@
+# cert-manager issues the server certificate into a kubernetes.io/tls Secret
+# from the provider-managed self-signed CA chain.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-tls-server-tls
+  namespace: default
+type: kubernetes.io/tls
+(data."tls.crt" != null): true
+(data."tls.key" != null): true
+(data."ca.crt" != null): true
+---
+# The CHI adds the secure ports additively and mounts the server certificate
+# files from the cert-manager Secret; the plaintext ports remain available.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-tls
+  namespace: default
+spec:
+  configuration:
+    settings:
+      https_port: "8443"
+      tcp_port_secure: "9440"
+    files:
+      server.crt:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-tls-server-tls
+            key: tls.crt
+      server.key:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-tls-server-tls
+            key: tls.key
+      ("openssl.xml" != null): true
+status:
+  status: Completed

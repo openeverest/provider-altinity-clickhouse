@@ -81,6 +81,12 @@ const (
 	// PodMonitorDisabled is the parameter value (default) that keeps PodMonitor off.
 	PodMonitorDisabled = "disabled"
 
+	// TLSEnabled is the parameter value that turns on TLS.
+	TLSEnabled = "enabled"
+
+	// TLSDisabled is the parameter value (default) that keeps TLS off.
+	TLSDisabled = "disabled"
+
 	// AppUserName is the application user provisioned by the provider. The
 	// Altinity operator does not create a usable external user, so we create one.
 	AppUserName = "admin"

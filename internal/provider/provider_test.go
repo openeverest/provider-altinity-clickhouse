@@ -106,7 +106,7 @@ func TestBuildCHIProvisionsAdminUser(t *testing.T) {
 }
 
 func TestBuildCHIWithTLS(t *testing.T) {
-	c := newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":true}}`))
+	c := newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`))
 
 	chi, err := buildCHI(c, 2)
 	require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestBuildConnectionDetails(t *testing.T) {
 		wantPort     string
 	}{
 		{name: "plaintext", engineParams: "", wantScheme: "http", wantPort: "8123"},
-		{name: "tls", engineParams: `{"tls":{"enabled":true}}`, wantScheme: "https", wantPort: "8443"},
+		{name: "tls", engineParams: `{"tls":{"enabled":"enabled"}}`, wantScheme: "https", wantPort: "8443"},
 	}
 
 	for _, tt := range tests {
@@ -158,8 +158,8 @@ func TestBuildConnectionDetails(t *testing.T) {
 
 func TestTLSEnabled(t *testing.T) {
 	assert.False(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", ""))))
-	assert.False(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":false}}`))))
-	assert.True(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":true}}`))))
+	assert.False(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"disabled"}}`))))
+	assert.True(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`))))
 }
 
 func TestEnsureIssuerOverride(t *testing.T) {

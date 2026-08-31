@@ -23,7 +23,7 @@ spec:
             tls:
               properties:
                 enabled:
-                  type: boolean
+                  type: string
                 issuerRef:
                   properties:
                     group:
@@ -85,11 +85,16 @@ spec:
               uiType: select
             tls:
               fieldParams:
-                defaultValue: false
+                defaultValue: disabled
                 helperText: Encrypt client connections. Requires cert-manager in the cluster.
-                label: Enable TLS
+                label: TLS
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
               path: spec.components.engine.parameters.tls.enabled
-              uiType: toggle
+              uiType: select
           componentsOrder:
             - storageClass
             - externalAccess
@@ -245,11 +250,16 @@ spec:
               uiType: select
             tls:
               fieldParams:
-                defaultValue: false
+                defaultValue: disabled
                 helperText: Encrypt client connections. Requires cert-manager in the cluster.
-                label: Enable TLS
+                label: TLS
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
               path: spec.components.engine.parameters.tls.enabled
-              uiType: toggle
+              uiType: select
           componentsOrder:
             - storageClass
             - externalAccess

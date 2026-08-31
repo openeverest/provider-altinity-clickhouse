@@ -212,7 +212,7 @@ spec:
       type: clickhouse
       parameters:
         tls:
-          enabled: true
+          enabled: enabled
 ```
 
 When enabled, the provider uses cert-manager to issue a server certificate and

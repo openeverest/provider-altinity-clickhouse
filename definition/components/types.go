@@ -44,8 +44,9 @@ type ClickHouseParameters struct {
 
 // TLSParameters configures TLS for client connections to ClickHouse.
 type TLSParameters struct {
-	// Enabled turns on TLS. Requires cert-manager to be installed in the cluster.
-	Enabled bool `json:"enabled,omitempty"`
+	// Enabled turns on TLS. One of "enabled" or "disabled" (default). Requires
+	// cert-manager to be installed in the cluster.
+	Enabled string `json:"enabled,omitempty"`
 
 	// IssuerRef optionally references an existing cert-manager Issuer or
 	// ClusterIssuer to sign the server certificate. When omitted, the provider

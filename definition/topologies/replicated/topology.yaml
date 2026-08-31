@@ -146,12 +146,17 @@ ui:
               - label: "NodePort"
                 value: "NodePort"
         tls:
-          uiType: toggle
+          uiType: select
           path: spec.components.engine.parameters.tls.enabled
           fieldParams:
-            label: "Enable TLS"
+            label: "TLS"
             helperText: "Encrypt client connections. Requires cert-manager in the cluster."
-            defaultValue: false
+            defaultValue: "disabled"
+            options:
+              - label: "Disabled"
+                value: "disabled"
+              - label: "Enabled"
+                value: "enabled"
         configuration:
           uiType: text
           path: spec.components.engine.parameters.configuration

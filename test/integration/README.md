@@ -67,5 +67,25 @@ Installs a minimal `PodMonitor` CRD, provisions a standalone Instance with
    on the `metrics` port.
 3. Setting `podMonitor: disabled` removes the `PodMonitor`.
 
+### `user`
+
+Provisions a standalone Instance and asserts the provider creates the
+application `admin` user:
+
+1. A `<name>-credentials` Secret holds the username (`admin`), a random
+   password, and its SHA256 digest (64 hex chars).
+2. The CHI provisions the `admin` user and references the password digest from
+   the credentials Secret, so the plaintext never lands in the ClickHouse config.
+
+### `tls`
+
+Provisions a standalone Instance with `tls.enabled: enabled` and asserts (needs
+cert-manager, installed by the dev stack):
+
+1. cert-manager issues the server certificate into the `<name>-server-tls`
+   `kubernetes.io/tls` Secret.
+2. The CHI adds the secure ports (HTTPS `8443`, native `9440`) and mounts the
+   certificate files **additively** — the plaintext ports remain available.
+
 Each case cleans up its Instance in a `finally` block (the provider's own
 finalizer logic garbage-collects the CHI/CHK).

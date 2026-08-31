@@ -17,6 +17,7 @@ package provider
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
@@ -46,7 +47,7 @@ func tlsEnabled(c *controller.Context) bool {
 	if !c.TryDecodeComponentParameters(engine, &params) {
 		return false
 	}
-	return params.TLS != nil && params.TLS.Enabled
+	return params.TLS != nil && strings.EqualFold(params.TLS.Enabled, common.TLSEnabled)
 }
 
 // ensureTLS provisions the cert-manager resources required for TLS and returns a
