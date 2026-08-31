@@ -61,7 +61,7 @@ provider itself is covered under [Installation](#installation).
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` |
 | Version upgrades | ✅ | of the deployed ClickHouse version — change `spec.version`; see [Versions](#versions) |
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
-| Monitoring | ❌ | planned |
+| Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
 | TLS | ❌ | not exposed through the Instance API |
 
 Stateful workloads additionally report:

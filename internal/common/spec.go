@@ -60,4 +60,24 @@ const (
 
 	// KeeperDataVolumeClaimTemplateName is the name of the volume claim template for Keeper storage.
 	KeeperDataVolumeClaimTemplateName = "keeper-data"
+
+	// MetricsPortName is the container/Service port name for the native
+	// ClickHouse Prometheus endpoint.
+	MetricsPortName = "metrics"
+
+	// MetricsPort is the port the ClickHouse Prometheus endpoint listens on.
+	MetricsPort = 9363
+
+	// MetricsPath is the HTTP path of the ClickHouse Prometheus endpoint.
+	MetricsPath = "/metrics"
+
+	// LabelCHIName is the label the Altinity operator sets on ClickHouse pods,
+	// keyed by CHI (Instance) name. Used to select pods for the PodMonitor.
+	LabelCHIName = "clickhouse.altinity.com/chi"
+
+	// PodMonitorEnabled is the parameter value that turns PodMonitor creation on.
+	PodMonitorEnabled = "enabled"
+
+	// PodMonitorDisabled is the parameter value (default) that keeps PodMonitor off.
+	PodMonitorDisabled = "disabled"
 )

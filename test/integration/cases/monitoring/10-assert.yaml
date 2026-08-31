@@ -1,0 +1,28 @@
+# The CHI converges and bakes the native Prometheus endpoint into its settings.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-monitoring
+  namespace: default
+spec:
+  configuration:
+    settings:
+      prometheus/endpoint: /metrics
+      prometheus/port: "9363"
+status:
+  status: Completed
+---
+# The provider creates a PodMonitor selecting the instance's ClickHouse pods and
+# scraping the native metrics port.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: itest-ch-monitoring-metrics
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      clickhouse.altinity.com/chi: itest-ch-monitoring
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

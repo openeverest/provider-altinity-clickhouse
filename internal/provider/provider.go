@@ -16,11 +16,13 @@ package provider
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -52,6 +54,7 @@ func New() *Provider {
 			SchemeFuncs: []func(*runtime.Scheme) error{
 				chiv1.AddToScheme,
 				chkv1.AddToScheme,
+				monitoringv1.AddToScheme,
 			},
 			// NOTE: We intentionally do NOT watch CHI/CHK here.
 			// Watching them causes a tight feedback loop: operator updates
@@ -118,13 +121,21 @@ func (p *Provider) Sync(c *controller.Context) error {
 	topology := c.Instance().GetTopologyType()
 	l.Info("Syncing ClickHouse instance", "name", c.Name(), "topology", topology)
 
+	var syncErr error
 	switch topology {
 	case common.TopologyReplicated:
-		return p.syncReplicated(c)
+		syncErr = p.syncReplicated(c)
 	default:
 		// standalone (and any unknown topology falls through to standalone)
-		return p.syncStandalone(c)
+		syncErr = p.syncStandalone(c)
 	}
+
+	// The PodMonitor is independent of CHI readiness, so reconcile it even while
+	// the CHI is still provisioning (syncErr may be a WaitError).
+	if err := reconcilePodMonitor(c); err != nil {
+		return err
+	}
+	return syncErr
 }
 
 // syncStandalone creates or waits on the CHI for a single-node deployment.
@@ -271,6 +282,10 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 		return fmt.Errorf("delete ClickHouseInstallation: %w", err)
 	}
 
+	if err := deletePodMonitor(c); err != nil {
+		return err
+	}
+
 	if c.Instance().GetTopologyType() == common.TopologyReplicated {
 		chk := &chkv1.ClickHouseKeeperInstallation{ObjectMeta: c.ObjectMeta(keeperCRName(c.Name()))}
 		if err := c.Delete(chk); err != nil {
@@ -304,6 +319,10 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	container := corev1.Container{
 		Name:  "clickhouse",
 		Image: image,
+		// Named port for the native Prometheus endpoint, targeted by the PodMonitor.
+		Ports: []corev1.ContainerPort{
+			{Name: common.MetricsPortName, ContainerPort: common.MetricsPort, Protocol: corev1.ProtocolTCP},
+		},
 		Resources: corev1.ResourceRequirements{
 			Limits:   corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
 			Requests: corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
@@ -559,20 +578,27 @@ func resolveStorage(engine corev1alpha1.ComponentSpec) (size resource.Quantity, 
 	return
 }
 
-// resolveEngineSettings parses the user-supplied engine configuration (YAML)
-// into ClickHouse server settings rendered into config.d. Returns nil when no
-// configuration is provided.
+// resolveEngineSettings builds the ClickHouse server settings rendered into
+// config.d. It always enables the native Prometheus endpoint and layers the
+// user-supplied configuration on top (user values win on conflict).
 func resolveEngineSettings(c *controller.Context, engine corev1alpha1.ComponentSpec) (*chiv1.Settings, error) {
 	var params components.ClickHouseParameters
 	_ = c.TryDecodeComponentParameters(engine, &params)
-	if strings.TrimSpace(params.Configuration) == "" {
-		return nil, nil
-	}
 
 	settings := chiv1.NewSettings()
-	if err := yaml.Unmarshal([]byte(params.Configuration), settings); err != nil {
-		return nil, fmt.Errorf("parse engine configuration: %w", err)
+	if cfg := strings.TrimSpace(params.Configuration); cfg != "" {
+		if err := yaml.Unmarshal([]byte(cfg), settings); err != nil {
+			return nil, fmt.Errorf("parse engine configuration: %w", err)
+		}
 	}
+
+	settings.SetIfNotExists("prometheus/endpoint", chiv1.NewSettingScalar(common.MetricsPath))
+	settings.SetIfNotExists("prometheus/port", chiv1.NewSettingScalar(strconv.Itoa(common.MetricsPort)))
+	settings.SetIfNotExists("prometheus/metrics", chiv1.NewSettingScalar("true"))
+	settings.SetIfNotExists("prometheus/events", chiv1.NewSettingScalar("true"))
+	settings.SetIfNotExists("prometheus/asynchronous_metrics", chiv1.NewSettingScalar("true"))
+	settings.SetIfNotExists("prometheus/status_info", chiv1.NewSettingScalar("true"))
+
 	return settings, nil
 }
 

@@ -37,3 +37,8 @@ spec:
       #   configuration: |
       #     max_concurrent_queries: 200
       #     logger/level: information
+      # Optional: create a Prometheus PodMonitor for the ClickHouse metrics endpoint.
+      # The metrics endpoint (port 9363) is always exposed; this only manages the
+      # PodMonitor. One of "enabled" or "disabled" (default).
+      # parameters:
+      #   podMonitor: enabled

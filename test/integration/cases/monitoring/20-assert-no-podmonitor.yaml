@@ -1,0 +1,6 @@
+# Disabling monitoring removes the PodMonitor (the metrics endpoint stays).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: itest-ch-monitoring-metrics
+  namespace: default

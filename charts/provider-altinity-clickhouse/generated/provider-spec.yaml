@@ -18,6 +18,8 @@ spec:
           properties:
             configuration:
               type: string
+            podMonitor:
+              type: string
           type: object
       type: clickhouse
   topologies:
@@ -91,6 +93,21 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
+        monitoring:
+          components:
+            podMonitor:
+              fieldParams:
+                defaultValue: disabled
+                label: Prometheus PodMonitor
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
+              path: spec.components.engine.parameters.podMonitor
+              uiType: select
+          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
+          label: Monitoring
         resources:
           components:
             compute:
@@ -163,6 +180,7 @@ spec:
         - databaseVersion
         - scaling
         - resources
+        - monitoring
         - advanced
     standalone:
       sections:
@@ -227,6 +245,21 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
+        monitoring:
+          components:
+            podMonitor:
+              fieldParams:
+                defaultValue: disabled
+                label: Prometheus PodMonitor
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
+              path: spec.components.engine.parameters.podMonitor
+              uiType: select
+          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
+          label: Monitoring
         resources:
           components:
             compute:
@@ -281,6 +314,7 @@ spec:
       sectionsOrder:
         - databaseVersion
         - resources
+        - monitoring
         - advanced
   versions:
     - components:

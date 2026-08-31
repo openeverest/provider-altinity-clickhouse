@@ -1,0 +1,42 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: monitoring
+spec:
+  description: |
+    Provision a standalone ClickHouse Instance with the PodMonitor enabled and
+    assert the provider bakes the native Prometheus endpoint into the CHI and
+    creates a PodMonitor. Then disable it and assert the PodMonitor is removed.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,podmonitor -o yaml
+    - script:
+        content: kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse -A --tail=100
+  steps:
+    - name: install-podmonitor-crd
+      try:
+        - apply:
+            file: 00-podmonitor-crd.yaml
+    - name: enable-and-assert
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+    - name: disable-and-assert-removed
+      try:
+        - apply:
+            file: 20-disable-monitoring.yaml
+        - error:
+            file: 20-assert-no-podmonitor.yaml
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-monitoring
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false

@@ -79,6 +79,22 @@ ui:
             - memory
             - disk
 
+    monitoring:
+      label: "Monitoring"
+      description: "Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled."
+      components:
+        podMonitor:
+          uiType: select
+          path: spec.components.engine.parameters.podMonitor
+          fieldParams:
+            label: "Prometheus PodMonitor"
+            defaultValue: "disabled"
+            options:
+              - label: "Disabled"
+                value: "disabled"
+              - label: "Enabled"
+                value: "enabled"
+
     advanced:
       label: "Advanced"
       description: "Optional advanced settings."
@@ -126,4 +142,5 @@ ui:
   sectionsOrder:
     - databaseVersion
     - resources
+    - monitoring
     - advanced

@@ -57,5 +57,15 @@ Provisions a standalone Instance with a `LoadBalancer` Service and asserts the
 Altinity operator creates the root `clickhouse-<name>` Service with the
 requested `type`, annotations, and `loadBalancerSourceRanges`.
 
+### `monitoring`
+
+Installs a minimal `PodMonitor` CRD, provisions a standalone Instance with
+`podMonitor: enabled`, and asserts:
+
+1. The CHI bakes the native Prometheus endpoint into `spec.configuration.settings`.
+2. The provider creates a `PodMonitor` selecting the instance's ClickHouse pods
+   on the `metrics` port.
+3. Setting `podMonitor: disabled` removes the `PodMonitor`.
+
 Each case cleans up its Instance in a `finally` block (the provider's own
 finalizer logic garbage-collects the CHI/CHK).

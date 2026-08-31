@@ -30,4 +30,9 @@ type ClickHouseParameters struct {
 	// Each entry maps to a server-level setting rendered into config.d,
 	// e.g. `max_concurrent_queries: 200` or `logger/level: information`.
 	Configuration string `json:"configuration,omitempty"`
+
+	// PodMonitor gates creation of a Prometheus PodMonitor for the ClickHouse
+	// pods. The native metrics endpoint is always exposed; this only controls
+	// whether the operator manages a PodMonitor. One of "enabled" or "disabled".
+	PodMonitor string `json:"podMonitor,omitempty"`
 }
