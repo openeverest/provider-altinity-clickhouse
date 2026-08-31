@@ -22,6 +22,7 @@ import (
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
+	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -55,6 +56,7 @@ func New() *Provider {
 				chiv1.AddToScheme,
 				chkv1.AddToScheme,
 				monitoringv1.AddToScheme,
+				cmapi.AddToScheme,
 			},
 			// NOTE: We intentionally do NOT watch CHI/CHK here.
 			// Watching them causes a tight feedback loop: operator updates
@@ -120,6 +122,20 @@ func (p *Provider) Sync(c *controller.Context) error {
 	l := log.FromContext(c.Context())
 	topology := c.Instance().GetTopologyType()
 	l.Info("Syncing ClickHouse instance", "name", c.Name(), "topology", topology)
+
+	// Provision the application user credentials before creating the CHI so the
+	// operator can resolve the referenced Secret on first apply.
+	if _, err := ensureCredentials(c); err != nil {
+		return fmt.Errorf("ensure credentials: %w", err)
+	}
+
+	// Provision TLS certificates before creating the CHI so the operator can
+	// mount the server certificate secret. Returns a WaitError until issued.
+	if tlsEnabled(c) {
+		if err := ensureTLS(c); err != nil {
+			return err
+		}
+	}
 
 	var syncErr error
 	switch topology {
@@ -286,6 +302,17 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 		return err
 	}
 
+	credentials := &corev1.Secret{ObjectMeta: c.ObjectMeta(credentialsSecretName(c.Name()))}
+	if err := c.Delete(credentials); err != nil {
+		return fmt.Errorf("delete credentials secret: %w", err)
+	}
+
+	if tlsEnabled(c) {
+		if err := deleteTLSResources(c); err != nil {
+			return err
+		}
+	}
+
 	if c.Instance().GetTopologyType() == common.TopologyReplicated {
 		chk := &chkv1.ClickHouseKeeperInstallation{ObjectMeta: c.ObjectMeta(keeperCRName(c.Name()))}
 		if err := c.Delete(chk); err != nil {
@@ -352,6 +379,7 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	spec := chiv1.ChiSpec{
 		Configuration: &chiv1.Configuration{
 			Clusters: []*chiv1.Cluster{cluster},
+			Users:    buildUserSettings(credentialsSecretName(c.Name())),
 		},
 		Templates: &chiv1.Templates{
 			PodTemplates:         []chiv1.PodTemplate{{Name: common.PodTemplateName, Spec: corev1.PodSpec{Containers: []corev1.Container{container}}}},
@@ -363,8 +391,14 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 		spec.Configuration.Settings = settings
 	}
 
+	// Wire TLS: mount the server certificate and add the secure ports additively.
+	tlsOn := tlsEnabled(c)
+	if tlsOn {
+		applyTLSToCHISpec(&spec, settings, c.Name())
+	}
+
 	// Wire the root Service exposure (ClusterIP / LoadBalancer / NodePort).
-	configureExpose(&spec, engine.Service)
+	configureExpose(&spec, engine.Service, tlsOn)
 
 	// Wire Keeper for replicated topology using explicit node listing.
 	// The Altinity operator creates per-replica headless services following:
@@ -457,9 +491,42 @@ func keeperCRName(instanceName string) string {
 // type (ClusterIP, LoadBalancer, NodePort), annotations, and — for
 // LoadBalancer — the allowed source ranges. When service is nil or the type is
 // unset, the operator's default (ClusterIP) applies and no template is added.
-func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service) {
+// When tlsOn is set, the secure HTTPS/native ports are added to the template so
+// clients can reach them through the exposed Service.
+func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsOn bool) {
 	if service == nil || service.ServiceType == "" {
 		return
+	}
+
+	ports := []corev1.ServicePort{
+		{
+			Name:       chiv1.ChDefaultHTTPPortName,
+			Protocol:   corev1.ProtocolTCP,
+			Port:       chiv1.ChDefaultHTTPPortNumber,
+			TargetPort: intstr.FromString(chiv1.ChDefaultHTTPPortName),
+		},
+		{
+			Name:       chiv1.ChDefaultTCPPortName,
+			Protocol:   corev1.ProtocolTCP,
+			Port:       chiv1.ChDefaultTCPPortNumber,
+			TargetPort: intstr.FromString(chiv1.ChDefaultTCPPortName),
+		},
+	}
+	if tlsOn {
+		ports = append(ports,
+			corev1.ServicePort{
+				Name:       chiv1.ChDefaultHTTPSPortName,
+				Protocol:   corev1.ProtocolTCP,
+				Port:       chiv1.ChDefaultHTTPSPortNumber,
+				TargetPort: intstr.FromString(chiv1.ChDefaultHTTPSPortName),
+			},
+			corev1.ServicePort{
+				Name:       chiv1.ChDefaultTLSPortName,
+				Protocol:   corev1.ProtocolTCP,
+				Port:       chiv1.ChDefaultTLSPortNumber,
+				TargetPort: intstr.FromString(chiv1.ChDefaultTLSPortName),
+			},
+		)
 	}
 
 	tmpl := chiv1.ServiceTemplate{
@@ -468,21 +535,8 @@ func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service) {
 			Annotations: service.Annotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Type: service.ServiceType,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       chiv1.ChDefaultHTTPPortName,
-					Protocol:   corev1.ProtocolTCP,
-					Port:       chiv1.ChDefaultHTTPPortNumber,
-					TargetPort: intstr.FromString(chiv1.ChDefaultHTTPPortName),
-				},
-				{
-					Name:       chiv1.ChDefaultTCPPortName,
-					Protocol:   corev1.ProtocolTCP,
-					Port:       chiv1.ChDefaultTCPPortNumber,
-					TargetPort: intstr.FromString(chiv1.ChDefaultTCPPortName),
-				},
-			},
+			Type:  service.ServiceType,
+			Ports: ports,
 		},
 	}
 
@@ -609,11 +663,38 @@ func buildConnectionDetails(c *controller.Context, chi *chiv1.ClickHouseInstalla
 	if host == "" {
 		host = fmt.Sprintf("%s.%s.svc", svcName, c.Namespace())
 	}
+
+	username, password := readCredentials(c)
+	port := strconv.Itoa(common.HTTPPort)
+
+	scheme := "http"
+	if tlsEnabled(c) {
+		scheme = "https"
+		port = strconv.Itoa(common.HTTPSPort)
+	}
+
 	return controller.ConnectionDetails{
 		Type:     "clickhouse",
 		Provider: common.ProviderName,
 		Host:     host,
-		Port:     "8123",
-		URI:      fmt.Sprintf("http://default:@%s:8123/", host),
+		Port:     port,
+		Username: username,
+		Password: password,
+		URI:      fmt.Sprintf("%s://%s:%s@%s:%s/", scheme, username, password, host, port),
 	}
+}
+
+// readCredentials reads the generated application user credentials. On any error
+// it falls back to the app username with an empty password so Status still
+// reports connection details rather than failing the reconcile.
+func readCredentials(c *controller.Context) (username, password string) {
+	username = common.AppUserName
+	secret := &corev1.Secret{}
+	if err := c.Get(secret, credentialsSecretName(c.Name())); err != nil {
+		return username, ""
+	}
+	if v, ok := secret.Data[common.CredentialsKeyUsername]; ok && len(v) > 0 {
+		username = string(v)
+	}
+	return username, string(secret.Data[common.CredentialsKeyPassword])
 }

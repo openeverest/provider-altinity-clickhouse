@@ -20,6 +20,20 @@ spec:
               type: string
             podMonitor:
               type: string
+            tls:
+              properties:
+                enabled:
+                  type: boolean
+                issuerRef:
+                  properties:
+                    group:
+                      type: string
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                  type: object
+              type: object
           type: object
       type: clickhouse
   topologies:
@@ -69,9 +83,17 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+            tls:
+              fieldParams:
+                defaultValue: false
+                helperText: Encrypt client connections. Requires cert-manager in the cluster.
+                label: Enable TLS
+              path: spec.components.engine.parameters.tls.enabled
+              uiType: toggle
           componentsOrder:
             - storageClass
             - externalAccess
+            - tls
             - configuration
           description: Optional advanced settings.
           label: Advanced
@@ -221,9 +243,17 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+            tls:
+              fieldParams:
+                defaultValue: false
+                helperText: Encrypt client connections. Requires cert-manager in the cluster.
+                label: Enable TLS
+              path: spec.components.engine.parameters.tls.enabled
+              uiType: toggle
           componentsOrder:
             - storageClass
             - externalAccess
+            - tls
             - configuration
           description: Optional advanced settings.
           label: Advanced

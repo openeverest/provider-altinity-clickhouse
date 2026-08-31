@@ -123,6 +123,13 @@ ui:
                 value: "LoadBalancer"
               - label: "NodePort"
                 value: "NodePort"
+        tls:
+          uiType: toggle
+          path: spec.components.engine.parameters.tls.enabled
+          fieldParams:
+            label: "Enable TLS"
+            helperText: "Encrypt client connections. Requires cert-manager in the cluster."
+            defaultValue: false
         configuration:
           uiType: text
           path: spec.components.engine.parameters.configuration
@@ -137,6 +144,7 @@ ui:
       componentsOrder:
         - storageClass
         - externalAccess
+        - tls
         - configuration
 
   sectionsOrder:

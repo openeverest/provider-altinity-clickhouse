@@ -36,6 +36,16 @@ if os.path.exists(local_env_file):
 # the core from source in a separate Tilt instance.
 install_openeverest = str2bool(os.getenv('INSTALL_OPENEVEREST', 'true'))
 
+# Whether to install cert-manager. cert-manager is a hard requirement for the
+# provider's optional TLS feature. Set to false if it is already installed.
+install_cert_manager = str2bool(os.getenv('INSTALL_CERT_MANAGER', 'true'))
+
+# cert-manager chart version to install. Empty means latest.
+cert_manager_version = os.getenv('CERT_MANAGER_VERSION', 'v1.20.2')
+
+# Namespace cert-manager is installed into.
+cert_manager_namespace = os.getenv('CERT_MANAGER_NAMESPACE', 'cert-manager')
+
 # Released OpenEverest core version to install. Empty means latest.
 openeverest_version = os.getenv('OPENEVEREST_VERSION', '')
 
@@ -117,6 +127,34 @@ if install_openeverest:
     )
 
 # ===========================
+# cert-manager (required for TLS)
+# ===========================
+# cert-manager is a hard requirement of the provider. It issues the server
+# certificates used when an Instance enables TLS. Installed with CRDs enabled.
+if install_cert_manager:
+    helm_repo(
+        'jetstack',
+        'https://charts.jetstack.io',
+        labels=['cert-manager'],
+    )
+
+    cert_manager_flags = [
+        '--create-namespace',
+        '--set', 'crds.enabled=true',
+    ]
+    if cert_manager_version:
+        cert_manager_flags = cert_manager_flags + ['--version', cert_manager_version]
+
+    helm_resource(
+        'cert-manager',
+        'jetstack/cert-manager',
+        namespace=cert_manager_namespace,
+        flags=cert_manager_flags,
+        resource_deps=['jetstack'],
+        labels=['cert-manager'],
+    )
+
+# ===========================
 # Provider: generate + build
 # ===========================
 local_resource(
@@ -179,6 +217,8 @@ docker_build_with_restart(
 provider_resource_deps = ['provider-build', 'provider-chart-deps']
 if install_openeverest:
     provider_resource_deps = provider_resource_deps + ['openeverest']
+if install_cert_manager:
+    provider_resource_deps = provider_resource_deps + ['cert-manager']
 
 helm_resource(
     'provider-altinity-clickhouse',

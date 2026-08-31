@@ -80,4 +80,55 @@ const (
 
 	// PodMonitorDisabled is the parameter value (default) that keeps PodMonitor off.
 	PodMonitorDisabled = "disabled"
+
+	// AppUserName is the application user provisioned by the provider. The
+	// Altinity operator does not create a usable external user, so we create one.
+	AppUserName = "admin"
+
+	// CredentialsSecretSuffix is appended to the Instance name to form the Secret
+	// holding the generated application user credentials.
+	CredentialsSecretSuffix = "-credentials"
+
+	// CredentialsKeyUsername is the Secret data key holding the application username.
+	CredentialsKeyUsername = "username"
+
+	// CredentialsKeyPassword is the Secret data key holding the plaintext password.
+	CredentialsKeyPassword = "password"
+
+	// CredentialsKeyPasswordSHA256 is the Secret data key holding the SHA256 hex
+	// digest of the password, referenced into the CHI users configuration so the
+	// plaintext never appears in the ClickHouse config.
+	CredentialsKeyPasswordSHA256 = "password_sha256_hex"
+
+	// AppUserPasswordBytes is the entropy (in bytes) of the generated password.
+	AppUserPasswordBytes = 24
+
+	// HTTPPort is the plaintext ClickHouse HTTP port clients connect to.
+	HTTPPort = 8123
+
+	// HTTPSPort is the ClickHouse HTTPS port exposed when TLS is enabled.
+	HTTPSPort = 8443
+
+	// TCPSecurePort is the ClickHouse native secure protocol port exposed when TLS is enabled.
+	TCPSecurePort = 9440
+
+	// SelfSignedIssuerSuffix is appended to the Instance name to form the
+	// provider-managed self-signed cert-manager Issuer.
+	SelfSignedIssuerSuffix = "-selfsign"
+
+	// CAIssuerSuffix is appended to the Instance name to form both the CA
+	// Certificate and the CA cert-manager Issuer.
+	CAIssuerSuffix = "-ca"
+
+	// CACertSecretSuffix is appended to the Instance name to form the Secret
+	// holding the provider-managed CA key pair.
+	CACertSecretSuffix = "-ca-tls"
+
+	// ServerCertSuffix is appended to the Instance name to form the leaf server
+	// Certificate.
+	ServerCertSuffix = "-server"
+
+	// ServerCertSecretSuffix is appended to the Instance name to form the Secret
+	// holding the issued server certificate, mounted into the ClickHouse pods.
+	ServerCertSecretSuffix = "-server-tls"
 )
