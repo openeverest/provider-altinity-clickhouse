@@ -120,7 +120,20 @@ leaderElection:
   enabled: true
 
 # The Altinity ClickHouse operator is bundled as a subchart (alias "operator",
-# see Chart.yaml dependencies) and runs with its upstream defaults. CRDs are
-# installed/updated automatically via the operator chart's pre-install/pre-upgrade
-# hooks. To override operator settings, add an "operator:" block here keyed to the
+# see Chart.yaml dependencies). CRDs are installed/updated automatically via the
+# operator chart's pre-install/pre-upgrade hooks. Additional operator settings
+# can be overridden under this "operator:" block, keyed to the
 # altinity-clickhouse-operator chart values.
+operator:
+  # The provider reconciles Instances in any namespace and applies each
+  # ClickHouseInstallation into the Instance's own namespace, so the operator
+  # must run cluster-wide. Its ClusterRole-scoped RBAC (rbac.namespaceScoped:
+  # false) is on by default; ".*" forces the watch list to all namespaces
+  # instead of the upstream own-namespace-only default.
+  configs:
+    files:
+      config.yaml:
+        watch:
+          namespaces:
+            include:
+              - ".*"
