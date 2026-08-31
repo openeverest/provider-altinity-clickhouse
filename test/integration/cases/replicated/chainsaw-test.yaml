@@ -3,53 +3,22 @@ kind: Test
 metadata:
   name: replicated
 spec:
+  description: |
+    Provision a replicated (2-replica) ClickHouse Instance backed by Keeper,
+    assert both CRs converge to Completed with custom engine settings, then
+    verify end-to-end replication between the two replicas.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk -o yaml
+    - script:
+        content: kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse -A --tail=100
   steps:
     - name: provision-and-assert
       try:
         - apply:
-            resource:
-              apiVersion: core.openeverest.io/v1alpha1
-              kind: Instance
-              metadata:
-                name: itest-ch-replicated
-                namespace: default
-              spec:
-                provider: altinity-clickhouse
-                topology:
-                  type: replicated
-                components:
-                  engine:
-                    type: clickhouse
-                    replicas: 2
-                    resources:
-                      limits:
-                        cpu: "1"
-                        memory: 2G
-                    storage:
-                      size: 10Gi
+            file: 10-create-cluster.yaml
         - assert:
-            resource:
-              apiVersion: clickhouse-keeper.altinity.com/v1
-              kind: ClickHouseKeeperInstallation
-              metadata:
-                name: itest-ch-replicated-keeper
-                namespace: default
-              status:
-                status: Completed
-        - assert:
-            resource:
-              apiVersion: clickhouse.altinity.com/v1
-              kind: ClickHouseInstallation
-              metadata:
-                name: itest-ch-replicated
-                namespace: default
-              spec:
-                configuration:
-                  clusters:
-                    - layout:
-                        replicasCount: 2
-              status:
-                status: Completed
+            file: 10-assert.yaml
       finally:
         - command:
             entrypoint: kubectl

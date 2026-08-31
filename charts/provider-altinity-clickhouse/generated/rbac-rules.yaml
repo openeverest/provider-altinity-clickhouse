@@ -3,6 +3,7 @@
   resources:
     - configmaps
     - persistentvolumeclaims
+    - secrets
     - services
   verbs:
     - create
@@ -17,7 +18,6 @@
   resources:
     - endpoints
     - pods
-    - secrets
   verbs:
     - get
     - list
@@ -26,6 +26,27 @@
     - apps
   resources:
     - statefulsets
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - cert-manager.io
+  resources:
+    - certificates
+    - issuers
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiGroups:
+    - cert-manager.io
+  resources:
+    - clusterissuers
   verbs:
     - get
     - list
@@ -109,4 +130,16 @@
   verbs:
     - get
     - list
+    - watch
+- apiGroups:
+    - monitoring.coreos.com
+  resources:
+    - podmonitors
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
     - watch

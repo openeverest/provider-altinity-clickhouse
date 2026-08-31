@@ -1,15 +1,17 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: standalone
+  name: tls
 spec:
   description: |
-    Provision a standalone (single-replica) ClickHouse Instance and assert the
-    CHI converges to Completed with custom engine settings, and that no Keeper
-    is provisioned.
+    Provision a standalone ClickHouse Instance with TLS enabled and assert the
+    provider drives cert-manager to issue a server certificate and wires the
+    secure ports (HTTPS 8443, native 9440) and certificate files into the CHI
+    additively alongside the plaintext ports. Requires cert-manager in the
+    cluster (installed by the dev stack).
   catch:
     - script:
-        content: kubectl -n $NAMESPACE get instance,chi,chk -o yaml
+        content: kubectl -n $NAMESPACE get instance,chi,secret,certificate,issuer -o yaml
     - script:
         content: kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse -A --tail=100
   steps:
@@ -19,15 +21,13 @@ spec:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
-        - error:
-            file: 10-error-keeper-absent.yaml
       finally:
         - command:
             entrypoint: kubectl
             args:
               - delete
               - instance
-              - itest-ch-standalone
+              - itest-ch-tls
               - -n
               - default
               - --ignore-not-found

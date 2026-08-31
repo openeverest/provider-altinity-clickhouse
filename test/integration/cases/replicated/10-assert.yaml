@@ -1,0 +1,23 @@
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-replicated-keeper
+  namespace: default
+status:
+  status: Completed
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-replicated
+  namespace: default
+spec:
+  configuration:
+    clusters:
+      - layout:
+          replicasCount: 2
+    settings:
+      max_concurrent_queries: "200"
+      max_connections: "4096"
+status:
+  status: Completed

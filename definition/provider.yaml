@@ -7,3 +7,4 @@ name: provider-altinity-clickhouse
 components:
   engine:
     type: clickhouse
+    parametersSchema: ClickHouseParameters

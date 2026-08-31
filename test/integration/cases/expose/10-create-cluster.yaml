@@ -1,0 +1,27 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-expose
+  namespace: default
+spec:
+  provider: altinity-clickhouse
+  topology:
+    type: standalone
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2G
+      storage:
+        size: 10Gi
+      service:
+        serviceType: LoadBalancer
+        annotations:
+          test-annotation: "test-value"
+        loadBalancerService:
+          sourceRanges:
+            - "10.0.0.0/8"
+            - "192.168.1.100"

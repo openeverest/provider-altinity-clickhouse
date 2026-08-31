@@ -101,6 +101,22 @@ ui:
             - memory
             - disk
 
+    monitoring:
+      label: "Monitoring"
+      description: "Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled."
+      components:
+        podMonitor:
+          uiType: select
+          path: spec.components.engine.parameters.podMonitor
+          fieldParams:
+            label: "Prometheus PodMonitor"
+            defaultValue: "disabled"
+            options:
+              - label: "Disabled"
+                value: "disabled"
+              - label: "Enabled"
+                value: "enabled"
+
     advanced:
       label: "Advanced"
       description: "Optional advanced settings."
@@ -116,9 +132,51 @@ ui:
                 disabled: true
           dataSource:
             provider: storageClasses
+        externalAccess:
+          uiType: select
+          path: spec.components.engine.service.serviceType
+          fieldParams:
+            label: "External access"
+            defaultValue: "ClusterIP"
+            options:
+              - label: "ClusterIP"
+                value: "ClusterIP"
+              - label: "LoadBalancer"
+                value: "LoadBalancer"
+              - label: "NodePort"
+                value: "NodePort"
+        tls:
+          uiType: select
+          path: spec.components.engine.parameters.tls.enabled
+          fieldParams:
+            label: "TLS"
+            helperText: "Encrypt client connections. Requires cert-manager in the cluster."
+            defaultValue: "disabled"
+            options:
+              - label: "Disabled"
+                value: "disabled"
+              - label: "Enabled"
+                value: "enabled"
+        configuration:
+          uiType: text
+          path: spec.components.engine.parameters.configuration
+          fieldParams:
+            label: "ClickHouse configuration"
+            placeholder: |2
+              max_concurrent_queries: 200
+              logger/level: information
+            multiline: true
+            minRows: 3
+            maxRows: 8
+      componentsOrder:
+        - storageClass
+        - externalAccess
+        - tls
+        - configuration
 
   sectionsOrder:
     - databaseVersion
     - scaling
     - resources
+    - monitoring
     - advanced

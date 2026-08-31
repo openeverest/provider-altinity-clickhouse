@@ -13,6 +13,28 @@ spec:
           version: 24.8.14
   components:
     engine:
+      parametersSchema:
+        openAPIV3Schema:
+          properties:
+            configuration:
+              type: string
+            podMonitor:
+              type: string
+            tls:
+              properties:
+                enabled:
+                  type: string
+                issuerRef:
+                  properties:
+                    group:
+                      type: string
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                  type: object
+              type: object
+          type: object
       type: clickhouse
   topologies:
     replicated:
@@ -26,6 +48,30 @@ spec:
       sections:
         advanced:
           components:
+            configuration:
+              fieldParams:
+                label: ClickHouse configuration
+                maxRows: 8
+                minRows: 3
+                multiline: true
+                placeholder: |
+                  max_concurrent_queries: 200
+                  logger/level: information
+              path: spec.components.engine.parameters.configuration
+              uiType: text
+            externalAccess:
+              fieldParams:
+                defaultValue: ClusterIP
+                label: External access
+                options:
+                  - label: ClusterIP
+                    value: ClusterIP
+                  - label: LoadBalancer
+                    value: LoadBalancer
+                  - label: NodePort
+                    value: NodePort
+              path: spec.components.engine.service.serviceType
+              uiType: select
             storageClass:
               dataSource:
                 provider: storageClasses
@@ -37,6 +83,23 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+            tls:
+              fieldParams:
+                defaultValue: disabled
+                helperText: Encrypt client connections. Requires cert-manager in the cluster.
+                label: TLS
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
+              path: spec.components.engine.parameters.tls.enabled
+              uiType: select
+          componentsOrder:
+            - storageClass
+            - externalAccess
+            - tls
+            - configuration
           description: Optional advanced settings.
           label: Advanced
         databaseVersion:
@@ -57,6 +120,21 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
+        monitoring:
+          components:
+            podMonitor:
+              fieldParams:
+                defaultValue: disabled
+                label: Prometheus PodMonitor
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
+              path: spec.components.engine.parameters.podMonitor
+              uiType: select
+          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
+          label: Monitoring
         resources:
           components:
             compute:
@@ -129,11 +207,36 @@ spec:
         - databaseVersion
         - scaling
         - resources
+        - monitoring
         - advanced
     standalone:
       sections:
         advanced:
           components:
+            configuration:
+              fieldParams:
+                label: ClickHouse configuration
+                maxRows: 8
+                minRows: 3
+                multiline: true
+                placeholder: |
+                  max_concurrent_queries: 200
+                  logger/level: information
+              path: spec.components.engine.parameters.configuration
+              uiType: text
+            externalAccess:
+              fieldParams:
+                defaultValue: ClusterIP
+                label: External access
+                options:
+                  - label: ClusterIP
+                    value: ClusterIP
+                  - label: LoadBalancer
+                    value: LoadBalancer
+                  - label: NodePort
+                    value: NodePort
+              path: spec.components.engine.service.serviceType
+              uiType: select
             storageClass:
               dataSource:
                 provider: storageClasses
@@ -145,6 +248,23 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+            tls:
+              fieldParams:
+                defaultValue: disabled
+                helperText: Encrypt client connections. Requires cert-manager in the cluster.
+                label: TLS
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
+              path: spec.components.engine.parameters.tls.enabled
+              uiType: select
+          componentsOrder:
+            - storageClass
+            - externalAccess
+            - tls
+            - configuration
           description: Optional advanced settings.
           label: Advanced
         databaseVersion:
@@ -165,6 +285,21 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
+        monitoring:
+          components:
+            podMonitor:
+              fieldParams:
+                defaultValue: disabled
+                label: Prometheus PodMonitor
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
+              path: spec.components.engine.parameters.podMonitor
+              uiType: select
+          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
+          label: Monitoring
         resources:
           components:
             compute:
@@ -219,6 +354,7 @@ spec:
       sectionsOrder:
         - databaseVersion
         - resources
+        - monitoring
         - advanced
   versions:
     - components:

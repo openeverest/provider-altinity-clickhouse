@@ -60,9 +60,10 @@ provider itself is covered under [Installation](#installation).
 | Horizontal scaling | ✅ | `spec.components.engine.replicas` (minimum 2 in the `replicated` topology) |
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` |
 | Version upgrades | ✅ | of the deployed ClickHouse version — change `spec.version`; see [Versions](#versions) |
-| Custom configuration | ❌ | not yet exposed through the Instance API |
-| Monitoring | ❌ | planned |
-| TLS | ❌ | not exposed through the Instance API |
+| Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
+| Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
+| Authentication | ✅ | a dedicated `admin` user is provisioned automatically with a generated password (see [Connecting](#connecting)) |
+| TLS | ✅ | opt-in per Instance via the engine component's `tls.enabled` parameter; requires [cert-manager](#prerequisites) |
 
 Stateful workloads additionally report:
 
@@ -74,6 +75,21 @@ Stateful workloads additionally report:
 | Backups (scheduled) | ❌ | planned |
 | Point-in-time recovery | ❌ | planned |
 | Restore | ❌ | planned |
+
+## Prerequisites
+
+- A running OpenEverest core installation.
+- [cert-manager](https://cert-manager.io/docs/installation/) installed in the
+  cluster. It is required for the optional TLS feature — the provider creates
+  cert-manager `Issuer` and `Certificate` resources to issue the ClickHouse
+  server certificate. Install it with CRDs enabled, for example:
+
+  ```bash
+  helm repo add jetstack https://charts.jetstack.io
+  helm install cert-manager jetstack/cert-manager \
+    --namespace cert-manager --create-namespace \
+    --set crds.enabled=true
+  ```
 
 ## Installation
 
@@ -172,6 +188,39 @@ kubectl get instance my-instance -o jsonpath='{.status.connection}'
 ```
 
 Credentials are in the secret named by `.status.connection.credentialsSecretRef`.
+
+## Connecting
+
+The Altinity operator does not create a usable external user, so the provider
+provisions one automatically:
+
+- A dedicated `admin` user is created with a randomly generated password.
+- The credentials live in the `<instance-name>-credentials` secret and are also
+  published to the connection secret referenced by
+  `.status.connection.credentialsSecretRef` (keys `username`, `password`).
+- The password is generated once and never rotated on subsequent reconciles, so
+  existing connections keep working.
+
+### TLS
+
+TLS is opt-in per Instance. Enable it via the engine component's parameters:
+
+```yaml
+spec:
+  components:
+    engine:
+      type: clickhouse
+      parameters:
+        tls:
+          enabled: enabled
+```
+
+When enabled, the provider uses cert-manager to issue a server certificate and
+exposes the secure ports (HTTPS `8443`, native `9440`) **additively** — the
+plaintext ports (`8123`, `9000`) remain available. `.status.connection` then
+reports the `https` endpoint. By default the provider manages a self-signed CA
+chain scoped to the Instance; to sign with an existing issuer, set
+`parameters.tls.issuerRef` (`name`, optional `kind`/`group`).
 
 ## Topologies
 

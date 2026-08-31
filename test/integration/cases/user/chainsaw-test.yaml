@@ -1,15 +1,16 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: standalone
+  name: user
 spec:
   description: |
-    Provision a standalone (single-replica) ClickHouse Instance and assert the
-    CHI converges to Completed with custom engine settings, and that no Keeper
-    is provisioned.
+    Provision a standalone ClickHouse Instance and assert the provider creates
+    the application `admin` user: a credentials Secret holding the username,
+    plaintext password and its SHA256 digest, and a CHI that references that
+    digest from its users configuration.
   catch:
     - script:
-        content: kubectl -n $NAMESPACE get instance,chi,chk -o yaml
+        content: kubectl -n $NAMESPACE get instance,chi,secret -o yaml
     - script:
         content: kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse -A --tail=100
   steps:
@@ -19,15 +20,13 @@ spec:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
-        - error:
-            file: 10-error-keeper-absent.yaml
       finally:
         - command:
             entrypoint: kubectl
             args:
               - delete
               - instance
-              - itest-ch-standalone
+              - itest-ch-user
               - -n
               - default
               - --ignore-not-found

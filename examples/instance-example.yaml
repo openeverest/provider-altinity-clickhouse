@@ -23,3 +23,22 @@ spec:
           memory: 2G
       storage:
         size: 10Gi
+      # Optional: expose ClickHouse via a Service (defaults to ClusterIP).
+      # Supported types: ClusterIP, LoadBalancer, NodePort.
+      # service:
+      #   serviceType: LoadBalancer
+      #   annotations:
+      #     service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+      #   loadBalancerService:
+      #     sourceRanges:
+      #       - "10.0.0.0/8"
+      # Optional: fine-tune ClickHouse server settings (rendered into config.d).
+      # parameters:
+      #   configuration: |
+      #     max_concurrent_queries: 200
+      #     logger/level: information
+      # Optional: create a Prometheus PodMonitor for the ClickHouse metrics endpoint.
+      # The metrics endpoint (port 9363) is always exposed; this only manages the
+      # PodMonitor. One of "enabled" or "disabled" (default).
+      # parameters:
+      #   podMonitor: enabled
