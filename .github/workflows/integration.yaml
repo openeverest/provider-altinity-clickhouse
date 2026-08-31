@@ -12,7 +12,7 @@ on:
           OpenEverest core chart version to install (pre-release tags are not
           picked up by Helm's "latest" resolution, so pin one explicitly).
         required: false
-        default: "2.0.0-dev.1"
+        default: "2.0.0-dev.2"
   pull_request:
     types: [labeled, opened, synchronize, reopened]
 
@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 env:
-  OPENEVEREST_VERSION: ${{ github.event.inputs.openeverest_version || '2.0.0-dev.1' }}
+  OPENEVEREST_VERSION: ${{ github.event.inputs.openeverest_version || '2.0.0-dev.2' }}
 
 jobs:
   integration:
