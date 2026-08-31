@@ -23,3 +23,8 @@ spec:
           memory: 2G
       storage:
         size: 10Gi
+      # Optional: fine-tune ClickHouse server settings (rendered into config.d).
+      # parameters:
+      #   configuration: |
+      #     max_concurrent_queries: 200
+      #     logger/level: information

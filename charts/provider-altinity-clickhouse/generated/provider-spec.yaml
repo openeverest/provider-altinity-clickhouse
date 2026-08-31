@@ -13,6 +13,12 @@ spec:
           version: 24.8.14
   components:
     engine:
+      parametersSchema:
+        openAPIV3Schema:
+          properties:
+            configuration:
+              type: string
+          type: object
       type: clickhouse
   topologies:
     replicated:
@@ -26,6 +32,17 @@ spec:
       sections:
         advanced:
           components:
+            configuration:
+              fieldParams:
+                label: ClickHouse configuration
+                maxRows: 8
+                minRows: 3
+                multiline: true
+                placeholder: |
+                  max_concurrent_queries: 200
+                  logger/level: information
+              path: spec.components.engine.parameters.configuration
+              uiType: text
             storageClass:
               dataSource:
                 provider: storageClasses
@@ -37,6 +54,9 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+          componentsOrder:
+            - storageClass
+            - configuration
           description: Optional advanced settings.
           label: Advanced
         databaseVersion:
@@ -134,6 +154,17 @@ spec:
       sections:
         advanced:
           components:
+            configuration:
+              fieldParams:
+                label: ClickHouse configuration
+                maxRows: 8
+                minRows: 3
+                multiline: true
+                placeholder: |
+                  max_concurrent_queries: 200
+                  logger/level: information
+              path: spec.components.engine.parameters.configuration
+              uiType: text
             storageClass:
               dataSource:
                 provider: storageClasses
@@ -145,6 +176,9 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+          componentsOrder:
+            - storageClass
+            - configuration
           description: Optional advanced settings.
           label: Advanced
         databaseVersion:

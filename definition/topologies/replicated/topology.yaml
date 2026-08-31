@@ -116,6 +116,20 @@ ui:
                 disabled: true
           dataSource:
             provider: storageClasses
+        configuration:
+          uiType: text
+          path: spec.components.engine.parameters.configuration
+          fieldParams:
+            label: "ClickHouse configuration"
+            placeholder: |2
+              max_concurrent_queries: 200
+              logger/level: information
+            multiline: true
+            minRows: 3
+            maxRows: 8
+      componentsOrder:
+        - storageClass
+        - configuration
 
   sectionsOrder:
     - databaseVersion

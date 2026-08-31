@@ -1,0 +1,23 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-standalone
+  namespace: default
+spec:
+  provider: altinity-clickhouse
+  topology:
+    type: standalone
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2G
+      storage:
+        size: 10Gi
+      parameters:
+        configuration: |
+          max_concurrent_queries: 200
+          max_connections: 4096

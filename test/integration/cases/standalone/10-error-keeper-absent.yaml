@@ -1,0 +1,6 @@
+# The standalone topology must never provision a Keeper.
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-standalone-keeper
+  namespace: default

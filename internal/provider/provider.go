@@ -16,6 +16,7 @@ package provider
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
@@ -24,10 +25,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/yaml"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-altinity-clickhouse/definition/components"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
@@ -280,6 +283,11 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	cpu, memory := resolveResources(engine)
 	storageSize, storageClass := resolveStorage(engine)
 
+	settings, err := resolveEngineSettings(c, engine)
+	if err != nil {
+		return nil, err
+	}
+
 	container := corev1.Container{
 		Name:  "clickhouse",
 		Image: image,
@@ -317,6 +325,10 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 			PodTemplates:         []chiv1.PodTemplate{{Name: common.PodTemplateName, Spec: corev1.PodSpec{Containers: []corev1.Container{container}}}},
 			VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{{Name: common.DataVolumeClaimTemplateName, Spec: pvcSpec}},
 		},
+	}
+
+	if settings != nil {
+		spec.Configuration.Settings = settings
 	}
 
 	// Wire Keeper for replicated topology using explicit node listing.
@@ -476,6 +488,23 @@ func resolveStorage(engine corev1alpha1.ComponentSpec) (size resource.Quantity, 
 	}
 	storageClass = engine.Storage.StorageClass
 	return
+}
+
+// resolveEngineSettings parses the user-supplied engine configuration (YAML)
+// into ClickHouse server settings rendered into config.d. Returns nil when no
+// configuration is provided.
+func resolveEngineSettings(c *controller.Context, engine corev1alpha1.ComponentSpec) (*chiv1.Settings, error) {
+	var params components.ClickHouseParameters
+	_ = c.TryDecodeComponentParameters(engine, &params)
+	if strings.TrimSpace(params.Configuration) == "" {
+		return nil, nil
+	}
+
+	settings := chiv1.NewSettings()
+	if err := yaml.Unmarshal([]byte(params.Configuration), settings); err != nil {
+		return nil, fmt.Errorf("parse engine configuration: %w", err)
+	}
+	return settings, nil
 }
 
 // buildConnectionDetails extracts connection info from a ready CHI.

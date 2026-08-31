@@ -1,0 +1,15 @@
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-standalone
+  namespace: default
+spec:
+  configuration:
+    clusters:
+      - layout:
+          replicasCount: 1
+    settings:
+      max_concurrent_queries: "200"
+      max_connections: "4096"
+status:
+  status: Completed

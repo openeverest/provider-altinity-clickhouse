@@ -60,7 +60,7 @@ provider itself is covered under [Installation](#installation).
 | Horizontal scaling | ✅ | `spec.components.engine.replicas` (minimum 2 in the `replicated` topology) |
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` |
 | Version upgrades | ✅ | of the deployed ClickHouse version — change `spec.version`; see [Versions](#versions) |
-| Custom configuration | ❌ | not yet exposed through the Instance API |
+| Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
 | Monitoring | ❌ | planned |
 | TLS | ❌ | not exposed through the Instance API |
 

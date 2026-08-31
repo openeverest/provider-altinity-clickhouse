@@ -35,6 +35,8 @@ the provider), not chainsaw's default ephemeral per-test namespace.
 Provisions a standalone (single-replica) Instance and asserts:
 
 - The CHI converges to `Completed` with a single replica.
+- Custom engine `configuration` propagates to the CHI's
+  `spec.configuration.settings`.
 - No `ClickHouseKeeperInstallation` is provisioned for it.
 
 ### `replicated`
@@ -43,7 +45,9 @@ Provisions a replicated (2-replica) Instance and asserts:
 
 1. The Keeper is provisioned and `Completed`.
 2. The CHI converges to `Completed` with 2 replicas.
-3. A `ReplicatedMergeTree` table created on one replica, and a row inserted
+3. Custom engine `configuration` propagates to the CHI's
+   `spec.configuration.settings`.
+4. A `ReplicatedMergeTree` table created on one replica, and a row inserted
    into it, appears on the other replica — proving the Keeper wiring works
    end-to-end, not just that both CRs reached `Completed`.
 
