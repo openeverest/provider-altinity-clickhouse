@@ -1,0 +1,22 @@
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-expose
+  namespace: default
+status:
+  status: Completed
+---
+# The root ClickHouse Service must be exposed as a LoadBalancer with the
+# requested annotation and source ranges.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-itest-ch-expose
+  namespace: default
+  annotations:
+    test-annotation: "test-value"
+spec:
+  type: LoadBalancer
+  loadBalancerSourceRanges:
+    - "10.0.0.0/8"
+    - "192.168.1.100/32"

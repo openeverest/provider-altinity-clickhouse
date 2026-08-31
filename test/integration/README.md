@@ -51,5 +51,11 @@ Provisions a replicated (2-replica) Instance and asserts:
    into it, appears on the other replica — proving the Keeper wiring works
    end-to-end, not just that both CRs reached `Completed`.
 
+### `expose`
+
+Provisions a standalone Instance with a `LoadBalancer` Service and asserts the
+Altinity operator creates the root `clickhouse-<name>` Service with the
+requested `type`, annotations, and `loadBalancerSourceRanges`.
+
 Each case cleans up its Instance in a `finally` block (the provider's own
 finalizer logic garbage-collects the CHI/CHK).

@@ -40,6 +40,10 @@ const (
 	// DataVolumeClaimTemplateName is the name of the volume claim template for data storage.
 	DataVolumeClaimTemplateName = "data"
 
+	// ServiceTemplateName is the name of the service template used to expose the
+	// root ClickHouse service (the one clients connect to).
+	ServiceTemplateName = "svc-template"
+
 	// KeeperDataVolumeClaimTemplateName is the name of the volume claim template for Keeper storage.
 	KeeperDataVolumeClaimTemplateName = "keeper-data"
 )

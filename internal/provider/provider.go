@@ -19,11 +19,13 @@ import (
 	"strings"
 	"time"
 
-	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
+	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
@@ -89,6 +91,17 @@ func (p *Provider) Validate(c *controller.Context) error {
 	if c.Instance().GetTopologyType() == common.TopologyReplicated {
 		if engine.Replicas != nil && *engine.Replicas < 2 {
 			return fmt.Errorf("replicated topology requires at least 2 engine replicas")
+		}
+	}
+
+	if engine.Service != nil {
+		switch engine.Service.ServiceType {
+		case "",
+			corev1.ServiceTypeClusterIP,
+			corev1.ServiceTypeLoadBalancer,
+			corev1.ServiceTypeNodePort:
+		default:
+			return fmt.Errorf("engine service.serviceType must be one of ClusterIP, LoadBalancer or NodePort")
 		}
 	}
 
@@ -331,6 +344,9 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 		spec.Configuration.Settings = settings
 	}
 
+	// Wire the root Service exposure (ClusterIP / LoadBalancer / NodePort).
+	configureExpose(&spec, engine.Service)
+
 	// Wire Keeper for replicated topology using explicit node listing.
 	// The Altinity operator creates per-replica headless services following:
 	//   chk-<keeper-name>-<cluster>-0-<replica-index>.<namespace>.svc
@@ -414,6 +430,59 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 // keeperCRName returns the CHK resource name for a given instance.
 func keeperCRName(instanceName string) string {
 	return instanceName + "-keeper"
+}
+
+// configureExpose wires the root ClickHouse Service exposure onto the CHI spec
+// based on the engine component's Service configuration. It adds a
+// ServiceTemplate (referenced from spec.defaults) that overrides the Service
+// type (ClusterIP, LoadBalancer, NodePort), annotations, and — for
+// LoadBalancer — the allowed source ranges. When service is nil or the type is
+// unset, the operator's default (ClusterIP) applies and no template is added.
+func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service) {
+	if service == nil || service.ServiceType == "" {
+		return
+	}
+
+	tmpl := chiv1.ServiceTemplate{
+		Name: common.ServiceTemplateName,
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: service.Annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Type: service.ServiceType,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       chiv1.ChDefaultHTTPPortName,
+					Protocol:   corev1.ProtocolTCP,
+					Port:       chiv1.ChDefaultHTTPPortNumber,
+					TargetPort: intstr.FromString(chiv1.ChDefaultHTTPPortName),
+				},
+				{
+					Name:       chiv1.ChDefaultTCPPortName,
+					Protocol:   corev1.ProtocolTCP,
+					Port:       chiv1.ChDefaultTCPPortNumber,
+					TargetPort: intstr.FromString(chiv1.ChDefaultTCPPortName),
+				},
+			},
+		},
+	}
+
+	if service.ServiceType == corev1.ServiceTypeLoadBalancer && service.LoadBalancerService != nil {
+		tmpl.Spec.LoadBalancerSourceRanges = service.LoadBalancerService.SourceRanges.NormalizedSourceRanges()
+	}
+
+	if spec.Templates == nil {
+		spec.Templates = &chiv1.Templates{}
+	}
+	spec.Templates.ServiceTemplates = append(spec.Templates.ServiceTemplates, tmpl)
+
+	if spec.Defaults == nil {
+		spec.Defaults = &chiv1.Defaults{}
+	}
+	if spec.Defaults.Templates == nil {
+		spec.Defaults.Templates = &chiv1.TemplatesList{}
+	}
+	spec.Defaults.Templates.ServiceTemplate = common.ServiceTemplateName
 }
 
 // keeperZookeeperNodes builds the explicit ZooKeeper node list for Keeper.

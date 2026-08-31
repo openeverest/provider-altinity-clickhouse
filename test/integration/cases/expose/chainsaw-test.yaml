@@ -1,0 +1,32 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: expose
+spec:
+  description: |
+    Provision a standalone ClickHouse Instance with a LoadBalancer Service and
+    assert the operator creates the root Service with the requested type,
+    annotations, and load balancer source ranges.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,svc -o yaml
+    - script:
+        content: kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse -A --tail=100
+  steps:
+    - name: provision-and-assert
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-expose
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false

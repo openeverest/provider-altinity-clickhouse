@@ -116,6 +116,19 @@ ui:
                 disabled: true
           dataSource:
             provider: storageClasses
+        externalAccess:
+          uiType: select
+          path: spec.components.engine.service.serviceType
+          fieldParams:
+            label: "External access"
+            defaultValue: "ClusterIP"
+            options:
+              - label: "ClusterIP"
+                value: "ClusterIP"
+              - label: "LoadBalancer"
+                value: "LoadBalancer"
+              - label: "NodePort"
+                value: "NodePort"
         configuration:
           uiType: text
           path: spec.components.engine.parameters.configuration
@@ -129,6 +142,7 @@ ui:
             maxRows: 8
       componentsOrder:
         - storageClass
+        - externalAccess
         - configuration
 
   sectionsOrder:
