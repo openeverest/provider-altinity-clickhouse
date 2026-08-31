@@ -11,7 +11,7 @@ spec:
     - script:
         content: kubectl -n $NAMESPACE get instance,chi,chk -o yaml
     - script:
-        content: kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse -A --tail=100
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
   steps:
     - name: provision-and-assert
       try:
@@ -19,17 +19,6 @@ spec:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
-      finally:
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - instance
-              - itest-ch-replicated
-              - -n
-              - default
-              - --ignore-not-found
-              - --wait=false
     - name: replication-check
       try:
         # chainsaw runs scripts with /bin/sh (dash on Debian) — POSIX sh only,
@@ -85,3 +74,14 @@ spec:
               done
               echo "row did not replicate to $P1 within $((RETRIES * SLEEP))s"
               exit 1
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-replicated
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
