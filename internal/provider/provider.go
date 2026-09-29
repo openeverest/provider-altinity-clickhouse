@@ -58,13 +58,12 @@ func New() *Provider {
 				monitoringv1.AddToScheme,
 				cmapi.AddToScheme,
 			},
-			// NOTE: We intentionally do NOT watch CHI/CHK here.
-			// Watching them causes a tight feedback loop: operator updates
-			// (finalizers, status) re-trigger Apply, which updates the object,
-			// which triggers the operator again.
-			// Instead, Status() polls via c.Get() on each Instance reconcile,
-			// and Sync() returns WaitError while provisioning is in progress.
-			WatchConfigs: []controller.WatchConfig{},
+			// Safe to watch: server-side apply of an unchanged CHI/CHK is a
+			// no-op, so operator status/finalizer writes do not loop back.
+			WatchConfigs: []controller.WatchConfig{
+				controller.WatchOwned(&chiv1.ClickHouseInstallation{}),
+				controller.WatchOwned(&chkv1.ClickHouseKeeperInstallation{}),
+			},
 		},
 	}
 }
@@ -146,11 +145,12 @@ func reportProvisioningStatus(c *controller.Context, st controller.Status) {
 	_ = c.Client().Status().Update(c.Context(), in)
 }
 
-// sync creates and polls the required resources for the selected topology.
+// sync applies and polls the required resources for the selected topology.
 //
-// Create-only semantics: once created, the Altinity operator owns the CHI/CHK
-// and we must not overwrite its changes on every reconcile. WaitError is
-// returned while provisioning is in progress so the runtime requeues after 15s.
+// CHI/CHK are server-side applied on every reconcile, so spec changes on the
+// Instance roll out while fields written by the Altinity operator are left
+// alone. WaitError is returned while provisioning is in progress so the
+// runtime requeues after 15s.
 func (p *Provider) sync(c *controller.Context) error {
 	l := log.FromContext(c.Context())
 	topology := c.Instance().GetTopologyType()
@@ -187,63 +187,46 @@ func (p *Provider) sync(c *controller.Context) error {
 	return syncErr
 }
 
-// syncStandalone creates or waits on the CHI for a single-node deployment.
+// syncStandalone applies and waits on the CHI for a single-node deployment.
 func (p *Provider) syncStandalone(c *controller.Context) error {
-	l := log.FromContext(c.Context())
-
-	existing := &chiv1.ClickHouseInstallation{}
-	if err := c.Get(existing, c.Name()); err != nil {
-		chi, buildErr := buildCHI(c, 1)
-		if buildErr != nil {
-			return fmt.Errorf("build ClickHouseInstallation: %w", buildErr)
-		}
-		if applyErr := c.Apply(chi); applyErr != nil {
-			return fmt.Errorf("create ClickHouseInstallation: %w", applyErr)
-		}
-		l.Info("ClickHouseInstallation created", "name", c.Name())
-		return controller.WaitForDuration("waiting for Altinity operator to provision ClickHouseInstallation", 15*time.Second)
-	}
-
-	return waitForCHI(c, existing)
+	return applyAndWaitForCHI(c, 1)
 }
 
-// syncReplicated creates or waits on a CHK (Keeper) + CHI pair.
+// syncReplicated applies and waits on a CHK (Keeper) + CHI pair.
 func (p *Provider) syncReplicated(c *controller.Context) error {
-	l := log.FromContext(c.Context())
 	keeperName := keeperCRName(c.Name())
 
-	// 1. Ensure Keeper exists.
-	existingCHK := &chkv1.ClickHouseKeeperInstallation{}
-	if err := c.Get(existingCHK, keeperName); err != nil {
-		chk := buildCHK(c)
-		if applyErr := c.Apply(chk); applyErr != nil {
-			return fmt.Errorf("create ClickHouseKeeperInstallation: %w", applyErr)
-		}
-		l.Info("ClickHouseKeeperInstallation created", "name", keeperName)
+	if err := c.Apply(buildCHK(c)); err != nil {
+		return fmt.Errorf("apply ClickHouseKeeperInstallation: %w", err)
+	}
+	chk := &chkv1.ClickHouseKeeperInstallation{}
+	if err := c.Get(chk, keeperName); err != nil {
 		return controller.WaitForDuration("waiting for Keeper to initialize", 15*time.Second)
 	}
-
-	// 2. Wait for Keeper to be ready before creating ClickHouse.
-	if keeperErr := waitForCHK(c, existingCHK); keeperErr != nil {
-		return keeperErr
+	// ClickHouse needs a Keeper quorum to start, so hold the CHI until it is ready.
+	if err := waitForCHK(c, chk); err != nil {
+		return err
 	}
 
-	// 3. Ensure ClickHouse exists.
-	replicas := replicasCount(c)
-	existingCHI := &chiv1.ClickHouseInstallation{}
-	if err := c.Get(existingCHI, c.Name()); err != nil {
-		chi, buildErr := buildCHI(c, replicas)
-		if buildErr != nil {
-			return fmt.Errorf("build ClickHouseInstallation: %w", buildErr)
-		}
-		if applyErr := c.Apply(chi); applyErr != nil {
-			return fmt.Errorf("create ClickHouseInstallation: %w", applyErr)
-		}
-		l.Info("ClickHouseInstallation created (replicated)", "name", c.Name(), "replicas", replicas)
+	return applyAndWaitForCHI(c, replicasCount(c))
+}
+
+// applyAndWaitForCHI server-side applies the CHI and returns a WaitError until
+// the operator reports it Completed.
+func applyAndWaitForCHI(c *controller.Context, replicas int) error {
+	chi, err := buildCHI(c, replicas)
+	if err != nil {
+		return fmt.Errorf("build ClickHouseInstallation: %w", err)
+	}
+	if err := c.Apply(chi); err != nil {
+		return fmt.Errorf("apply ClickHouseInstallation: %w", err)
+	}
+
+	current := &chiv1.ClickHouseInstallation{}
+	if err := c.Get(current, c.Name()); err != nil {
 		return controller.WaitForDuration("waiting for Altinity operator to provision ClickHouseInstallation", 15*time.Second)
 	}
-
-	return waitForCHI(c, existingCHI)
+	return waitForCHI(c, current)
 }
 
 // waitForCHI checks CHI status and returns a WaitError if not yet Completed.

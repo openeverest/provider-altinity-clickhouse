@@ -18,10 +18,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -29,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
@@ -39,15 +42,40 @@ import (
 
 func newTestContext(t *testing.T, instance *corev1alpha1.Instance, objs ...client.Object) *controller.Context {
 	t.Helper()
+	return newInterceptedTestContext(t, interceptor.Funcs{}, instance, objs...)
+}
+
+func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *corev1alpha1.Instance, objs ...client.Object) *controller.Context {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, chiv1.AddToScheme(scheme))
 	require.NoError(t, cmapi.AddToScheme(scheme))
+	require.NoError(t, monitoringv1.AddToScheme(scheme))
 
 	all := append([]client.Object{instance}, objs...)
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).Build()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).WithInterceptorFuncs(funcs).Build()
 	return controller.NewContext(context.Background(), fakeClient, instance, common.ProviderName)
+}
+
+// captureCHIApply records applied CHIs instead of forwarding them: the fake
+// client cannot server-side apply Altinity types (unexported fields).
+func captureCHIApply(t *testing.T, applied *[]*chiv1.ClickHouseInstallation) interceptor.Funcs {
+	t.Helper()
+	return interceptor.Funcs{
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			data, err := json.Marshal(obj)
+			require.NoError(t, err)
+			chi := &chiv1.ClickHouseInstallation{}
+			require.NoError(t, json.Unmarshal(data, chi))
+			if chi.Kind != "ClickHouseInstallation" {
+				return c.Apply(ctx, obj, opts...)
+			}
+			*applied = append(*applied, chi)
+			return nil
+		},
+	}
 }
 
 func newTestInstance(name, namespace, engineParams string) *corev1alpha1.Instance {
@@ -82,6 +110,25 @@ func TestEnsureCredentialsIdempotent(t *testing.T) {
 	second, err := ensureCredentials(c)
 	require.NoError(t, err)
 	assert.Equal(t, password, second.Data[common.CredentialsKeyPassword])
+}
+
+func TestSyncReappliesExistingCHI(t *testing.T) {
+	instance := newTestInstance("db", "ns", "")
+	engine := instance.Spec.Components[common.ComponentEngine]
+	engine.Image = "clickhouse/clickhouse-server:25.8"
+	instance.Spec.Components[common.ComponentEngine] = engine
+
+	existing := &chiv1.ClickHouseInstallation{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns"}}
+	existing.EnsureStatus().Status = chiv1.StatusCompleted
+
+	var applied []*chiv1.ClickHouseInstallation
+	c := newInterceptedTestContext(t, captureCHIApply(t, &applied), instance, existing)
+
+	require.NoError(t, New().Sync(c))
+
+	require.Len(t, applied, 1)
+	containers := applied[0].Spec.Templates.PodTemplates[0].Spec.Containers
+	assert.Equal(t, "clickhouse/clickhouse-server:25.8", containers[0].Image)
 }
 
 func TestBuildCHIProvisionsAdminUser(t *testing.T) {
