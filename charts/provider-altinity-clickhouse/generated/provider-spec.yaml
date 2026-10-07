@@ -3,9 +3,9 @@
 spec:
   componentTypes:
     clickhouse:
+      defaultVersion: 25.3.5
       versions:
-        - default: true
-          image: clickhouse/clickhouse-server:25.3.5
+        - image: clickhouse/clickhouse-server:25.3.5
           version: 25.3.5
         - image: clickhouse/clickhouse-server:25.5.2
           version: 25.5.2
@@ -36,6 +36,9 @@ spec:
               type: object
           type: object
       type: clickhouse
+  defaultVersion: "25.3"
+  release:
+    version: 0.1.0
   topologies:
     replicated:
       components:
@@ -359,7 +362,6 @@ spec:
   versions:
     - components:
         engine: 25.3.5
-      default: true
       name: "25.3"
     - components:
         engine: 25.5.2
