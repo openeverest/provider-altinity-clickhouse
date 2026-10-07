@@ -1,8 +1,8 @@
 ---
 name: Integration
 
-# Heavy (k3d + image pulls + rollout), so opt-in only: workflow_dispatch, or a
-# PR labelled `run-integration` — never per-commit, never on merge.
+# Each case runs in its own k3d cluster, in parallel, so a slow or failing
+# case neither blocks nor masks the others.
 
 on:
   workflow_dispatch:
@@ -12,9 +12,10 @@ on:
           OpenEverest core chart version to install (pre-release tags are not
           picked up by Helm's "latest" resolution, so pin one explicitly).
         required: false
-        default: "2.0.0-dev.2"
+        default: "2.0.0-dev.4"
   pull_request:
-    types: [labeled, opened, synchronize, reopened]
+  push:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,17 +25,32 @@ permissions:
   contents: read
 
 env:
-  OPENEVEREST_VERSION: ${{ github.event.inputs.openeverest_version || '2.0.0-dev.2' }}
+  OPENEVEREST_VERSION: ${{ github.event.inputs.openeverest_version || '2.0.0-dev.4' }}
 
 jobs:
+  cases:
+    name: list cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      cases: ${{ steps.list.outputs.cases }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - id: list
+        run: |
+          echo "cases=$(find test/integration/cases -mindepth 1 -maxdepth 1 -type d -printf '%f\n' \
+            | sort | jq -R . | jq -cs .)" >> "$GITHUB_OUTPUT"
+
   integration:
-    name: chainsaw (k3d)
+    name: chainsaw (${{ matrix.case }})
+    needs: cases
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-integration'))
+    strategy:
+      fail-fast: false
+      matrix:
+        case: ${{ fromJSON(needs.cases.outputs.cases) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -78,8 +94,8 @@ jobs:
         env:
           INSTALL_OPENEVEREST: "true"
 
-      - name: Run integration suite (chainsaw)
-        run: make test-integration
+      - name: Run integration case (chainsaw)
+        run: make test-integration INTEGRATION_CASES=test/integration/cases/${{ matrix.case }}
 
       - name: Diagnostics on failure
         if: failure()
