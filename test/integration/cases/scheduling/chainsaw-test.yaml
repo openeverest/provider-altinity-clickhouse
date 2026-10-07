@@ -1,0 +1,32 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: scheduling
+spec:
+  description: |
+    Provision a standalone ClickHouse Instance with an engine schedulingPolicy
+    and assert it reaches the CHI pod template and the running pod, with the
+    selector-less spread constraint scoped to the engine pods.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,pod -o yaml
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: provision-and-assert
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-scheduling
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false

@@ -57,6 +57,13 @@ Provisions a standalone Instance with a `LoadBalancer` Service and asserts the
 Altinity operator creates the root `clickhouse-<name>` Service with the
 requested `type`, annotations, and `loadBalancerSourceRanges`.
 
+### `scheduling`
+
+Provisions a standalone Instance with an engine `schedulingPolicy` and asserts
+the node selector, tolerations, affinity and topology spread constraints land
+on the CHI pod template and the running pod. The spread constraint is declared
+without a selector, so the provider scopes it to the engine pods' labels.
+
 ### `monitoring`
 
 Installs a minimal `PodMonitor` CRD, provisions a standalone Instance with

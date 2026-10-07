@@ -1,0 +1,51 @@
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-scheduling
+  namespace: default
+spec:
+  templates:
+    podTemplates:
+      - spec:
+          nodeSelector:
+            kubernetes.io/os: linux
+          tolerations:
+            - key: dedicated
+              operator: Equal
+              value: clickhouse
+              effect: NoSchedule
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      core.openeverest.io/instance: itest-ch-scheduling
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels:
+                  core.openeverest.io/component: engine
+                  core.openeverest.io/instance: itest-ch-scheduling
+                  core.openeverest.io/provider: altinity-clickhouse
+status:
+  status: Completed
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+  labels:
+    core.openeverest.io/component: engine
+    core.openeverest.io/instance: itest-ch-scheduling
+spec:
+  nodeSelector:
+    kubernetes.io/os: linux
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+status:
+  phase: Running
