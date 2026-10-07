@@ -24,6 +24,12 @@ GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 # Helm chart directory
 CHART_DIR ?= charts/provider-altinity-clickhouse
 
+# Chainsaw cases to run; point at a single case directory to run just that one.
+INTEGRATION_CASES ?= test/integration/cases
+
+# Extra k3d cluster create flags, overriding dev/k3d_config.yaml.
+K3D_FLAGS ?=
+
 .PHONY: help
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -106,14 +112,14 @@ helm-template: ## Render Helm chart templates locally (dry-run).
 
 .PHONY: test-integration
 test-integration: ## Run integration tests (chainsaw) against a running cluster.
-	chainsaw test test/integration/cases --config test/integration/chainsaw-config.yaml
+	chainsaw test $(INTEGRATION_CASES) --config test/integration/chainsaw-config.yaml
 
 ##@ Local Development Cluster
 
 .PHONY: k3d-cluster-up
 k3d-cluster-up: ## Create a local k3d cluster for development.
 	$(info Creating k3d cluster for testing)
-	k3d cluster create --config ./dev/k3d_config.yaml
+	k3d cluster create --config ./dev/k3d_config.yaml $(K3D_FLAGS)
 
 .PHONY: k3d-cluster-down
 k3d-cluster-down: ## Delete the local k3d cluster.

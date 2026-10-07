@@ -11,5 +11,12 @@ spec:
     settings:
       max_concurrent_queries: "200"
       max_connections: "4096"
+  templates:
+    podTemplates:
+      - metadata:
+          labels:
+            core.openeverest.io/component: engine
+            core.openeverest.io/instance: itest-ch-standalone
+            core.openeverest.io/provider: altinity-clickhouse
 status:
   status: Completed

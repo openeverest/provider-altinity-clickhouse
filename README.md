@@ -64,6 +64,7 @@ provider itself is covered under [Installation](#installation).
 | Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
 | Authentication | ✅ | a dedicated `admin` user is provisioned automatically with a generated password (see [Connecting](#connecting)) |
 | TLS | ✅ | opt-in per Instance via the engine component's `tls.enabled` parameter; requires [cert-manager](#prerequisites) |
+| Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; when unset, placement is left to the Kubernetes scheduler. Keeper pods are not affected |
 
 Stateful workloads additionally report:
 

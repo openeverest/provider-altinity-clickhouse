@@ -1,0 +1,39 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-scheduling
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: standalone
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2G
+      storage:
+        size: 10Gi
+      schedulingPolicy:
+        nodeSelector:
+          kubernetes.io/os: linux
+        tolerations:
+          - key: dedicated
+            operator: Equal
+            value: clickhouse
+            effect: NoSchedule
+        affinity:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    core.openeverest.io/instance: itest-ch-scheduling
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: ScheduleAnyway

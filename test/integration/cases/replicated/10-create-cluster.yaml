@@ -15,7 +15,7 @@ spec:
       resources:
         limits:
           cpu: "1"
-          memory: 2G
+          memory: 1Gi
       storage:
         size: 10Gi
       parameters:
