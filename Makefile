@@ -24,6 +24,9 @@ GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 # Helm chart directory
 CHART_DIR ?= charts/provider-altinity-clickhouse
 
+# Chainsaw cases to run; point at a single case directory to run just that one.
+INTEGRATION_CASES ?= test/integration/cases
+
 .PHONY: help
 help: ## Display this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -106,7 +109,7 @@ helm-template: ## Render Helm chart templates locally (dry-run).
 
 .PHONY: test-integration
 test-integration: ## Run integration tests (chainsaw) against a running cluster.
-	chainsaw test test/integration/cases --config test/integration/chainsaw-config.yaml
+	chainsaw test $(INTEGRATION_CASES) --config test/integration/chainsaw-config.yaml
 
 ##@ Local Development Cluster
 

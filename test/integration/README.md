@@ -25,6 +25,8 @@ make test-integration
 ```
 
 This runs `chainsaw test test/integration/cases --config test/integration/chainsaw-config.yaml`.
+Run a single case with `make test-integration INTEGRATION_CASES=test/integration/cases/<case>`;
+CI runs every case this way, each in its own k3d cluster, on every PR.
 Tests run in the fixed `default` namespace (matching how the dev stack installs
 the provider), not chainsaw's default ephemeral per-test namespace.
 
