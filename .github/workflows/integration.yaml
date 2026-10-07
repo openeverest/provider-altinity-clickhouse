@@ -86,8 +86,9 @@ jobs:
           sudo sysctl -w fs.inotify.max_user_instances=8192
           sudo sysctl -w fs.inotify.max_user_watches=524288
 
+      # One agent: k3d nodes share the runner's 4 vCPUs, so extra k3s agents only add load.
       - name: Create k3d cluster
-        run: make k3d-cluster-up
+        run: make k3d-cluster-up K3D_FLAGS=--agents=1
 
       - name: Bring up OpenEverest core + provider (tilt ci)
         run: tilt ci -f dev/Tiltfile
