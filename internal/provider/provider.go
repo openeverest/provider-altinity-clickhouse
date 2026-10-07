@@ -398,7 +398,13 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 			Users:    buildUserSettings(credentialsSecretName(c.Name())),
 		},
 		Templates: &chiv1.Templates{
-			PodTemplates:         []chiv1.PodTemplate{{Name: common.PodTemplateName, Spec: corev1.PodSpec{Containers: []corev1.Container{container}}}},
+			PodTemplates: []chiv1.PodTemplate{{
+				Name: common.PodTemplateName,
+				// The operator copies these onto the pod template only, never onto the
+				// StatefulSet selector, so existing clusters roll once and keep their selectors.
+				ObjectMeta: metav1.ObjectMeta{Labels: c.PodLabels(common.ComponentEngine)},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{container}},
+			}},
 			VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{{Name: common.DataVolumeClaimTemplateName, Spec: pvcSpec}},
 		},
 	}

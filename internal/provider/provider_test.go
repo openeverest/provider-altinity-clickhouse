@@ -131,6 +131,24 @@ func TestSyncReappliesExistingCHI(t *testing.T) {
 	assert.Equal(t, "clickhouse/clickhouse-server:25.8", containers[0].Image)
 }
 
+func TestSyncLabelsEnginePods(t *testing.T) {
+	existing := &chiv1.ClickHouseInstallation{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns"}}
+	existing.EnsureStatus().Status = chiv1.StatusCompleted
+
+	var applied []*chiv1.ClickHouseInstallation
+	c := newInterceptedTestContext(t, captureCHIApply(t, &applied), newTestInstance("db", "ns", ""), existing)
+
+	require.NoError(t, New().Sync(c))
+
+	require.Len(t, applied, 1)
+	assert.Equal(t, map[string]string{
+		controller.ProviderLabel:  common.ProviderName,
+		controller.InstanceLabel:  "db",
+		controller.ComponentLabel: common.ComponentEngine,
+	}, applied[0].Spec.Templates.PodTemplates[0].ObjectMeta.Labels)
+	assert.Equal(t, []string{common.ComponentEngine}, c.LabelledComponents())
+}
+
 func TestBuildCHIProvisionsAdminUser(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", ""))
 
