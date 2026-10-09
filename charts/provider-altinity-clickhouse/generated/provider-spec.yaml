@@ -115,6 +115,7 @@ spec:
                     disabled: true
                 optionsPath: spec.versions
                 optionsPathConfig:
+                  defaultValuePath: spec.defaultVersion
                   labelPath: name
                   valuePath: name
               path: spec.version
@@ -280,6 +281,7 @@ spec:
                     disabled: true
                 optionsPath: spec.versions
                 optionsPathConfig:
+                  defaultValuePath: spec.defaultVersion
                   labelPath: name
                   valuePath: name
               path: spec.version
