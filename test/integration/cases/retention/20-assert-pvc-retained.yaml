@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-chi-itest-ch-retention-clickhouse-0-0-0
+  namespace: default
+status:
+  phase: Bound

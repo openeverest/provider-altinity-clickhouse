@@ -21,12 +21,14 @@ import (
 	"encoding/json"
 	"testing"
 
+	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,6 +53,7 @@ func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *
 	require.NoError(t, corev1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
 	require.NoError(t, chiv1.AddToScheme(scheme))
+	require.NoError(t, chkv1.AddToScheme(scheme))
 	require.NoError(t, cmapi.AddToScheme(scheme))
 	require.NoError(t, monitoringv1.AddToScheme(scheme))
 
@@ -170,6 +173,40 @@ func TestBuildCHIProvisionsAdminUser(t *testing.T) {
 	assert.False(t, chi.Spec.Configuration.Settings.Has("https_port"))
 }
 
+func TestStorageReclaimPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		params string
+		want   chiv1.PVCReclaimPolicy
+	}{
+		{name: "defaults to Retain", want: chiv1.PVCReclaimPolicyRetain},
+		{name: "explicit Retain", params: `{"storageReclaimPolicy":"Retain"}`, want: chiv1.PVCReclaimPolicyRetain},
+		{name: "Delete", params: `{"storageReclaimPolicy":"Delete"}`, want: chiv1.PVCReclaimPolicyDelete},
+		{name: "case-insensitive", params: `{"storageReclaimPolicy":"delete"}`, want: chiv1.PVCReclaimPolicyDelete},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newTestContext(t, newTestInstance("db", "ns", tc.params))
+
+			chi, err := buildCHI(c, 2)
+			require.NoError(t, err)
+			require.Len(t, chi.Spec.Templates.VolumeClaimTemplates, 1)
+			assert.Equal(t, tc.want, chi.Spec.Templates.VolumeClaimTemplates[0].PVCReclaimPolicy)
+
+			chk := buildCHK(c)
+			require.Len(t, chk.Spec.Templates.VolumeClaimTemplates, 1)
+			assert.Equal(t, tc.want, chk.Spec.Templates.VolumeClaimTemplates[0].PVCReclaimPolicy)
+		})
+	}
+}
+
+func TestValidateStorageReclaimPolicy(t *testing.T) {
+	for _, params := range []string{"", `{"storageReclaimPolicy":"Retain"}`, `{"storageReclaimPolicy":"Delete"}`} {
+		assert.NoError(t, New().Validate(newTestContext(t, newTestInstance("db", "ns", params))), params)
+	}
+	err := New().Validate(newTestContext(t, newTestInstance("db", "ns", `{"storageReclaimPolicy":"Recycle"}`)))
+	assert.ErrorContains(t, err, "storageReclaimPolicy")
+}
+
 func TestBuildCHIWithTLS(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`))
 
@@ -268,4 +305,100 @@ func TestBuildCHIReferencesKeeper(t *testing.T) {
 	standalone, err := buildCHI(c, 1)
 	require.NoError(t, err)
 	assert.Nil(t, standalone.Spec.Configuration.Zookeeper)
+}
+
+func newReplicatedTestInstance(params string) *corev1alpha1.Instance {
+	instance := newTestInstance("db", "ns", params)
+	instance.Spec.Topology = &corev1alpha1.TopologySpec{Type: common.TopologyReplicated}
+	return instance
+}
+
+func newPVC(name string, labels map[string]string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Labels: labels}}
+}
+
+func cleanupPVCs() []client.Object {
+	return []client.Object{
+		newPVC("data-chi-db-clickhouse-0-0-0", map[string]string{common.LabelCHIName: "db"}),
+		newPVC("keeper-data-chk-db-keeper-keeper-0-0-0", map[string]string{common.LabelCHKName: "db-keeper"}),
+		newPVC("data-chi-other-clickhouse-0-0-0", map[string]string{common.LabelCHIName: "other"}),
+	}
+}
+
+func pvcExists(t *testing.T, c *controller.Context, name string) bool {
+	t.Helper()
+	exists, err := c.Exists(&corev1.PersistentVolumeClaim{}, name)
+	require.NoError(t, err)
+	return exists
+}
+
+func TestCleanupDeletesKeeperOnlyAfterClickHouseIsGone(t *testing.T) {
+	// The operator's finalizer keeps the CHI around while it tears the pods down.
+	chi := &chiv1.ClickHouseInstallation{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns", Finalizers: []string{"test/hold"}}}
+	chk := &chkv1.ClickHouseKeeperInstallation{ObjectMeta: metav1.ObjectMeta{Name: "db-keeper", Namespace: "ns"}}
+	c := newTestContext(t, newReplicatedTestInstance(""), chi, chk)
+
+	err := New().Cleanup(c)
+	require.True(t, controller.IsWaitError(err), "expected a WaitError, got %v", err)
+
+	exists, err := c.Exists(&chkv1.ClickHouseKeeperInstallation{}, "db-keeper")
+	require.NoError(t, err)
+	assert.True(t, exists, "Keeper must outlive ClickHouse")
+
+	current := &chiv1.ClickHouseInstallation{}
+	require.NoError(t, c.Get(current, "db"))
+	current.Finalizers = nil
+	require.NoError(t, c.Client().Update(c.Context(), current))
+
+	require.NoError(t, New().Cleanup(c))
+	err = c.Get(&chkv1.ClickHouseKeeperInstallation{}, "db-keeper")
+	assert.True(t, apierrors.IsNotFound(err), "expected Keeper to be deleted, got %v", err)
+}
+
+func TestCleanupRetainKeepsPVCs(t *testing.T) {
+	c := newTestContext(t, newReplicatedTestInstance(""), cleanupPVCs()...)
+
+	require.NoError(t, New().Cleanup(c))
+
+	assert.True(t, pvcExists(t, c, "data-chi-db-clickhouse-0-0-0"))
+	assert.True(t, pvcExists(t, c, "keeper-data-chk-db-keeper-keeper-0-0-0"))
+	assert.True(t, pvcExists(t, c, "data-chi-other-clickhouse-0-0-0"))
+}
+
+func TestCleanupDeletePurgesInstancePVCs(t *testing.T) {
+	c := newTestContext(t, newReplicatedTestInstance(`{"storageReclaimPolicy":"Delete"}`), cleanupPVCs()...)
+
+	require.NoError(t, New().Cleanup(c))
+
+	assert.False(t, pvcExists(t, c, "data-chi-db-clickhouse-0-0-0"))
+	assert.False(t, pvcExists(t, c, "keeper-data-chk-db-keeper-keeper-0-0-0"))
+	assert.True(t, pvcExists(t, c, "data-chi-other-clickhouse-0-0-0"), "PVCs of other instances must be left alone")
+}
+
+func TestCleanupAppliesCurrentReclaimPolicyBeforeDeleting(t *testing.T) {
+	// The CHI and the PVC still carry Delete (a policy change not yet synced, or
+	// a CHI from before the policy existed) while the Instance asks for Retain.
+	chi := &chiv1.ClickHouseInstallation{
+		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns", Finalizers: []string{"test/hold"}},
+		Spec: chiv1.ChiSpec{Templates: &chiv1.Templates{VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{
+			{Name: common.DataVolumeClaimTemplateName, StorageManagement: chiv1.StorageManagement{PVCReclaimPolicy: chiv1.PVCReclaimPolicyDelete}},
+		}}},
+	}
+	pvc := newPVC("data-chi-db-clickhouse-0-0-0", map[string]string{
+		common.LabelCHIName:          "db",
+		common.LabelCHIReclaimPolicy: common.StorageReclaimPolicyDelete,
+	})
+	c := newTestContext(t, newTestInstance("db", "ns", ""), chi, pvc)
+
+	err := New().Cleanup(c)
+	require.True(t, controller.IsWaitError(err), "expected a WaitError, got %v", err)
+
+	current := &chiv1.ClickHouseInstallation{}
+	require.NoError(t, c.Get(current, "db"))
+	require.Len(t, current.Spec.Templates.VolumeClaimTemplates, 1)
+	assert.Equal(t, chiv1.PVCReclaimPolicyRetain, current.Spec.Templates.VolumeClaimTemplates[0].PVCReclaimPolicy)
+
+	currentPVC := &corev1.PersistentVolumeClaim{}
+	require.NoError(t, c.Get(currentPVC, "data-chi-db-clickhouse-0-0-0"))
+	assert.Equal(t, common.StorageReclaimPolicyRetain, currentPVC.Labels[common.LabelCHIReclaimPolicy])
 }

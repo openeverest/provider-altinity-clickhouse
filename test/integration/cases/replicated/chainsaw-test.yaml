@@ -111,3 +111,27 @@ spec:
               - default
               - --ignore-not-found
               - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-replicated
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse-keeper.altinity.com/chk=itest-ch-replicated-keeper
+              - --ignore-not-found
+              - --wait=false

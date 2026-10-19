@@ -75,6 +75,30 @@ const (
 	// keyed by CHI (Instance) name. Used to select pods for the PodMonitor.
 	LabelCHIName = "clickhouse.altinity.com/chi"
 
+	// LabelCHKName is the label the Altinity operator sets on Keeper pods, keyed
+	// by CHK name. Used to spread the Keeper pods of an Instance.
+	LabelCHKName = "clickhouse-keeper.altinity.com/chk"
+
+	// LabelCHIReclaimPolicy and LabelCHKReclaimPolicy are the PVC labels the
+	// Altinity operator reads a volume's reclaim policy from when deciding
+	// whether to drop a replica or purge the PVC.
+	LabelCHIReclaimPolicy = "clickhouse.altinity.com/reclaimPolicy"
+	LabelCHKReclaimPolicy = "clickhouse-keeper.altinity.com/reclaimPolicy"
+
+	// StorageReclaimPolicyRetain keeps the data volumes when the Instance is
+	// deleted or a replica is removed (default).
+	StorageReclaimPolicyRetain = "Retain"
+
+	// StorageReclaimPolicyDelete removes the data volumes together with the
+	// Instance or the removed replica.
+	StorageReclaimPolicyDelete = "Delete"
+
+	// AntiAffinityHostnameWeight and AntiAffinityZoneWeight weigh the default
+	// preferred pod anti-affinity terms that spread replicas across nodes and,
+	// where nodes carry zone labels, across zones.
+	AntiAffinityHostnameWeight = 100
+	AntiAffinityZoneWeight     = 50
+
 	// PodMonitorEnabled is the parameter value that turns PodMonitor creation on.
 	PodMonitorEnabled = "enabled"
 

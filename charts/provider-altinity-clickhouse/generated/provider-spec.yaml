@@ -20,6 +20,8 @@ spec:
               type: string
             podMonitor:
               type: string
+            storageReclaimPolicy:
+              type: string
             tls:
               properties:
                 enabled:
@@ -86,6 +88,18 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+            storageReclaimPolicy:
+              fieldParams:
+                defaultValue: Retain
+                helperText: Whether the ClickHouse and Keeper data volumes are kept or deleted when the instance is deleted or a replica is removed. Kept volumes are re-attached to a new instance with the same name and namespace.
+                label: Data on deletion
+                options:
+                  - label: Keep (Retain)
+                    value: Retain
+                  - label: Delete
+                    value: Delete
+              path: spec.components.engine.parameters.storageReclaimPolicy
+              uiType: select
             tls:
               fieldParams:
                 defaultValue: disabled
@@ -100,6 +114,7 @@ spec:
               uiType: select
           componentsOrder:
             - storageClass
+            - storageReclaimPolicy
             - externalAccess
             - tls
             - configuration
@@ -252,6 +267,18 @@ spec:
                     disabled: true
               path: spec.components.engine.storage.storageClass
               uiType: select
+            storageReclaimPolicy:
+              fieldParams:
+                defaultValue: Retain
+                helperText: Whether the ClickHouse data volume are kept or deleted when the instance is deleted or a replica is removed. Kept volumes are re-attached to a new instance with the same name and namespace.
+                label: Data on deletion
+                options:
+                  - label: Keep (Retain)
+                    value: Retain
+                  - label: Delete
+                    value: Delete
+              path: spec.components.engine.parameters.storageReclaimPolicy
+              uiType: select
             tls:
               fieldParams:
                 defaultValue: disabled
@@ -266,6 +293,7 @@ spec:
               uiType: select
           componentsOrder:
             - storageClass
+            - storageReclaimPolicy
             - externalAccess
             - tls
             - configuration

@@ -64,13 +64,13 @@ provider itself is covered under [Installation](#installation).
 | Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
 | Authentication | ✅ | a dedicated `admin` user is provisioned automatically with a generated password (see [Connecting](#connecting)) |
 | TLS | ✅ | opt-in per Instance via the engine component's `tls.enabled` parameter; requires [cert-manager](#prerequisites) |
-| Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; when unset, placement is left to the Kubernetes scheduler. Keeper pods are not affected |
+| Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; see [Pod placement](#pod-placement) |
 
 Stateful workloads additionally report:
 
 | Capability | Status | Notes |
 |---|---|---|
-| Persistent storage | ✅ | `spec.components.engine.storage` |
+| Persistent storage | ✅ | `spec.components.engine.storage`; volumes are retained on deletion by default, see [Data retention](#data-retention) |
 | Storage expansion | ✅ | when the StorageClass allows volume expansion |
 | Backups (on demand) | ❌ | planned |
 | Backups (scheduled) | ❌ | planned |
@@ -222,6 +222,54 @@ plaintext ports (`8123`, `9000`) remain available. `.status.connection` then
 reports the `https` endpoint. By default the provider manages a self-signed CA
 chain scoped to the Instance; to sign with an existing issuer, set
 `parameters.tls.issuerRef` (`name`, optional `kind`/`group`).
+
+### Pod placement
+
+When `schedulingPolicy.affinity` is omitted, the provider applies a **preferred**
+pod anti-affinity that spreads the ClickHouse replicas across nodes and, where nodes
+carry `topology.kubernetes.io/zone` labels, across zones. Being preferred, it never
+blocks scheduling — on a cluster with fewer nodes than replicas, some replicas share
+a node. To guarantee one replica per node, set a required anti-affinity yourself; an
+explicit affinity, including an empty one (`affinity: {}`), replaces the default.
+
+Keeper pods (`replicated` topology) always get the same preferred spreading among
+themselves and follow the engine's `schedulerName`, `nodeSelector`, `tolerations`
+and node affinity, so they land on the same node pool. The engine's pod
+(anti-)affinity and topology spread constraints are not applied to Keeper.
+
+### Data retention
+
+The engine component's `storageReclaimPolicy` parameter controls what happens to the
+data volumes when the Instance is deleted or a replica is removed by scaling down:
+
+| Value | Behaviour |
+|---|---|
+| `Retain` (default) | The PVCs are kept. Creating an Instance with the same name in the same namespace re-attaches them, data included. |
+| `Delete` | The PVCs are deleted with the Instance or the removed replica. |
+
+```yaml
+spec:
+  components:
+    engine:
+      type: clickhouse
+      parameters:
+        storageReclaimPolicy: Delete
+```
+
+In the `replicated` topology the policy also applies to the Keeper volumes:
+replicated tables whose metadata is gone from Keeper come back read-only, so the
+two are always kept or deleted together. On deletion the provider removes
+ClickHouse first and Keeper only once ClickHouse is gone; the Instance stays
+`Terminating` until both are deleted. With `Delete`, the provider then removes
+any PVCs left behind — the Altinity operator does not purge Keeper PVCs itself
+when it watches all namespaces.
+
+With `Retain`, scaling replicas down keeps the removed replica's PVC **and** its
+metadata in Keeper, so it can rejoin with its data when scaled back up. To remove a
+replica permanently, delete its PVC and run `SYSTEM DROP REPLICA` on a remaining
+replica. Retained PVCs are not cleaned up automatically — delete them once the data
+is no longer needed. The StorageClass `reclaimPolicy` additionally decides whether
+the underlying volume outlives a deleted PVC.
 
 ## Topologies
 

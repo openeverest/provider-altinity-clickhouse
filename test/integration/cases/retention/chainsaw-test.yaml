@@ -1,0 +1,106 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: retention
+spec:
+  description: |
+    Provision a standalone ClickHouse Instance with the default
+    storageReclaimPolicy (Retain), write data, delete the Instance and assert
+    the data PVC survives; recreate the Instance under the same name and
+    assert the data is back. Then switch the policy to Delete and assert the
+    PVC is removed together with the Instance.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,pvc -o yaml
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: provision-and-write
+      try:
+        # A previous run that failed midway leaves its volume behind (Retain);
+        # start from empty storage so the data below is this run's.
+        - script:
+            content: |
+              kubectl delete pvc -n default -l clickhouse.altinity.com/chi=itest-ch-retention \
+                --ignore-not-found --wait=true --timeout=2m
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-retention \
+                -o jsonpath='{.items[0].metadata.name}')
+              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --multiquery -q "
+                DROP TABLE IF EXISTS default.retention_probe SYNC;
+                CREATE TABLE default.retention_probe (id UInt32) ENGINE = MergeTree ORDER BY id;
+                INSERT INTO default.retention_probe VALUES (1), (2), (3);"
+    - name: delete-retains-pvc
+      try:
+        # The Instance is held in Terminating until the CHI is gone.
+        - script:
+            timeout: 6m
+            content: |
+              set -eu
+              kubectl delete instance itest-ch-retention -n default --timeout=5m
+              kubectl wait -n default --for=delete chi/itest-ch-retention --timeout=1m
+        - assert:
+            file: 20-assert-pvc-retained.yaml
+    - name: recreate-reattaches-data
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-retention \
+                -o jsonpath='{.items[0].metadata.name}')
+              i=0
+              while [ "$i" -lt 36 ]; do
+                rows=$(kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client -q \
+                  "SELECT count() FROM default.retention_probe" 2>/dev/null || echo 0)
+                if [ "$rows" = "3" ]; then
+                  exit 0
+                fi
+                i=$((i + 1))
+                sleep 5
+              done
+              echo "expected 3 retained rows, got: $rows"
+              exit 1
+    - name: delete-policy-removes-pvc
+      try:
+        - apply:
+            file: 40-set-delete.yaml
+        - assert:
+            file: 40-assert.yaml
+        - script:
+            timeout: 8m
+            content: |
+              set -eu
+              kubectl delete instance itest-ch-retention -n default --timeout=5m
+              kubectl wait -n default --for=delete pvc/data-chi-itest-ch-retention-clickhouse-0-0-0 --timeout=2m
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-retention
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-retention
+              - --ignore-not-found
+              - --wait=false

@@ -40,6 +40,13 @@ type ClickHouseParameters struct {
 	// uses cert-manager to issue a server certificate and exposes the secure
 	// HTTPS/native ports additively alongside the plaintext ports.
 	TLS *TLSParameters `json:"tls,omitempty"`
+
+	// StorageReclaimPolicy controls what happens to the data volumes (ClickHouse
+	// and, in the replicated topology, Keeper) when the Instance is deleted or a
+	// replica is removed. One of "Retain" (default) or "Delete". Retained volumes
+	// are re-attached when an Instance with the same name is created in the same
+	// namespace.
+	StorageReclaimPolicy string `json:"storageReclaimPolicy,omitempty"`
 }
 
 // TLSParameters configures TLS for client connections to ClickHouse.

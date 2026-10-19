@@ -1,0 +1,12 @@
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-retention
+  namespace: default
+spec:
+  templates:
+    volumeClaimTemplates:
+      # storageReclaimPolicy defaults to Retain.
+      - reclaimPolicy: Retain
+status:
+  status: Completed
