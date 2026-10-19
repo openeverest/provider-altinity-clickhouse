@@ -72,60 +72,6 @@ func New() *Provider {
 	}
 }
 
-// Validate checks the Instance spec before reconciliation.
-func (p *Provider) Validate(c *controller.Context) error {
-	l := log.FromContext(c.Context())
-	l.Info("Validating ClickHouse instance", "name", c.Name())
-
-	engine, ok := c.Instance().Spec.Components[common.ComponentEngine]
-	if !ok {
-		return fmt.Errorf("engine component is required")
-	}
-
-	if engine.Resources != nil && engine.Resources.Limits != nil {
-		lim := engine.Resources.Limits
-		if cpu := lim.Cpu(); cpu != nil && !cpu.IsZero() {
-			if cpu.Cmp(resource.MustParse("1")) < 0 {
-				return fmt.Errorf("engine CPU limit must be at least 1 core")
-			}
-		}
-		if mem := lim.Memory(); mem != nil && !mem.IsZero() {
-			if mem.Cmp(resource.MustParse("1Gi")) < 0 {
-				return fmt.Errorf("engine memory limit must be at least 1Gi")
-			}
-		}
-	}
-
-	if c.Instance().GetTopologyType() == common.TopologyReplicated {
-		if engine.Replicas != nil && *engine.Replicas < 2 {
-			return fmt.Errorf("replicated topology requires at least 2 engine replicas")
-		}
-	}
-
-	var params components.ClickHouseParameters
-	_ = c.TryDecodeComponentParameters(engine, &params)
-	switch {
-	case params.StorageReclaimPolicy == "",
-		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyRetain),
-		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyDelete):
-	default:
-		return fmt.Errorf("engine storageReclaimPolicy must be one of Retain or Delete")
-	}
-
-	if engine.Service != nil {
-		switch engine.Service.ServiceType {
-		case "",
-			corev1.ServiceTypeClusterIP,
-			corev1.ServiceTypeLoadBalancer,
-			corev1.ServiceTypeNodePort:
-		default:
-			return fmt.Errorf("engine service.serviceType must be one of ClusterIP, LoadBalancer or NodePort")
-		}
-	}
-
-	return nil
-}
-
 // Sync provisions the required resources and, while the operator is still
 // working, publishes the intermediate phase onto the Instance.
 //

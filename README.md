@@ -271,6 +271,22 @@ replica. Retained PVCs are not cleaned up automatically — delete them once the
 is no longer needed. The StorageClass `reclaimPolicy` additionally decides whether
 the underlying volume outlives a deleted PVC.
 
+### Rejected changes
+
+The provider validates every Instance against the cluster it has deployed and
+rejects changes that the cluster cannot take, leaving the running database
+untouched:
+
+- shrinking `storage.size`, or changing `storage.storageClass` after creation;
+- changing the topology from `replicated` to `standalone`;
+- downgrading ClickHouse below the running version (images whose tags are not
+  versions, such as `latest`, are not compared);
+- more than one replica in the `standalone` topology;
+- an engine `configuration` that is not valid YAML or that sets ports, TLS
+  (`openSSL/*`), Keeper (`zookeeper/*`), `macros/*`, `remote_servers/*` or the
+  metrics endpoint (`prometheus/port`, `prometheus/endpoint`), which the
+  operator and the provider manage.
+
 ## Topologies
 
 <!-- BEGIN GENERATED: topologies -->
