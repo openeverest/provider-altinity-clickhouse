@@ -52,6 +52,18 @@ Provisions a replicated (2-replica) Instance and asserts:
 4. A `ReplicatedMergeTree` table created on one replica, and a row inserted
    into it, appears on the other replica — proving the Keeper wiring works
    end-to-end, not just that both CRs reached `Completed`.
+5. Without a `schedulingPolicy`, both the CHI and the CHK pod templates carry
+   the default preferred pod anti-affinity (hostname and zone), and both volume
+   claim templates carry the default `Retain` reclaim policy.
+
+### `retention`
+
+Provisions a standalone Instance with the default `storageReclaimPolicy` and:
+
+1. Writes rows, deletes the Instance and asserts the data PVC is retained.
+2. Recreates the Instance under the same name and asserts the rows are back.
+3. Switches `storageReclaimPolicy` to `Delete`, deletes the Instance and asserts
+   the PVC is removed.
 
 ### `expose`
 

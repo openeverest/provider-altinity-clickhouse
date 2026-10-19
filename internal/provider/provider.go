@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,10 +26,13 @@ import (
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
@@ -96,6 +100,16 @@ func (p *Provider) Validate(c *controller.Context) error {
 		if engine.Replicas != nil && *engine.Replicas < 2 {
 			return fmt.Errorf("replicated topology requires at least 2 engine replicas")
 		}
+	}
+
+	var params components.ClickHouseParameters
+	_ = c.TryDecodeComponentParameters(engine, &params)
+	switch {
+	case params.StorageReclaimPolicy == "",
+		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyRetain),
+		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyDelete):
+	default:
+		return fmt.Errorf("engine storageReclaimPolicy must be one of Retain or Delete")
 	}
 
 	if engine.Service != nil {
@@ -305,9 +319,17 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 }
 
 // Cleanup removes the CHI (and CHK for replicated) when the Instance is deleted.
+//
+// ClickHouse is torn down before Keeper, so replicas never lose their
+// coordination service while shutting down. With the Delete storage reclaim
+// policy the leftover PVCs are removed once both are gone (see deletePVCs).
 func (p *Provider) Cleanup(c *controller.Context) error {
 	l := log.FromContext(c.Context())
 	l.Info("Cleaning up ClickHouse instance", "name", c.Name())
+
+	if err := syncReclaimPolicy(c); err != nil {
+		return err
+	}
 
 	chi := &chiv1.ClickHouseInstallation{ObjectMeta: c.ObjectMeta(c.Name())}
 	if err := c.Delete(chi); err != nil {
@@ -329,14 +351,150 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 		}
 	}
 
+	if err := waitForDeletion(c, &chiv1.ClickHouseInstallation{}, c.Name()); err != nil {
+		return err
+	}
+
 	if c.Instance().GetTopologyType() == common.TopologyReplicated {
-		chk := &chkv1.ClickHouseKeeperInstallation{ObjectMeta: c.ObjectMeta(keeperCRName(c.Name()))}
+		keeperName := keeperCRName(c.Name())
+		chk := &chkv1.ClickHouseKeeperInstallation{ObjectMeta: c.ObjectMeta(keeperName)}
 		if err := c.Delete(chk); err != nil {
 			return fmt.Errorf("delete ClickHouseKeeperInstallation: %w", err)
+		}
+		if err := waitForDeletion(c, &chkv1.ClickHouseKeeperInstallation{}, keeperName); err != nil {
+			return err
+		}
+	}
+
+	if storageReclaimPolicy(c) == common.StorageReclaimPolicyDelete {
+		if err := deletePVCs(c); err != nil {
+			return err
 		}
 	}
 
 	l.Info("ClickHouse instance cleaned up", "name", c.Name())
+	return nil
+}
+
+// syncReclaimPolicy aligns the reclaim policy the operator acts on during
+// deletion with the Instance spec. The operator reads it from the volume claim
+// templates of the CR being deleted and from the reclaim label of each PVC,
+// while the runtime no longer runs Sync once deletion has started: a policy
+// change that has not reached the CRs yet — or a CR created before the policy
+// existed, which the operator treats as Delete — would otherwise decide the
+// fate of the data.
+func syncReclaimPolicy(c *controller.Context) error {
+	policy := chiv1.PVCReclaimPolicy(storageReclaimPolicy(c))
+
+	chi := &chiv1.ClickHouseInstallation{}
+	if err := patchVolumeClaimTemplates(c, chi, c.Name(), policy, func() *chiv1.Templates { return chi.Spec.Templates }); err != nil {
+		return err
+	}
+	chk := &chkv1.ClickHouseKeeperInstallation{}
+	if err := patchVolumeClaimTemplates(c, chk, keeperCRName(c.Name()), policy, func() *chiv1.Templates { return chk.Spec.Templates }); err != nil {
+		return err
+	}
+
+	if err := labelPVCs(c, client.MatchingLabels{common.LabelCHIName: c.Name()}, common.LabelCHIReclaimPolicy, string(policy)); err != nil {
+		return err
+	}
+	return labelPVCs(c, client.MatchingLabels{common.LabelCHKName: keeperCRName(c.Name())}, common.LabelCHKReclaimPolicy, string(policy))
+}
+
+// patchVolumeClaimTemplates sets the reclaim policy on every volume claim
+// template of the named CR, if it exists. A JSON patch touches only those
+// fields, so nothing else of the operator-owned spec is rewritten.
+func patchVolumeClaimTemplates(c *controller.Context, obj client.Object, name string, policy chiv1.PVCReclaimPolicy, templates func() *chiv1.Templates) error {
+	if err := c.Get(obj, name); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("get %T %s: %w", obj, name, err)
+	}
+	t := templates()
+	if t == nil {
+		return nil
+	}
+
+	var ops []map[string]any
+	for i, vct := range t.VolumeClaimTemplates {
+		if vct.PVCReclaimPolicy == policy {
+			continue
+		}
+		path := fmt.Sprintf("/spec/templates/volumeClaimTemplates/%d", i)
+		ops = append(ops,
+			// Guard against the list having changed since it was read.
+			map[string]any{"op": "test", "path": path + "/name", "value": vct.Name},
+			map[string]any{"op": "add", "path": path + "/reclaimPolicy", "value": string(policy)},
+		)
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(ops)
+	if err != nil {
+		return fmt.Errorf("marshal reclaim policy patch: %w", err)
+	}
+	if err := c.Client().Patch(c.Context(), obj, client.RawPatch(types.JSONPatchType, data)); err != nil {
+		return fmt.Errorf("set reclaim policy on %T %s: %w", obj, name, err)
+	}
+	return nil
+}
+
+// labelPVCs sets the operator's reclaim label on the selected PVCs.
+func labelPVCs(c *controller.Context, selector client.MatchingLabels, key, policy string) error {
+	pvcs := &corev1.PersistentVolumeClaimList{}
+	if err := c.List(pvcs, selector); err != nil {
+		return fmt.Errorf("list PVCs: %w", err)
+	}
+	for i := range pvcs.Items {
+		pvc := &pvcs.Items[i]
+		if pvc.Labels[key] == policy {
+			continue
+		}
+		patch := client.MergeFrom(pvc.DeepCopy())
+		pvc.Labels[key] = policy
+		if err := c.Client().Patch(c.Context(), pvc, patch); err != nil {
+			return fmt.Errorf("label PVC %s: %w", pvc.Name, err)
+		}
+	}
+	return nil
+}
+
+// waitForDeletion returns a WaitError while the named object still exists.
+func waitForDeletion(c *controller.Context, obj client.Object, name string) error {
+	exists, err := c.Exists(obj, name)
+	if err != nil {
+		return fmt.Errorf("check %T %s: %w", obj, name, err)
+	}
+	if exists {
+		return controller.WaitForDuration(fmt.Sprintf("waiting for %T %s to be deleted", obj, name), 10*time.Second)
+	}
+	return nil
+}
+
+// deletePVCs removes the ClickHouse and Keeper PVCs of the Instance. The
+// operator deletes ClickHouse PVCs itself under the Delete policy, but its
+// Keeper controller fails to list namespaced objects when watching all
+// namespaces (controller-runtime v0.18 multi-namespace cache) and never
+// purges Keeper PVCs. Running after both CRs are gone, this also catches PVCs
+// created by a reconcile that was still in flight when deletion started.
+func deletePVCs(c *controller.Context) error {
+	selectors := []client.MatchingLabels{
+		{common.LabelCHIName: c.Name()},
+		{common.LabelCHKName: keeperCRName(c.Name())},
+	}
+	for _, selector := range selectors {
+		pvcs := &corev1.PersistentVolumeClaimList{}
+		if err := c.List(pvcs, selector); err != nil {
+			return fmt.Errorf("list PVCs: %w", err)
+		}
+		for i := range pvcs.Items {
+			if err := c.Delete(&pvcs.Items[i]); err != nil {
+				return fmt.Errorf("delete PVC %s: %w", pvcs.Items[i].Name, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -409,7 +567,11 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
 				Spec:       podSpec,
 			}},
-			VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{{Name: common.DataVolumeClaimTemplateName, Spec: pvcSpec}},
+			VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{{
+				Name:              common.DataVolumeClaimTemplateName,
+				StorageManagement: storageManagement(c),
+				Spec:              pvcSpec,
+			}},
 		},
 	}
 
@@ -460,6 +622,10 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 		},
 	}
 
+	podSpec := corev1.PodSpec{Containers: []corev1.Container{container}}
+	engine := c.Instance().Spec.Components[common.ComponentEngine]
+	applyKeeperSchedulingPolicy(&podSpec, engine.SchedulingPolicy, map[string]string{common.LabelCHKName: keeperCRName(c.Name())})
+
 	return &chkv1.ClickHouseKeeperInstallation{
 		ObjectMeta: c.ObjectMeta(keeperCRName(c.Name())),
 		Spec: chkv1.ChkSpec{
@@ -481,12 +647,13 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 				PodTemplates: []chiv1.PodTemplate{
 					{
 						Name: common.KeeperPodTemplateName,
-						Spec: corev1.PodSpec{Containers: []corev1.Container{container}},
+						Spec: podSpec,
 					},
 				},
 				VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{
 					{
-						Name: common.KeeperDataVolumeClaimTemplateName,
+						Name:              common.KeeperDataVolumeClaimTemplateName,
+						StorageManagement: storageManagement(c),
 						Spec: corev1.PersistentVolumeClaimSpec{
 							AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 							Resources: corev1.VolumeResourceRequirements{
@@ -638,6 +805,27 @@ func resolveStorage(engine corev1alpha1.ComponentSpec) (size resource.Quantity, 
 	}
 	storageClass = engine.Storage.StorageClass
 	return
+}
+
+// storageReclaimPolicy returns the engine's storage reclaim policy, defaulting
+// to Retain so deleting an Instance never silently destroys its data.
+func storageReclaimPolicy(c *controller.Context) string {
+	engine := c.Instance().Spec.Components[common.ComponentEngine]
+	var params components.ClickHouseParameters
+	_ = c.TryDecodeComponentParameters(engine, &params)
+	if strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyDelete) {
+		return common.StorageReclaimPolicyDelete
+	}
+	return common.StorageReclaimPolicyRetain
+}
+
+// storageManagement sets the reclaim policy on a volume claim template. The
+// operator sets no owner references on the PVCs; it deletes them on Instance
+// deletion or replica removal only when the policy is Delete. The same policy
+// applies to Keeper, because retained ClickHouse data whose replication
+// metadata is gone from Keeper comes back read-only.
+func storageManagement(c *controller.Context) chiv1.StorageManagement {
+	return chiv1.StorageManagement{PVCReclaimPolicy: chiv1.PVCReclaimPolicy(storageReclaimPolicy(c))}
 }
 
 // resolveEngineSettings builds the ClickHouse server settings rendered into

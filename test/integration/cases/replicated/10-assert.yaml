@@ -3,6 +3,29 @@ kind: ClickHouseKeeperInstallation
 metadata:
   name: itest-ch-replicated-keeper
   namespace: default
+spec:
+  templates:
+    podTemplates:
+      - spec:
+          # Default preferred anti-affinity spreads the Keeper pods.
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        clickhouse-keeper.altinity.com/chk: itest-ch-replicated-keeper
+                - weight: 50
+                  podAffinityTerm:
+                    topologyKey: topology.kubernetes.io/zone
+                    labelSelector:
+                      matchLabels:
+                        clickhouse-keeper.altinity.com/chk: itest-ch-replicated-keeper
+    volumeClaimTemplates:
+      # Keeper volumes follow the engine's (default) reclaim policy.
+      - reclaimPolicy: Retain
 status:
   status: Completed
 ---
@@ -31,5 +54,28 @@ spec:
             core.openeverest.io/component: engine
             core.openeverest.io/instance: itest-ch-replicated
             core.openeverest.io/provider: altinity-clickhouse
+        spec:
+          # Default preferred anti-affinity spreads the replicas.
+          affinity:
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    topologyKey: kubernetes.io/hostname
+                    labelSelector:
+                      matchLabels:
+                        core.openeverest.io/component: engine
+                        core.openeverest.io/instance: itest-ch-replicated
+                        core.openeverest.io/provider: altinity-clickhouse
+                - weight: 50
+                  podAffinityTerm:
+                    topologyKey: topology.kubernetes.io/zone
+                    labelSelector:
+                      matchLabels:
+                        core.openeverest.io/component: engine
+                        core.openeverest.io/instance: itest-ch-replicated
+                        core.openeverest.io/provider: altinity-clickhouse
+    volumeClaimTemplates:
+      - reclaimPolicy: Retain
 status:
   status: Completed

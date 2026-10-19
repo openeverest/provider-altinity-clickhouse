@@ -132,6 +132,18 @@ ui:
                 disabled: true
           dataSource:
             provider: storageClasses
+        storageReclaimPolicy:
+          uiType: select
+          path: spec.components.engine.parameters.storageReclaimPolicy
+          fieldParams:
+            label: "Data on deletion"
+            helperText: "Whether the ClickHouse and Keeper data volumes are kept or deleted when the instance is deleted or a replica is removed. Kept volumes are re-attached to a new instance with the same name and namespace."
+            defaultValue: "Retain"
+            options:
+              - label: "Keep (Retain)"
+                value: "Retain"
+              - label: "Delete"
+                value: "Delete"
         externalAccess:
           uiType: select
           path: spec.components.engine.service.serviceType
@@ -170,6 +182,7 @@ ui:
             maxRows: 8
       componentsOrder:
         - storageClass
+        - storageReclaimPolicy
         - externalAccess
         - tls
         - configuration
