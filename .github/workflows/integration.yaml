@@ -86,9 +86,36 @@ jobs:
           sudo sysctl -w fs.inotify.max_user_instances=8192
           sudo sysctl -w fs.inotify.max_user_watches=524288
 
-      # One agent: k3d nodes share the runner's 4 vCPUs, so extra k3s agents only add load.
+      # Pod -> Service -> pod traffic on the same k3d node only works when the
+      # runner bridges it through iptables (br_netfilter); k3s cannot load the
+      # module from inside its container. Without it, replies from a pod on
+      # the same node (CoreDNS above all) never reach the client: DNS lookups
+      # time out, Keeper misses its liveness deadline resolving its peers on
+      # every start, and the ensemble never recovers.
+      - name: Enable bridge netfilter
+        run: |
+          echo "before: $(lsmod | grep -c '^br_netfilter' || true) br_netfilter module(s) loaded"
+          sudo modprobe br_netfilter
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1 net.bridge.bridge-nf-call-ip6tables=1
+
+      # Single node: the k3d nodes share the runner's 4 vCPUs anyway.
       - name: Create k3d cluster
-        run: make k3d-cluster-up K3D_FLAGS=--agents=1
+        run: make k3d-cluster-up K3D_CONFIG=./dev/k3d_config.ci.yaml
+
+      - name: Check cluster DNS
+        run: |
+          kubectl -n kube-system rollout status deploy/coredns --timeout=180s
+          kubectl run dnscheck --image=debian:stable-slim --restart=Never --command -- sleep 600
+          kubectl wait pod/dnscheck --for=condition=Ready --timeout=120s
+          kubectl exec dnscheck -- cat /etc/resolv.conf
+          # In-cluster and missing names must answer in milliseconds.
+          kubectl exec dnscheck -- bash -c '
+            for name in kubernetes.default.svc.cluster.local does-not-exist github.com; do
+              start=$(date +%s%N)
+              getent hosts "$name" >/dev/null && result=found || result="not found"
+              echo "$name: $result in $(( ($(date +%s%N) - start) / 1000000 ))ms"
+            done'
+          kubectl delete pod dnscheck --wait=false
 
       - name: Bring up OpenEverest core + provider (tilt ci)
         run: tilt ci -f dev/Tiltfile
@@ -110,11 +137,15 @@ jobs:
           echo "===== clickhousekeeperinstallations ====="
           kubectl get clickhousekeeperinstallations -A -o yaml || true
           echo "===== provider logs ====="
-          kubectl logs -l app.kubernetes.io/name=provider-altinity-clickhouse \
-            -A --tail=300 || true
+          kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse \
+            --tail=300 || true
           echo "===== recent events ====="
           kubectl get events -A --sort-by=.lastTimestamp | tail -60 || true
+          echo "===== runner load ====="
+          uptime || true
+          free -m || true
+          docker stats --no-stream || true
 
       - name: Tear down k3d cluster
         if: always()
-        run: make k3d-cluster-down || true
+        run: make k3d-cluster-down K3D_CONFIG=./dev/k3d_config.ci.yaml || true

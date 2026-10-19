@@ -27,7 +27,10 @@ CHART_DIR ?= charts/provider-altinity-clickhouse
 # Chainsaw cases to run; point at a single case directory to run just that one.
 INTEGRATION_CASES ?= test/integration/cases
 
-# Extra k3d cluster create flags, overriding dev/k3d_config.yaml.
+# k3d cluster config; CI uses the single-node dev/k3d_config.ci.yaml.
+K3D_CONFIG ?= ./dev/k3d_config.yaml
+
+# Extra k3d cluster create flags, overriding $(K3D_CONFIG).
 K3D_FLAGS ?=
 
 .PHONY: help
@@ -119,12 +122,12 @@ test-integration: ## Run integration tests (chainsaw) against a running cluster.
 .PHONY: k3d-cluster-up
 k3d-cluster-up: ## Create a local k3d cluster for development.
 	$(info Creating k3d cluster for testing)
-	k3d cluster create --config ./dev/k3d_config.yaml $(K3D_FLAGS)
+	k3d cluster create --config $(K3D_CONFIG) $(K3D_FLAGS)
 
 .PHONY: k3d-cluster-down
 k3d-cluster-down: ## Delete the local k3d cluster.
 	$(info Destroying k3d test cluster)
-	k3d cluster delete --config ./dev/k3d_config.yaml
+	k3d cluster delete --config $(K3D_CONFIG)
 
 .PHONY: k3d-cluster-reset
 k3d-cluster-reset: k3d-cluster-down k3d-cluster-up ## Reset the local k3d cluster.
