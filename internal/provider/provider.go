@@ -156,7 +156,11 @@ func (p *Provider) syncStandalone(c *controller.Context) error {
 func (p *Provider) syncReplicated(c *controller.Context) error {
 	keeperName := keeperCRName(c.Name())
 
-	if err := c.Apply(buildCHK(c)); err != nil {
+	desired, err := buildCHK(c)
+	if err != nil {
+		return fmt.Errorf("build ClickHouseKeeperInstallation: %w", err)
+	}
+	if err := c.Apply(desired); err != nil {
 		return fmt.Errorf("apply ClickHouseKeeperInstallation: %w", err)
 	}
 	chk := &chkv1.ClickHouseKeeperInstallation{}
@@ -451,7 +455,7 @@ func deletePVCs(c *controller.Context) error {
 // buildCHI constructs a ClickHouseInstallation for the given replica count.
 func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstallation, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
-	image, err := resolveImage(c, engine)
+	image, err := resolveImage(c, common.ComponentEngine, engine)
 	if err != nil {
 		return nil, err
 	}
@@ -552,19 +556,26 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	}, nil
 }
 
-// buildCHK constructs a ClickHouseKeeperInstallation with 3 replicas (Raft quorum).
-func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
-	// Keeper nodes are small — fixed resources, not user-configurable.
-	keeperCPU := resource.MustParse("500m")
-	keeperMem := resource.MustParse("1Gi")
-	keeperStorage := resource.MustParse("10Gi")
+// buildCHK constructs the 3-node (Raft quorum) ClickHouseKeeperInstallation
+// from the keeper component, which is optional: defaults size it otherwise.
+func buildCHK(c *controller.Context) (*chkv1.ClickHouseKeeperInstallation, error) {
+	keeper := c.Instance().Spec.Components[common.ComponentKeeper]
+	image, err := resolveImage(c, common.ComponentKeeper, keeper)
+	if err != nil {
+		return nil, err
+	}
+	cpu, memory := resolveKeeperResources(keeper)
+	storageSize, storageClass, err := resolveKeeperStorage(c, keeper)
+	if err != nil {
+		return nil, err
+	}
 
 	container := corev1.Container{
 		Name:  "clickhouse-keeper",
-		Image: "clickhouse/clickhouse-keeper:25.3.5",
+		Image: image,
 		Resources: corev1.ResourceRequirements{
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: keeperCPU, corev1.ResourceMemory: keeperMem},
-			Requests: corev1.ResourceList{corev1.ResourceCPU: keeperCPU, corev1.ResourceMemory: keeperMem},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
+			Requests: corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
 		},
 	}
 
@@ -572,7 +583,15 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	applyKeeperSchedulingPolicy(&podSpec, engine.SchedulingPolicy, map[string]string{common.LabelCHKName: keeperCRName(c.Name())})
 
-	return &chkv1.ClickHouseKeeperInstallation{
+	pvcSpec := corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: storageSize}},
+	}
+	if storageClass != nil {
+		pvcSpec.StorageClassName = storageClass
+	}
+
+	chk := &chkv1.ClickHouseKeeperInstallation{
 		ObjectMeta: c.ObjectMeta(keeperCRName(c.Name())),
 		Spec: chkv1.ChkSpec{
 			Configuration: &chkv1.Configuration{
@@ -593,24 +612,23 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 				PodTemplates: []chiv1.PodTemplate{
 					{
 						Name: common.KeeperPodTemplateName,
-						Spec: podSpec,
+						// Counted into status.components; the operator copies these onto
+						// the pod template only, never onto the StatefulSet selector.
+						ObjectMeta: metav1.ObjectMeta{Labels: c.PodLabels(common.ComponentKeeper)},
+						Spec:       podSpec,
 					},
 				},
 				VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{
 					{
 						Name:              common.KeeperDataVolumeClaimTemplateName,
 						StorageManagement: storageManagement(c),
-						Spec: corev1.PersistentVolumeClaimSpec{
-							AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-							Resources: corev1.VolumeResourceRequirements{
-								Requests: corev1.ResourceList{corev1.ResourceStorage: keeperStorage},
-							},
-						},
+						Spec:              pvcSpec,
 					},
 				},
 			},
 		},
 	}
+	return chk, nil
 }
 
 // =============================================================================
@@ -704,24 +722,35 @@ func replicasCount(c *controller.Context) int {
 	return common.DefaultReplicasCount
 }
 
-// resolveImage returns the container image for the engine component.
-func resolveImage(c *controller.Context, engine corev1alpha1.ComponentSpec) (string, error) {
-	if engine.Image != "" {
-		return engine.Image, nil
+// resolveImage returns the container image for a component: an explicit
+// image, else the component's version, else the version the Instance's bundle
+// pins for it (the runtime only fills in versions of components present in
+// spec.components, and only after Validate), else the type's default.
+func resolveImage(c *controller.Context, name string, component corev1alpha1.ComponentSpec) (string, error) {
+	if component.Image != "" {
+		return component.Image, nil
 	}
 	spec, err := c.ProviderSpec()
 	if err != nil {
 		return "", fmt.Errorf("get provider spec: %w", err)
 	}
-	if engine.Version != "" {
-		if img := controller.GetImageForVersion(spec, common.ComponentEngine, engine.Version); img != "" {
+	version := component.Version
+	if version == "" {
+		if bundleName := controller.EffectiveVersionBundleName(spec, c.Instance()); bundleName != "" {
+			if bundle, err := controller.ResolveVersionBundle(spec, bundleName); err == nil {
+				version = bundle.Components[name]
+			}
+		}
+	}
+	if version != "" {
+		if img := controller.GetImageForVersion(spec, name, version); img != "" {
 			return img, nil
 		}
 	}
-	if img := controller.GetDefaultImageForComponent(spec, common.ComponentEngine); img != "" {
+	if img := controller.GetDefaultImageForComponent(spec, name); img != "" {
 		return img, nil
 	}
-	return "", fmt.Errorf("no image found for engine component")
+	return "", fmt.Errorf("no image found for the %s component", name)
 }
 
 // resolveResources returns CPU and memory quantities with defaults applied.
@@ -751,6 +780,61 @@ func resolveStorage(engine corev1alpha1.ComponentSpec) (size resource.Quantity, 
 	}
 	storageClass = engine.Storage.StorageClass
 	return
+}
+
+// resolveKeeperResources returns the Keeper CPU and memory, defaulting each
+// to the small footprint Keeper needs.
+func resolveKeeperResources(keeper corev1alpha1.ComponentSpec) (cpu, memory resource.Quantity) {
+	cpu = resource.MustParse(common.KeeperDefaultCPU)
+	memory = resource.MustParse(common.KeeperDefaultMemory)
+	if keeper.Resources == nil || keeper.Resources.Limits == nil {
+		return
+	}
+	if v := keeper.Resources.Limits.Cpu(); v != nil && !v.IsZero() {
+		cpu = v.DeepCopy()
+	}
+	if v := keeper.Resources.Limits.Memory(); v != nil && !v.IsZero() {
+		memory = v.DeepCopy()
+	}
+	return
+}
+
+// resolveKeeperStorage returns the Keeper volume size and StorageClass. An
+// unset class keeps the one the deployed Keeper uses — volumes cannot move to
+// another class, and Keepers created before the keeper component existed
+// always used the cluster default — and otherwise follows the engine's.
+func resolveKeeperStorage(c *controller.Context, keeper corev1alpha1.ComponentSpec) (resource.Quantity, *string, error) {
+	size := resource.MustParse(common.KeeperDefaultStorage)
+	if keeper.Storage != nil && !keeper.Storage.Size.IsZero() {
+		size = keeper.Storage.Size.DeepCopy()
+	}
+	if keeper.Storage != nil && keeper.Storage.StorageClass != nil {
+		return size, keeper.Storage.StorageClass, nil
+	}
+
+	current := &chkv1.ClickHouseKeeperInstallation{}
+	if err := c.Get(current, keeperCRName(c.Name())); err == nil {
+		if vct := keeperVolumeClaimTemplate(current); vct != nil {
+			return size, vct.Spec.StorageClassName, nil
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return size, nil, fmt.Errorf("read current ClickHouseKeeperInstallation: %w", err)
+	}
+
+	_, engineClass := resolveStorage(c.Instance().Spec.Components[common.ComponentEngine])
+	return size, engineClass, nil
+}
+
+func keeperVolumeClaimTemplate(chk *chkv1.ClickHouseKeeperInstallation) *chiv1.VolumeClaimTemplate {
+	if chk.Spec.Templates == nil {
+		return nil
+	}
+	for i := range chk.Spec.Templates.VolumeClaimTemplates {
+		if chk.Spec.Templates.VolumeClaimTemplates[i].Name == common.KeeperDataVolumeClaimTemplateName {
+			return &chk.Spec.Templates.VolumeClaimTemplates[i]
+		}
+	}
+	return nil
 }
 
 // storageReclaimPolicy returns the engine's storage reclaim policy, defaulting

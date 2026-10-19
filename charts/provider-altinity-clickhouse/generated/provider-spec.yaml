@@ -11,6 +11,11 @@ spec:
           version: 25.5.2
         - image: clickhouse/clickhouse-server:24.8.14
           version: 24.8.14
+    clickhouse-keeper:
+      defaultVersion: 25.3.5
+      versions:
+        - image: clickhouse/clickhouse-keeper:25.3.5
+          version: 25.3.5
   components:
     engine:
       parametersSchema:
@@ -38,6 +43,8 @@ spec:
               type: object
           type: object
       type: clickhouse
+    keeper:
+      type: clickhouse-keeper
   defaultVersion: "25.3"
   release:
     version: 0.1.0
@@ -45,6 +52,7 @@ spec:
     replicated:
       components:
         engine: {}
+        keeper: {}
     standalone:
       components:
         engine: {}
@@ -139,6 +147,57 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
+        keeper:
+          components:
+            compute:
+              components:
+                cpu:
+                  fieldParams:
+                    defaultValue: 0.5
+                    label: CPU
+                    step: 0.5
+                  path: spec.components.keeper.resources.limits.cpu
+                  uiType: number
+                  validation:
+                    min: 0.5
+                    required: true
+                disk:
+                  fieldParams:
+                    badge: Gi
+                    badgeToApi: true
+                    defaultValue: 10
+                    label: Disk
+                  path: spec.components.keeper.storage.size
+                  uiType: number
+                  validation:
+                    int: true
+                    min: 5
+                    modes:
+                      edit:
+                        celExpressions:
+                          - celExpr: spec.components.keeper.storage.size >= original.spec.components.keeper.storage.size
+                            message: Disk size cannot be decreased
+                    required: true
+                memory:
+                  fieldParams:
+                    badge: Gi
+                    badgeToApi: true
+                    defaultValue: 1
+                    label: Memory
+                    step: 1
+                  path: spec.components.keeper.resources.limits.memory
+                  uiType: number
+                  validation:
+                    min: 1
+                    required: true
+              componentsOrder:
+                - cpu
+                - memory
+                - disk
+              groupType: line
+              uiType: group
+          description: Resources and storage per Keeper node. The replicated topology always runs 3 Keeper nodes.
+          label: ClickHouse Keeper
         monitoring:
           components:
             podMonitor:
@@ -226,6 +285,7 @@ spec:
         - databaseVersion
         - scaling
         - resources
+        - keeper
         - monitoring
         - advanced
     standalone:
@@ -392,10 +452,13 @@ spec:
   versions:
     - components:
         engine: 25.3.5
+        keeper: 25.3.5
       name: "25.3"
     - components:
         engine: 25.5.2
+        keeper: 25.3.5
       name: "25.5"
     - components:
         engine: 24.8.14
+        keeper: 25.3.5
       name: "24.8"

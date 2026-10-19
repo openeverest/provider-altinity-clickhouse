@@ -26,6 +26,16 @@ const (
 	// ComponentTypeClickHouse is the component type name, matching versions.yaml.
 	ComponentTypeClickHouse = "clickhouse"
 
+	// ComponentKeeper is the logical name of the ClickHouse Keeper component
+	// (replicated topology only).
+	ComponentKeeper = "keeper"
+
+	// KeeperDefaultCPU, KeeperDefaultMemory and KeeperDefaultStorage size each
+	// Keeper node when the keeper component does not say otherwise.
+	KeeperDefaultCPU     = "500m"
+	KeeperDefaultMemory  = "1Gi"
+	KeeperDefaultStorage = "10Gi"
+
 	// TopologyStandalone is the single-node topology name.
 	TopologyStandalone = "standalone"
 
@@ -40,6 +50,7 @@ const (
 	CHKClusterName = "keeper"
 
 	// KeeperReplicas is the number of Keeper nodes — must be odd for Raft quorum.
+	// Fixed: changing a Raft ensemble's size is not a rolling operation.
 	KeeperReplicas = 3
 
 	// DefaultReplicasCount is the default number of ClickHouse replicas for the replicated topology.

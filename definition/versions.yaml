@@ -16,6 +16,14 @@ componentTypes:
     - version: "24.8.14"
       image: clickhouse/clickhouse-server:24.8.14
 
+  # ClickHouse Keeper (replicated topology). Every bundle pins the version
+  # existing Keepers already run: a bundle must never move Keeper backwards.
+  clickhouse-keeper:
+    defaultVersion: "25.3.5"
+    versions:
+    - version: "25.3.5"
+      image: clickhouse/clickhouse-keeper:25.3.5
+
 # Version bundles: curated sets of compatible component versions.
 # Users set spec.version to a bundle name; the runtime resolves per-component versions.
 # The bundle named by defaultVersion is used when spec.version is omitted.
@@ -24,9 +32,12 @@ versions:
 - name: "25.3"
   components:
     engine: "25.3.5"
+    keeper: "25.3.5"
 - name: "25.5"
   components:
     engine: "25.5.2"
+    keeper: "25.3.5"
 - name: "24.8"
   components:
     engine: "24.8.14"
+    keeper: "25.3.5"

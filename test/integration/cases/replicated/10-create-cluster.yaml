@@ -22,3 +22,7 @@ spec:
         configuration: |
           max_concurrent_queries: 200
           max_connections: 4096
+    keeper:
+      type: clickhouse-keeper
+      storage:
+        size: 5Gi

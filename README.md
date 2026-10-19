@@ -282,6 +282,8 @@ untouched:
 - downgrading ClickHouse below the running version (images whose tags are not
   versions, such as `latest`, are not compared);
 - more than one replica in the `standalone` topology;
+- a `keeper` component outside the `replicated` topology, a Keeper size other than 3,
+  or shrinking, moving or downgrading Keeper;
 - an engine `configuration` that is not valid YAML or that sets ports, TLS
   (`openSSL/*`), Keeper (`zookeeper/*`), `macros/*`, `remote_servers/*` or the
   metrics endpoint (`prometheus/port`, `prometheus/endpoint`), which the
@@ -302,6 +304,32 @@ required. It supports `ReplicatedMergeTree` and the other replicated table engin
 ClickHouse references the Keeper by name; the operator resolves it to each Keeper host's
 ready-only client Service, so ClickHouse never connects to a Keeper node that is still
 joining the quorum.
+
+### ClickHouse Keeper
+
+The `replicated` topology always runs three Keeper nodes. The optional `keeper` component
+sizes them; anything it leaves out keeps the defaults below:
+
+```yaml
+spec:
+  components:
+    keeper:
+      type: clickhouse-keeper
+      resources:
+        limits:
+          cpu: "1"        # default 500m
+          memory: 2Gi     # default 1Gi
+      storage:
+        size: 20Gi        # default 10Gi; can grow, never shrink
+        storageClass: ssd # default: the engine's class for new instances
+```
+
+- The Keeper version comes from the version bundle (`keeper` entry), unless the component
+  sets `version` or `image`. Keeper cannot be downgraded.
+- An unset `storageClass` keeps the class the deployed Keeper uses — volumes cannot move
+  between classes — so instances created before the `keeper` component existed keep the
+  cluster default.
+- Keeper pods report under `keeper` in the Instance's `status.components`.
 
 ## Versions
 

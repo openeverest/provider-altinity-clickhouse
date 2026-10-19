@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"testing"
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/yaml"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
@@ -57,9 +59,22 @@ func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *
 	require.NoError(t, cmapi.AddToScheme(scheme))
 	require.NoError(t, monitoringv1.AddToScheme(scheme))
 
-	all := append([]client.Object{instance}, objs...)
+	all := append([]client.Object{instance, testProvider(t)}, objs...)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).WithInterceptorFuncs(funcs).Build()
 	return controller.NewContext(context.Background(), fakeClient, instance, common.ProviderName)
+}
+
+// testProvider returns the Provider CR the chart registers, built from the
+// generated spec so tests resolve the real version catalog and bundles.
+func testProvider(t *testing.T) *corev1alpha1.Provider {
+	t.Helper()
+	data, err := os.ReadFile("../../charts/provider-altinity-clickhouse/generated/provider-spec.yaml")
+	require.NoError(t, err)
+	var doc struct {
+		Spec corev1alpha1.ProviderSpec `json:"spec"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &doc))
+	return &corev1alpha1.Provider{ObjectMeta: metav1.ObjectMeta{Name: common.ProviderName}, Spec: doc.Spec}
 }
 
 // captureCHIApply records applied CHIs instead of forwarding them: the fake
@@ -192,7 +207,8 @@ func TestStorageReclaimPolicy(t *testing.T) {
 			require.Len(t, chi.Spec.Templates.VolumeClaimTemplates, 1)
 			assert.Equal(t, tc.want, chi.Spec.Templates.VolumeClaimTemplates[0].PVCReclaimPolicy)
 
-			chk := buildCHK(c)
+			chk, err := buildCHK(c)
+			require.NoError(t, err)
 			require.Len(t, chk.Spec.Templates.VolumeClaimTemplates, 1)
 			assert.Equal(t, tc.want, chk.Spec.Templates.VolumeClaimTemplates[0].PVCReclaimPolicy)
 		})

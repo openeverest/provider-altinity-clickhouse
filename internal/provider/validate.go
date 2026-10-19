@@ -84,6 +84,10 @@ func (p *Provider) Validate(c *controller.Context) error {
 		return err
 	}
 
+	if err := validateKeeper(c); err != nil {
+		return err
+	}
+
 	if engine.Service != nil {
 		switch engine.Service.ServiceType {
 		case "",
@@ -95,7 +99,89 @@ func (p *Provider) Validate(c *controller.Context) error {
 		}
 	}
 
+	if err := validateKeeperTransitions(c); err != nil {
+		return err
+	}
 	return validateTransitions(c, engine)
+}
+
+// validateKeeper checks the keeper component, which only the replicated
+// topology uses and whose ensemble size is fixed.
+func validateKeeper(c *controller.Context) error {
+	keeper, ok := c.Instance().Spec.Components[common.ComponentKeeper]
+	if !ok {
+		return nil
+	}
+	if c.Instance().GetTopologyType() != common.TopologyReplicated {
+		return fmt.Errorf("the %s component is only used by the %s topology",
+			common.ComponentKeeper, common.TopologyReplicated)
+	}
+	if keeper.Replicas != nil && *keeper.Replicas != common.KeeperReplicas {
+		return fmt.Errorf("keeper runs %d replicas; its size cannot be changed", common.KeeperReplicas)
+	}
+	return nil
+}
+
+// validateKeeperTransitions rejects Keeper changes the deployed Keeper cannot
+// take: shrinking or moving its volumes, or downgrading it. The Keeper exists
+// before ClickHouse does, so it is checked on its own.
+func validateKeeperTransitions(c *controller.Context) error {
+	if c.Instance().GetTopologyType() != common.TopologyReplicated {
+		return nil
+	}
+	chk := &chkv1.ClickHouseKeeperInstallation{}
+	if err := c.Get(chk, keeperCRName(c.Name())); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("read current ClickHouseKeeperInstallation: %w", err)
+	}
+	keeper := c.Instance().Spec.Components[common.ComponentKeeper]
+
+	if current := keeperVolumeClaimTemplate(chk); current != nil {
+		size, storageClass, err := resolveKeeperStorage(c, keeper)
+		if err != nil {
+			return err
+		}
+		if currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]; ok && size.Cmp(currentSize) < 0 {
+			return fmt.Errorf("keeper storage cannot shrink from %s to %s", currentSize.String(), size.String())
+		}
+		if !equalStorageClass(current.Spec.StorageClassName, storageClass) {
+			return fmt.Errorf("keeper storageClass cannot change from %s to %s",
+				describeStorageClass(current.Spec.StorageClassName), describeStorageClass(storageClass))
+		}
+	}
+
+	current := imageVersion(currentKeeperImage(chk))
+	if current == nil {
+		return nil
+	}
+	image, err := resolveImage(c, common.ComponentKeeper, keeper)
+	if err != nil {
+		log.FromContext(c.Context()).Info("Skipping keeper version downgrade check", "reason", err.Error())
+		return nil
+	}
+	if desired := imageVersion(image); desired != nil && compareSegments(desired, current) < 0 {
+		return fmt.Errorf("keeper cannot be downgraded from %s to %s", current.Original(), desired.Original())
+	}
+	return nil
+}
+
+func currentKeeperImage(chk *chkv1.ClickHouseKeeperInstallation) string {
+	if chk.Spec.Templates == nil {
+		return ""
+	}
+	for _, tmpl := range chk.Spec.Templates.PodTemplates {
+		if tmpl.Name != common.KeeperPodTemplateName {
+			continue
+		}
+		for _, container := range tmpl.Spec.Containers {
+			if container.Name == "clickhouse-keeper" {
+				return container.Image
+			}
+		}
+	}
+	return ""
 }
 
 // ownedSettings are server settings the operator or the provider manages; a
@@ -236,7 +322,7 @@ func validateVersionTransition(c *controller.Context, chi *chiv1.ClickHouseInsta
 	if current == nil {
 		return nil
 	}
-	image, err := desiredEngineImage(c, engine)
+	image, err := resolveImage(c, common.ComponentEngine, engine)
 	if err != nil {
 		// Version resolution problems surface from Sync with full context.
 		log.FromContext(c.Context()).Info("Skipping version downgrade check", "reason", err.Error())
@@ -264,31 +350,6 @@ func currentEngineImage(chi *chiv1.ClickHouseInstallation) string {
 		}
 	}
 	return ""
-}
-
-// desiredEngineImage resolves the engine image the way Sync will: an explicit
-// image, else the component version, else the Instance's version bundle. The
-// runtime only resolves the bundle after Validate, so it is resolved here.
-func desiredEngineImage(c *controller.Context, engine corev1alpha1.ComponentSpec) (string, error) {
-	if engine.Image != "" || engine.Version != "" {
-		return resolveImage(c, engine)
-	}
-	spec, err := c.ProviderSpec()
-	if err != nil {
-		return "", fmt.Errorf("get provider spec: %w", err)
-	}
-	if name := controller.EffectiveVersionBundleName(spec, c.Instance()); name != "" {
-		bundle, err := controller.ResolveVersionBundle(spec, name)
-		if err != nil {
-			return "", err
-		}
-		if version := bundle.Components[common.ComponentEngine]; version != "" {
-			if image := controller.GetImageForVersion(spec, common.ComponentEngine, version); image != "" {
-				return image, nil
-			}
-		}
-	}
-	return resolveImage(c, engine)
 }
 
 // imageVersion parses the version in an image tag such as
