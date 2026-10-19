@@ -119,12 +119,27 @@ leaderElection:
   # -- Enable leader election (recommended for HA deployments)
   enabled: true
 
+# Credentials the bundled Altinity operator uses to connect to ClickHouse.
+# The chart creates the Secret itself instead of the operator subchart, whose
+# default password is fixed and publicly known (operator.secret.create is
+# therefore false).
+operatorCredentials:
+  # -- ClickHouse user the operator connects as
+  username: clickhouse_operator
+  # -- Password for that user. When empty, the password of an existing Secret
+  # is kept, or a random one is generated on first install. Changing it later
+  # requires restarting the operator, which reads it at start-up.
+  password: ""
+
 # The Altinity ClickHouse operator is bundled as a subchart (alias "operator",
 # see Chart.yaml dependencies). CRDs are installed/updated automatically via the
 # operator chart's pre-install/pre-upgrade hooks. Additional operator settings
 # can be overridden under this "operator:" block, keyed to the
 # altinity-clickhouse-operator chart values.
 operator:
+  # The provider chart owns the credentials Secret (see operatorCredentials).
+  secret:
+    create: false
   # The provider reconciles Instances in any namespace and applies each
   # ClickHouseInstallation into the Instance's own namespace, so the operator
   # must run cluster-wide. Its ClusterRole-scoped RBAC (rbac.namespaceScoped:

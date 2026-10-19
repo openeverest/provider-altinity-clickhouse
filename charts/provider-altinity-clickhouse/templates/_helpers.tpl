@@ -68,3 +68,21 @@ Container image
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end }}
+
+{{/*
+Name of the bundled Altinity operator's credentials Secret. Mirrors the
+subchart's "altinity-clickhouse-operator.fullname" for the "operator" alias:
+the operator configuration looks the Secret up by this name.
+*/}}
+{{- define "provider-altinity-clickhouse.operatorFullname" -}}
+{{- if .Values.operator.fullnameOverride -}}
+{{- .Values.operator.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- $name := default "operator" .Values.operator.nameOverride -}}
+{{- if contains $name .Release.Name -}}
+{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
