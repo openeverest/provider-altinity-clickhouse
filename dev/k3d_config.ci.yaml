@@ -1,0 +1,28 @@
+---
+# Single-node variant of k3d_config.yaml for CI (see Makefile K3D_CONFIG):
+# the k3d nodes share the runner's 4 vCPUs anyway.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  # NOTE: k3d cluster names must be <= 32 characters.
+  name: provider-altinity-clickhouse
+servers: 1
+agents: 0
+image: rancher/k3s:v1.33.2-k3s1
+registries:
+  create:
+    name: k3d-registry
+    host: "0.0.0.0"
+    hostPort: "5000"
+options:
+  k3d:
+    wait: true
+    disableLoadbalancer: true
+  k3s:
+    extraArgs:
+      - arg: "--disable=traefik,metrics-server,servicelb"
+        nodeFilters:
+          - server:*
+      - arg: "--disable-network-policy"
+        nodeFilters:
+          - server:*

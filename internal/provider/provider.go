@@ -426,15 +426,13 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	// Wire the root Service exposure (ClusterIP / LoadBalancer / NodePort).
 	configureExpose(&spec, engine.Service, tlsOn)
 
-	// Wire Keeper for replicated topology using explicit node listing.
-	// The Altinity operator creates per-replica headless services following:
-	//   chk-<keeper-name>-<cluster>-0-<replica-index>.<namespace>.svc
-	// We enumerate them for the ZooKeeper config so older operator versions
-	// (which may not support the keeper: reference field) work correctly.
+	// Wire Keeper for replicated topology. The operator resolves the reference
+	// to the Keeper hosts' ready-only client Services, so ClickHouse never
+	// connects to a Keeper node that is still joining the quorum — doing so can
+	// keep that node from ever joining (Altinity/clickhouse-operator#1982).
 	if replicasCount > 1 {
-		nodes := keeperZookeeperNodes(keeperCRName(c.Name()), c.Namespace(), common.KeeperReplicas)
 		spec.Configuration.Zookeeper = &chiv1.ZookeeperConfig{
-			Nodes:              nodes,
+			Keeper:             &chiv1.KeeperRef{Name: keeperCRName(c.Name())},
 			SessionTimeoutMs:   30000,
 			OperationTimeoutMs: 10000,
 		}
@@ -582,22 +580,6 @@ func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsOn b
 		spec.Defaults.Templates = &chiv1.TemplatesList{}
 	}
 	spec.Defaults.Templates.ServiceTemplate = common.ServiceTemplateName
-}
-
-// keeperZookeeperNodes builds the explicit ZooKeeper node list for Keeper.
-// Altinity creates per-replica headless services:
-//
-//	chk-<keeper-name>-<cluster>-0-<replica>.<namespace>.svc
-//
-// Port 2181 is the standard ZooKeeper/Keeper client port.
-func keeperZookeeperNodes(keeperName, namespace string, replicas int) []chiv1.ZookeeperNode {
-	nodes := make([]chiv1.ZookeeperNode, replicas)
-	for i := 0; i < replicas; i++ {
-		// Service name pattern: chk-<keeper-name>-<cluster>-<shard>-<replica>
-		svc := fmt.Sprintf("chk-%s-%s-0-%d.%s.svc", keeperName, common.CHKClusterName, i, namespace)
-		nodes[i] = chiv1.NewZookeeperNode(svc, 2181)
-	}
-	return nodes
 }
 
 // replicasCount returns the configured replica count or the default.

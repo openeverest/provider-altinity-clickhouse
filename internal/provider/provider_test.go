@@ -252,3 +252,20 @@ func TestEnsureIssuerSelfSigned(t *testing.T) {
 	require.NoError(t, c.Get(&cmapi.Certificate{}, caCertName(c.Name())))
 	require.NoError(t, c.Get(&cmapi.Issuer{}, caIssuerName(c.Name())))
 }
+
+func TestBuildCHIReferencesKeeper(t *testing.T) {
+	c := newTestContext(t, newTestInstance("db", "ns", ""))
+
+	replicated, err := buildCHI(c, 2)
+	require.NoError(t, err)
+	zk := replicated.Spec.Configuration.Zookeeper
+	require.NotNil(t, zk)
+	// A reference, not hard-coded nodes: the operator resolves it to the
+	// Keeper hosts' ready-only client Services.
+	assert.Equal(t, &chiv1.KeeperRef{Name: "db-keeper"}, zk.Keeper)
+	assert.Empty(t, zk.Nodes)
+
+	standalone, err := buildCHI(c, 1)
+	require.NoError(t, err)
+	assert.Nil(t, standalone.Spec.Configuration.Zookeeper)
+}

@@ -12,6 +12,23 @@ spec:
         content: kubectl -n $NAMESPACE get instance,chi,chk -o yaml
     - script:
         content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+    # Keeper and ClickHouse logs, including the previous container after a
+    # restart, plus why containers last terminated and how loaded the node is.
+    - script:
+        content: |
+          for sel in clickhouse-keeper.altinity.com/chk=itest-ch-replicated-keeper clickhouse.altinity.com/chi=itest-ch-replicated; do
+            for pod in $(kubectl get pods -n default -l "$sel" -o name); do
+              echo "===== $pod"
+              kubectl logs -n default "$pod" --tail=150 || true
+              echo "===== $pod (previous)"
+              kubectl logs -n default "$pod" --previous --tail=150 || true
+            done
+          done
+    - script:
+        content: |
+          kubectl describe pods -n default -l 'clickhouse-keeper.altinity.com/chk=itest-ch-replicated-keeper' | grep -E '^Name:|Last State|Reason|Exit Code|Restart Count' || true
+          kubectl describe pods -n default -l 'clickhouse.altinity.com/chi=itest-ch-replicated' | grep -E '^Name:|Last State|Reason|Exit Code|Restart Count' || true
+          kubectl describe nodes | grep -A 12 'Allocated resources' || true
   steps:
     - name: provision-and-assert
       try:
@@ -58,6 +75,15 @@ spec:
                 fi
                 sleep "$SLEEP"
               done
+
+              # ClickHouse must reach Keeper through the ready-only client
+              # Services, never a Keeper node that is still joining the quorum.
+              zk_host=$(kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+                "SELECT host FROM system.zookeeper_connection")
+              case "$zk_host" in
+                *-client*) echo "Keeper connection via client Service: $zk_host" ;;
+                *) echo "expected a Keeper client Service, got: $zk_host"; exit 1 ;;
+              esac
 
               kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
                 "CREATE TABLE IF NOT EXISTS default.itest_repl ON CLUSTER '{cluster}' (id UInt64) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/itest_repl', '{replica}') ORDER BY id"

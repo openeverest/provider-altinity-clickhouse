@@ -16,6 +16,11 @@ spec:
     clusters:
       - layout:
           replicasCount: 2
+    # ClickHouse references the Keeper CR; the operator resolves it to the
+    # Keeper hosts' ready-only client Services.
+    zookeeper:
+      keeper:
+        name: itest-ch-replicated-keeper
     settings:
       max_concurrent_queries: "200"
       max_connections: "4096"
