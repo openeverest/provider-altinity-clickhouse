@@ -47,7 +47,7 @@ never manages pods directly — all lifecycle work is delegated to the operator.
 
 | provider-altinity-clickhouse | OpenEverest | Altinity ClickHouse operator | Kubernetes |
 |---|---|---|---|
-| `0.1.x` | `>= 2.0.0` | `0.27.x` | `1.30` – `1.34` |
+| `0.1.x` | `>= 2.0.0` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
 
 ## Capabilities
 
@@ -235,6 +235,9 @@ chain scoped to the Instance; to sign with an existing issuer, set
 The `replicated` topology provisions a `ClickHouseKeeperInstallation` first and waits for the
 quorum to become ready before creating the `ClickHouseInstallation`, so no ZooKeeper is
 required. It supports `ReplicatedMergeTree` and the other replicated table engines.
+ClickHouse references the Keeper by name; the operator resolves it to each Keeper host's
+ready-only client Service, so ClickHouse never connects to a Keeper node that is still
+joining the quorum.
 
 ## Versions
 

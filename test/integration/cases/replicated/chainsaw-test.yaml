@@ -59,6 +59,15 @@ spec:
                 sleep "$SLEEP"
               done
 
+              # ClickHouse must reach Keeper through the ready-only client
+              # Services, never a Keeper node that is still joining the quorum.
+              zk_host=$(kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+                "SELECT host FROM system.zookeeper_connection")
+              case "$zk_host" in
+                *-client*) echo "Keeper connection via client Service: $zk_host" ;;
+                *) echo "expected a Keeper client Service, got: $zk_host"; exit 1 ;;
+              esac
+
               kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
                 "CREATE TABLE IF NOT EXISTS default.itest_repl ON CLUSTER '{cluster}' (id UInt64) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/itest_repl', '{replica}') ORDER BY id"
               kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \

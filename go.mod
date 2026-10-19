@@ -3,7 +3,7 @@ module github.com/openeverest/provider-altinity-clickhouse
 go 1.27.1
 
 require (
-	github.com/altinity/clickhouse-operator v0.0.0-20260604130131-dae4e5be79b9
+	github.com/altinity/clickhouse-operator v0.0.0-20260924113527-82498653e845
 	github.com/cert-manager/cert-manager v1.20.2
 	github.com/openeverest/openeverest/v2 v2.0.0-dev.4
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.93.1
