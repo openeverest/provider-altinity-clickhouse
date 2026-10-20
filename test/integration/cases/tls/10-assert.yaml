@@ -1,5 +1,6 @@
 # cert-manager issues the server certificate into a kubernetes.io/tls Secret
-# from the provider-managed self-signed CA chain.
+# from the provider-managed self-signed CA chain. It covers the client
+# Service and each replica's Service.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -10,8 +11,17 @@ type: kubernetes.io/tls
 (data."tls.key" != null): true
 (data."ca.crt" != null): true
 ---
-# The CHI adds the secure ports additively and mounts the server certificate
-# files from the cert-manager Secret; the plaintext ports remain available.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-tls-server
+  namespace: default
+spec:
+  (contains(dnsNames, 'clickhouse-itest-ch-tls.default.svc.cluster.local')): true
+  (contains(dnsNames, 'chi-itest-ch-tls-clickhouse-0-1.default.svc.cluster.local')): true
+---
+# The CHI serves the secure ports from the mounted certificate and runs
+# distributed queries between the replicas over the secure native port.
 apiVersion: clickhouse.altinity.com/v1
 kind: ClickHouseInstallation
 metadata:
@@ -19,6 +29,8 @@ metadata:
   namespace: default
 spec:
   configuration:
+    clusters:
+      - secure: "True"
     settings:
       https_port: "8443"
       tcp_port_secure: "9440"
@@ -36,3 +48,44 @@ spec:
       ("openssl.xml" != null): true
 status:
   status: Completed
+---
+# Required mode: the client Service carries only the secure ports...
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-itest-ch-tls
+  namespace: default
+spec:
+  (ports[*].port): [8443, 9440]
+---
+# ...and a NetworkPolicy limits the plaintext ports to the operator and the
+# Instance's own pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: itest-ch-tls-plaintext
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      clickhouse.altinity.com/chi: itest-ch-tls
+  (ingress[0].ports[*].port): [8443, 9440, 9363]
+  (ingress[1].ports[*].port): [8123, 9000, 9009]
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-tls
+  namespace: default
+status:
+  phase: Ready
+---
+# Clients get the HTTPS endpoint and the CA to verify it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-tls-conn
+  namespace: default
+data:
+  port: ODQ0Mw== # base64("8443")
+  ("ca.crt" != null): true

@@ -19,7 +19,6 @@ import (
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
-	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -83,12 +82,11 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 	}
 
 	if tlsEnabled(c) {
-		cert := &cmapi.Certificate{}
-		found, err := getOptional(c, cert, serverCertName(c.Name()))
+		issued, err := serverCertificateIssued(c)
 		if err != nil {
 			return controller.Status{}, err
 		}
-		if !found || !certificateReady(cert) {
+		if !issued {
 			return inProgress("Waiting for the TLS certificate"), nil
 		}
 	}

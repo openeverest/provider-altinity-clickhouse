@@ -1,3 +1,5 @@
+# Replicated, so distributed queries between the replicas run over TLS too.
+# TLS without a mode means "required".
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance
 metadata:
@@ -7,17 +9,21 @@ spec:
   providerRef:
     name: altinity-clickhouse
   topology:
-    type: standalone
+    type: replicated
   components:
     engine:
       type: clickhouse
-      replicas: 1
+      replicas: 2
       resources:
         limits:
           cpu: "1"
-          memory: 2G
+          memory: 1Gi
       storage:
         size: 10Gi
       parameters:
         tls:
           enabled: enabled
+    keeper:
+      type: clickhouse-keeper
+      storage:
+        size: 5Gi

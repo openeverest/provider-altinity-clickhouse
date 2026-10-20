@@ -26,6 +26,7 @@ import (
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/yaml"
@@ -64,6 +66,7 @@ func New() *Provider {
 				chkv1.AddToScheme,
 				monitoringv1.AddToScheme,
 				cmapi.AddToScheme,
+				networkingv1.AddToScheme,
 			},
 			// Safe to watch: server-side apply of an unchanged CHI/CHK is a
 			// no-op, so operator status/finalizer writes do not loop back.
@@ -76,6 +79,11 @@ func New() *Provider {
 				controller.WatchOwned(&corev1.Secret{}, predicate.NewPredicateFuncs(func(o client.Object) bool {
 					return o.GetLabels()[controller.ProviderLabel] == common.ProviderName
 				})),
+				controller.WatchOwned(&networkingv1.NetworkPolicy{}),
+				// A LoadBalancer address goes into the server certificate.
+				controller.WatchExternal(&corev1.Service{},
+					handler.EnqueueRequestsFromMapFunc(instanceForClientService),
+					loadBalancerAddressChanged()),
 			},
 		},
 	}
@@ -245,7 +253,16 @@ func applyAndWaitForCHI(c *controller.Context, gate *rolloutGate, chi *chiv1.Cli
 	if err := c.Get(current, c.Name()); err != nil {
 		return controller.WaitForDuration("waiting for Altinity operator to provision ClickHouseInstallation", 15*time.Second)
 	}
-	return waitForCHI(c, current)
+	if err := reconcilePlaintextPolicy(c, current); err != nil {
+		return err
+	}
+	if err := waitForCHI(c, current); err != nil {
+		return err
+	}
+	if !tlsEnabled(c) {
+		return cleanupTLS(c, current)
+	}
+	return nil
 }
 
 // waitForCHI checks CHI status and returns a WaitError if not yet Completed.
@@ -320,10 +337,10 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 		return fmt.Errorf("delete rollout state secret: %w", err)
 	}
 
-	if tlsEnabled(c) {
-		if err := deleteTLSResources(c); err != nil {
-			return err
-		}
+	// Also when TLS is off now: certificates of an earlier TLS setting may
+	// still be around.
+	if err := deleteTLSResources(c); err != nil {
+		return err
 	}
 
 	if err := waitForDeletion(c, &chiv1.ClickHouseInstallation{}, c.Name()); err != nil {
@@ -560,14 +577,15 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 		spec.Configuration.Settings = settings
 	}
 
-	// Wire TLS: mount the server certificate and add the secure ports additively.
-	tlsOn := tlsEnabled(c)
-	if tlsOn {
-		applyTLSToCHISpec(&spec, settings, c.Name())
+	// Wire TLS: mount the server certificate, open the secure ports and run
+	// distributed queries over them.
+	mode := tlsMode(c)
+	if mode != "" {
+		applyTLSToCHISpec(&spec, settings, cluster, c.Name())
 	}
 
 	// Wire the root Service exposure (ClusterIP / LoadBalancer / NodePort).
-	configureExpose(&spec, engine.Service, tlsOn)
+	configureExpose(&spec, engine.Service, mode)
 
 	// Wire Keeper for replicated topology. The operator resolves the reference
 	// to the Keeper hosts' ready-only client Services, so ClickHouse never
@@ -676,29 +694,35 @@ func keeperCRName(instanceName string) string {
 // ServiceTemplate (referenced from spec.defaults) that overrides the Service
 // type (ClusterIP, LoadBalancer, NodePort), annotations, and — for
 // LoadBalancer — the allowed source ranges. When service is nil or the type is
-// unset, the operator's default (ClusterIP) applies and no template is added.
-// When tlsOn is set, the secure HTTPS/native ports are added to the template so
-// clients can reach them through the exposed Service.
-func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsOn bool) {
-	if service == nil || service.ServiceType == "" {
+// unset, the operator's default (headless ClusterIP) applies, and a template
+// is added only to set the ports for TLS.
+//
+// tlsMode selects the ports: plaintext without TLS, plaintext and secure with
+// "optional", and only the secure ones with "required".
+func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsMode string) {
+	exposed := service != nil && service.ServiceType != ""
+	if !exposed && tlsMode == "" {
 		return
 	}
 
-	ports := []corev1.ServicePort{
-		{
-			Name:       chiv1.ChDefaultHTTPPortName,
-			Protocol:   corev1.ProtocolTCP,
-			Port:       chiv1.ChDefaultHTTPPortNumber,
-			TargetPort: intstr.FromString(chiv1.ChDefaultHTTPPortName),
-		},
-		{
-			Name:       chiv1.ChDefaultTCPPortName,
-			Protocol:   corev1.ProtocolTCP,
-			Port:       chiv1.ChDefaultTCPPortNumber,
-			TargetPort: intstr.FromString(chiv1.ChDefaultTCPPortName),
-		},
+	var ports []corev1.ServicePort
+	if tlsMode != common.TLSModeRequired {
+		ports = append(ports,
+			corev1.ServicePort{
+				Name:       chiv1.ChDefaultHTTPPortName,
+				Protocol:   corev1.ProtocolTCP,
+				Port:       chiv1.ChDefaultHTTPPortNumber,
+				TargetPort: intstr.FromString(chiv1.ChDefaultHTTPPortName),
+			},
+			corev1.ServicePort{
+				Name:       chiv1.ChDefaultTCPPortName,
+				Protocol:   corev1.ProtocolTCP,
+				Port:       chiv1.ChDefaultTCPPortNumber,
+				TargetPort: intstr.FromString(chiv1.ChDefaultTCPPortName),
+			},
+		)
 	}
-	if tlsOn {
+	if tlsMode != "" {
 		ports = append(ports,
 			corev1.ServicePort{
 				Name:       chiv1.ChDefaultHTTPSPortName,
@@ -717,17 +741,19 @@ func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsOn b
 
 	tmpl := chiv1.ServiceTemplate{
 		Name: common.ServiceTemplateName,
-		ObjectMeta: metav1.ObjectMeta{
-			Annotations: service.Annotations,
-		},
-		Spec: corev1.ServiceSpec{
-			Type:  service.ServiceType,
-			Ports: ports,
-		},
+		Spec: corev1.ServiceSpec{Ports: ports},
 	}
-
-	if service.ServiceType == corev1.ServiceTypeLoadBalancer && service.LoadBalancerService != nil {
-		tmpl.Spec.LoadBalancerSourceRanges = service.LoadBalancerService.SourceRanges.NormalizedSourceRanges()
+	if exposed {
+		tmpl.ObjectMeta.Annotations = service.Annotations
+		tmpl.Spec.Type = service.ServiceType
+		if service.ServiceType == corev1.ServiceTypeLoadBalancer && service.LoadBalancerService != nil {
+			tmpl.Spec.LoadBalancerSourceRanges = service.LoadBalancerService.SourceRanges.NormalizedSourceRanges()
+		}
+	} else {
+		// The operator's default Service is headless; clusterIP is immutable,
+		// so keep it rather than have the Service recreated.
+		tmpl.Spec.Type = corev1.ServiceTypeClusterIP
+		tmpl.Spec.ClusterIP = corev1.ClusterIPNone
 	}
 
 	if spec.Templates == nil {
@@ -915,29 +941,34 @@ func resolveEngineSettings(c *controller.Context, engine corev1alpha1.ComponentS
 
 // buildConnectionDetails extracts connection info from a ready CHI.
 func buildConnectionDetails(c *controller.Context, chi *chiv1.ClickHouseInstallation) controller.ConnectionDetails {
-	svcName := fmt.Sprintf("clickhouse-%s", c.Name())
 	host := chi.Status.GetEndpoint()
 	if host == "" {
-		host = fmt.Sprintf("%s.%s.svc", svcName, c.Namespace())
+		host = fmt.Sprintf("%s.%s.svc", clientServiceName(c.Name()), c.Namespace())
 	}
 
 	username, password := readCredentials(c)
 	port := strconv.Itoa(common.HTTPPort)
 
 	scheme := "http"
+	var additional map[string]string
 	if tlsEnabled(c) {
 		scheme = "https"
 		port = strconv.Itoa(common.HTTPSPort)
+		// Clients need the CA to verify a provider-managed certificate.
+		if ca := readCACert(c); ca != "" {
+			additional = map[string]string{common.ConnectionKeyCACert: ca}
+		}
 	}
 
 	return controller.ConnectionDetails{
-		Type:     "clickhouse",
-		Provider: common.ProviderName,
-		Host:     host,
-		Port:     port,
-		Username: username,
-		Password: password,
-		URI:      fmt.Sprintf("%s://%s:%s@%s:%s/", scheme, username, password, host, port),
+		Type:                 "clickhouse",
+		Provider:             common.ProviderName,
+		Host:                 host,
+		Port:                 port,
+		Username:             username,
+		Password:             password,
+		URI:                  fmt.Sprintf("%s://%s:%s@%s:%s/", scheme, username, password, host, port),
+		AdditionalProperties: additional,
 	}
 }
 

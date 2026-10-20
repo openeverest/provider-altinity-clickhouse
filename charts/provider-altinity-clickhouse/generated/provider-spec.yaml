@@ -58,6 +58,8 @@ spec:
                     name:
                       type: string
                   type: object
+                mode:
+                  type: string
               type: object
           type: object
       type: clickhouse
@@ -167,11 +169,24 @@ spec:
                     value: enabled
               path: spec.components.engine.parameters.tls.enabled
               uiType: select
+            tlsMode:
+              fieldParams:
+                defaultValue: required
+                helperText: Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too.
+                label: TLS mode
+                options:
+                  - label: Required
+                    value: required
+                  - label: Optional
+                    value: optional
+              path: spec.components.engine.parameters.tls.mode
+              uiType: select
           componentsOrder:
             - storageClass
             - storageReclaimPolicy
             - externalAccess
             - tls
+            - tlsMode
             - configuration
           description: Optional advanced settings.
           label: Advanced
@@ -396,11 +411,24 @@ spec:
                     value: enabled
               path: spec.components.engine.parameters.tls.enabled
               uiType: select
+            tlsMode:
+              fieldParams:
+                defaultValue: required
+                helperText: Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too.
+                label: TLS mode
+                options:
+                  - label: Required
+                    value: required
+                  - label: Optional
+                    value: optional
+              path: spec.components.engine.parameters.tls.mode
+              uiType: select
           componentsOrder:
             - storageClass
             - storageReclaimPolicy
             - externalAccess
             - tls
+            - tlsMode
             - configuration
           description: Optional advanced settings.
           label: Advanced

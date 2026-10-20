@@ -4,23 +4,48 @@ metadata:
   name: tls
 spec:
   description: |
-    Provision a standalone ClickHouse Instance with TLS enabled and assert the
-    provider drives cert-manager to issue a server certificate and wires the
-    secure ports (HTTPS 8443, native 9440) and certificate files into the CHI
-    additively alongside the plaintext ports. Requires cert-manager in the
-    cluster (installed by the dev stack).
+    Provision a replicated ClickHouse Instance with TLS enabled (required mode
+    by default) and assert the provider drives cert-manager to issue a server
+    certificate covering the client and replica Services, serves HTTPS (8443)
+    and the secure native protocol (9440), runs distributed queries between the
+    replicas over TLS, exposes only the secure ports on the client Service,
+    limits the plaintext ports with a NetworkPolicy and publishes the CA with
+    the connection details. Clients connect verifying the certificate, and a
+    renewed certificate is served without a restart. Switching to optional
+    mode restores the plaintext ports. Requires cert-manager in the cluster
+    (installed by the dev stack). The CI cluster does not enforce
+    NetworkPolicies, so only the policy itself is asserted.
   catch:
     - script:
-        content: kubectl -n $NAMESPACE get instance,chi,secret,certificate,issuer -o yaml
+        content: kubectl -n $NAMESPACE get instance,chi,chk,secret,certificate,issuer,service,networkpolicy -o yaml
     - script:
         content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-tls -o name); do
+            echo "===== $pod"
+            kubectl logs -n default "$pod" --tail=100 || true
+          done
   steps:
-    - name: provision-and-assert
+    - name: tls
       try:
         - apply:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
+        - script:
+            content: sh ./tls-check.sh
+        - patch:
+            file: 20-optional.yaml
+        - assert:
+            file: 20-assert.yaml
+        - error:
+            resource:
+              apiVersion: networking.k8s.io/v1
+              kind: NetworkPolicy
+              metadata:
+                name: itest-ch-tls-plaintext
+                namespace: default
       finally:
         - command:
             entrypoint: kubectl
@@ -43,5 +68,16 @@ spec:
               - default
               - -l
               - clickhouse.altinity.com/chi=itest-ch-tls
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse-keeper.altinity.com/chk=itest-ch-tls-keeper
               - --ignore-not-found
               - --wait=false

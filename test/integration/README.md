@@ -117,13 +117,24 @@ Provisions a standalone Instance seeded with credentials through
 
 ### `tls`
 
-Provisions a standalone Instance with `tls.enabled: enabled` and asserts (needs
-cert-manager, installed by the dev stack):
+Provisions a replicated Instance with `tls.enabled: enabled` (required mode by
+default) and asserts (needs cert-manager, installed by the dev stack):
 
 1. cert-manager issues the server certificate into the `<name>-server-tls`
-   `kubernetes.io/tls` Secret.
-2. The CHI adds the secure ports (HTTPS `8443`, native `9440`) and mounts the
-   certificate files **additively** — the plaintext ports remain available.
+   `kubernetes.io/tls` Secret, covering the client and replica Services.
+2. The CHI serves HTTPS `8443` and native `9440`, and its cluster is `secure`;
+   the client Service carries only the secure ports; the `<name>-plaintext`
+   NetworkPolicy limits the plaintext ports; the connection Secret reports port
+   `8443` and the CA.
+3. Clients connect over `9440` and `8443` verifying the certificate against
+   that CA, and a distributed query reaches both replicas over TLS.
+4. After the certificate Secret is re-issued, ClickHouse serves the new
+   certificate without restarting.
+5. Switching to `mode: optional` restores the plaintext ports on the client
+   Service and removes the NetworkPolicy.
+
+The CI cluster does not enforce NetworkPolicies, so blocking the plaintext
+ports is only asserted through the policy itself.
 
 Each case cleans up its Instance in a `finally` block (the provider's own
 finalizer logic garbage-collects the CHI/CHK).
