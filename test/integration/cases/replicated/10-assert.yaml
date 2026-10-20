@@ -15,7 +15,7 @@ spec:
           # The version bundle pins the Keeper image.
           containers:
             - name: clickhouse-keeper
-              image: clickhouse/clickhouse-keeper:25.3.5
+              image: clickhouse/clickhouse-keeper:26.8.31.2
           # Default preferred anti-affinity spreads the Keeper pods.
           affinity:
             podAntiAffinity:

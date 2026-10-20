@@ -26,9 +26,7 @@ ui:
             optionsPathConfig:
               labelPath: "name"
               valuePath: "name"
-            modes:
-              edit:
-                disabled: true
+            helperText: "Upgrades are applied as a rolling restart. Downgrades are rejected."
           validation:
             required: true
 

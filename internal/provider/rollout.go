@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
@@ -42,6 +44,11 @@ import (
 // in a provider-owned Secret (Secrets are cached already; a ConfigMap would
 // add a cluster-wide informer). A CR without a record was last applied by a
 // provider predating this gate: it is applied and recorded as the baseline.
+//
+// The inputs are taken from the stored Instance, not from the copy Sync is
+// handed: the runtime fills that copy's component versions in from the
+// version bundle, so a provider release moving a bundle to a new patch would
+// otherwise look like a user edit.
 type rolloutGate struct {
 	record map[string]string
 	inputs string
@@ -59,6 +66,11 @@ func newRolloutGate(c *controller.Context, rendered ...client.Object) (*rolloutG
 	state := &corev1.Secret{}
 	if err := c.Get(state, rolloutStateName(c.Name())); err == nil {
 		for k, v := range state.Data {
+			// <cr>.inputs records fingerprinted the runtime-prepared Instance
+			// and cannot be compared; see apply.
+			if strings.HasSuffix(k, legacyInputsSuffix) {
+				continue
+			}
 			g.record[k] = string(v)
 		}
 	} else if !apierrors.IsNotFound(err) {
@@ -99,10 +111,14 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 		return false, fmt.Errorf("check %s: %w", obj.GetName(), err)
 	}
 
+	// Inputs that differ from the recorded ones mean the user changed the
+	// Instance. Without recorded inputs (a record of the earlier format) a
+	// changed rendering cannot be attributed to the user, so it is held.
+	recordedInputs := g.record[key+inputsSuffix]
 	allowed := !exists ||
 		g.record[key+".spec"] == "" ||
 		g.record[key+".spec"] == spec ||
-		g.record[key+".inputs"] != g.inputs
+		(recordedInputs != "" && recordedInputs != g.inputs)
 	if !allowed {
 		if g.approved == nil {
 			approved := c.RequestMaintenance(g.token,
@@ -121,11 +137,11 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 	if err := c.Apply(obj); err != nil {
 		return false, err
 	}
-	if g.record[key+".spec"] == spec && g.record[key+".inputs"] == g.inputs {
+	if g.record[key+".spec"] == spec && recordedInputs == g.inputs {
 		return true, nil
 	}
 	g.record[key+".spec"] = spec
-	g.record[key+".inputs"] = g.inputs
+	g.record[key+inputsSuffix] = g.inputs
 	return true, g.save(c)
 }
 
@@ -145,11 +161,21 @@ func rolloutStateName(instanceName string) string {
 	return instanceName + common.RolloutStateSuffix
 }
 
-// inputsHash fingerprints the Instance fields the CRs are rendered from.
-// Maintenance approvals, backups and the deletion policy are left out:
+// Record keys: <cr>.spec and <cr>.instance.
+const (
+	inputsSuffix       = ".instance"
+	legacyInputsSuffix = ".inputs"
+)
+
+// inputsHash fingerprints the stored Instance fields the CRs are rendered
+// from. Maintenance approvals, backups and the deletion policy are left out:
 // changing them is not a change to the cluster.
 func inputsHash(c *controller.Context) (string, error) {
-	spec := c.Instance().Spec
+	stored := &corev1alpha1.Instance{}
+	if err := c.Get(stored, c.Name()); err != nil {
+		return "", fmt.Errorf("read stored Instance: %w", err)
+	}
+	spec := stored.Spec
 	return hashJSON(struct {
 		Version    string `json:"version,omitempty"`
 		Topology   any    `json:"topology,omitempty"`

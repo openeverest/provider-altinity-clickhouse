@@ -1,0 +1,23 @@
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-upgrade
+  namespace: default
+spec:
+  templates:
+    podTemplates:
+      - spec:
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:26.8.31.2
+status:
+  status: Completed
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-upgrade
+  namespace: default
+status:
+  phase: Ready
+  version: "26.8"

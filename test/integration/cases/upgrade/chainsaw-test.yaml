@@ -1,0 +1,97 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: upgrade
+spec:
+  description: |
+    Provision a standalone ClickHouse Instance on the 26.3 bundle and write
+    rows, upgrade it to the 26.8 bundle and assert it reports Updating, then
+    Ready on the new image with the rows intact. Finally assert a downgrade
+    back to 26.3 is rejected and leaves the cluster on 26.8.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,pod -o yaml
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: upgrade
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-upgrade \
+                -o jsonpath='{.items[0].metadata.name}')
+              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --multiquery -q "
+                DROP TABLE IF EXISTS default.upgrade_probe SYNC;
+                CREATE TABLE default.upgrade_probe (id UInt32) ENGINE = MergeTree ORDER BY id;
+                INSERT INTO default.upgrade_probe SELECT number FROM numbers(1000);"
+        - patch:
+            file: 20-upgrade.yaml
+        - assert:
+            file: 20-assert-updating.yaml
+        - assert:
+            file: 20-assert-upgraded.yaml
+        - script:
+            content: |
+              set -eu
+              POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-upgrade \
+                -o jsonpath='{.items[0].metadata.name}')
+              i=0
+              while [ "$i" -lt 36 ]; do
+                out=$(kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client -q \
+                  "SELECT version(), count() FROM default.upgrade_probe" 2>/dev/null || true)
+                case "$out" in
+                  26.8.*1000) echo "upgraded: $out"; exit 0 ;;
+                esac
+                i=$((i + 1))
+                sleep 5
+              done
+              echo "expected 26.8 with 1000 rows, got: $out"
+              exit 1
+        # Downgrades are rejected: the CHI stays on 26.8.
+        - patch:
+            file: 30-downgrade.yaml
+        - sleep:
+            duration: 20s
+        - assert:
+            resource:
+              apiVersion: clickhouse.altinity.com/v1
+              kind: ClickHouseInstallation
+              metadata:
+                name: itest-ch-upgrade
+                namespace: default
+              spec:
+                templates:
+                  podTemplates:
+                    - spec:
+                        containers:
+                          - name: clickhouse
+                            image: clickhouse/clickhouse-server:26.8.31.2
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instance
+              - itest-ch-upgrade
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-upgrade
+              - --ignore-not-found
+              - --wait=false

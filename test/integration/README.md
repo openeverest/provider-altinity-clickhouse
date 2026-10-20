@@ -68,6 +68,15 @@ Provisions a standalone Instance with the default `storageReclaimPolicy` and:
 3. Switches `storageReclaimPolicy` to `Delete`, deletes the Instance and asserts
    the PVC is removed.
 
+### `upgrade`
+
+Provisions a standalone Instance on the `26.3` bundle, writes rows, then:
+
+1. Moves it to `26.8` and asserts it reports `Updating`, then `Ready` on the
+   26.8 image, with the rows intact and `version()` reporting 26.8.
+2. Moves it back to `26.3` and asserts the downgrade is rejected: the CHI stays
+   on 26.8.
+
 ### `expose`
 
 Provisions a standalone Instance with a `LoadBalancer` Service and asserts the

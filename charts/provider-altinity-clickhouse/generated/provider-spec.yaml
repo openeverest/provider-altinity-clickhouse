@@ -3,18 +3,36 @@
 spec:
   componentTypes:
     clickhouse:
-      defaultVersion: 25.3.5
+      defaultVersion: 26.8.31.2
       versions:
-        - image: clickhouse/clickhouse-server:25.3.5
+        - image: clickhouse/clickhouse-server:26.8.31.2
+          version: 26.8.31.2
+        - image: clickhouse/clickhouse-server:26.3.56.2
+          version: 26.3.56.2
+        - deprecated: true
+          image: clickhouse/clickhouse-server:25.3.14.14
+          version: 25.3.14.14
+        - deprecated: true
+          image: clickhouse/clickhouse-server:25.3.5
           version: 25.3.5
-        - image: clickhouse/clickhouse-server:25.5.2
+        - deprecated: true
+          image: clickhouse/clickhouse-server:25.5.2
           version: 25.5.2
-        - image: clickhouse/clickhouse-server:24.8.14
+        - deprecated: true
+          image: clickhouse/clickhouse-server:24.8.14
           version: 24.8.14
     clickhouse-keeper:
-      defaultVersion: 25.3.5
+      defaultVersion: 26.8.31.2
       versions:
-        - image: clickhouse/clickhouse-keeper:25.3.5
+        - image: clickhouse/clickhouse-keeper:26.8.31.2
+          version: 26.8.31.2
+        - image: clickhouse/clickhouse-keeper:26.3.56.2
+          version: 26.3.56.2
+        - deprecated: true
+          image: clickhouse/clickhouse-keeper:25.3.14.14
+          version: 25.3.14.14
+        - deprecated: true
+          image: clickhouse/clickhouse-keeper:25.3.5
           version: 25.3.5
   components:
     engine:
@@ -45,7 +63,7 @@ spec:
       type: clickhouse
     keeper:
       type: clickhouse-keeper
-  defaultVersion: "25.3"
+  defaultVersion: "26.8"
   release:
     version: 0.1.0
   topologies:
@@ -132,10 +150,8 @@ spec:
           components:
             version:
               fieldParams:
+                helperText: Upgrades are applied as a rolling restart. Downgrades are rejected.
                 label: ClickHouse Version
-                modes:
-                  edit:
-                    disabled: true
                 optionsPath: spec.versions
                 optionsPathConfig:
                   defaultValuePath: spec.defaultVersion
@@ -363,10 +379,8 @@ spec:
           components:
             version:
               fieldParams:
+                helperText: Upgrades are applied as a rolling restart. Downgrades are rejected.
                 label: ClickHouse Version
-                modes:
-                  edit:
-                    disabled: true
                 optionsPath: spec.versions
                 optionsPathConfig:
                   defaultValuePath: spec.defaultVersion
@@ -451,14 +465,22 @@ spec:
         - advanced
   versions:
     - components:
-        engine: 25.3.5
-        keeper: 25.3.5
+        engine: 26.8.31.2
+        keeper: 26.8.31.2
+      name: "26.8"
+    - components:
+        engine: 26.3.56.2
+        keeper: 26.3.56.2
+      name: "26.3"
+    - components:
+        engine: 25.3.14.14
+        keeper: 25.3.14.14
       name: "25.3"
     - components:
         engine: 25.5.2
-        keeper: 25.3.5
+        keeper: 25.3.14.14
       name: "25.5"
     - components:
         engine: 24.8.14
-        keeper: 25.3.5
+        keeper: 25.3.14.14
       name: "24.8"

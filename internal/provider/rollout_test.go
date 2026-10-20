@@ -103,7 +103,7 @@ func TestRolloutBaselinesClusterWithoutRecord(t *testing.T) {
 	state := rolloutState(t, c)
 	require.NotNil(t, state)
 	assert.NotEmpty(t, state.Data["chi.spec"])
-	assert.NotEmpty(t, state.Data["chi.inputs"])
+	assert.NotEmpty(t, state.Data["chi.instance"])
 }
 
 func TestRolloutAppliesUnchangedRendering(t *testing.T) {
@@ -265,4 +265,62 @@ func TestCleanupRemovesRolloutState(t *testing.T) {
 
 	require.NoError(t, New().Cleanup(c))
 	assert.Nil(t, rolloutState(t, c))
+}
+
+// prepared returns the copy of stored the runtime hands Sync: component
+// versions filled in from the version bundle.
+func prepared(stored *corev1alpha1.Instance, engineVersion string) *corev1alpha1.Instance {
+	return withEngine(stored, func(e *corev1alpha1.ComponentSpec) { e.Version = engineVersion })
+}
+
+// syncPrepared runs Sync on the prepared copy of stored, with stored in the
+// API, and returns the CHIs applied and the context.
+func syncPrepared(t *testing.T, stored, preparedIn *corev1alpha1.Instance, live ...client.Object) ([]*chiv1.ClickHouseInstallation, *controller.Context) {
+	t.Helper()
+	var applied []*chiv1.ClickHouseInstallation
+	base := newInterceptedTestContext(t, captureCHIApply(t, &applied), stored, live...)
+	c := controller.NewContext(context.Background(), base.Client(), preparedIn, "altinity-clickhouse")
+	if err := New().Sync(c); err != nil {
+		require.True(t, controller.IsWaitError(err), "unexpected error: %v", err)
+	}
+	return applied, c
+}
+
+// A provider release that moves a version bundle to a new patch changes the
+// versions the runtime fills in, not the Instance: it must be held.
+func TestRolloutHoldsBundleMovedByProvider(t *testing.T) {
+	stored := withEngine(newTestInstance("db", "ns", ""), image(""))
+
+	_, first := syncPrepared(t, stored, prepared(stored, "26.3.56.2"), completedCHI())
+	recorded := rolloutState(t, first)
+	require.NotNil(t, recorded)
+	state := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: recorded.Name, Namespace: recorded.Namespace}, Data: recorded.Data}
+
+	applied, c := syncPrepared(t, stored, prepared(stored, "26.8.31.2"), completedCHI(), state)
+	assert.Empty(t, applied)
+	assert.Len(t, c.GetPendingMaintenance(), 1)
+}
+
+// Records of the earlier format fingerprinted the prepared Instance under
+// <cr>.inputs: a changed rendering is held, and approving it records the
+// current format (the stale key is ignored, and dropped by server-side apply).
+func TestRolloutHoldsChangeOnLegacyRecord(t *testing.T) {
+	instance := newTestInstance("db", "ns", "")
+	legacy := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: rolloutStateName("db"), Namespace: "ns"},
+		Data: map[string][]byte{
+			"chi.spec":   []byte("rendered-by-an-earlier-provider"),
+			"chi.inputs": []byte("fingerprint-of-the-prepared-instance"),
+		},
+	}
+
+	applied, c := syncStandalone(t, instance, completedCHI(), legacy)
+	assert.Empty(t, applied)
+	require.Len(t, c.GetPendingMaintenance(), 1)
+
+	instance.Spec.Maintenance = &corev1alpha1.MaintenanceSpec{Approved: c.GetPendingMaintenance()[0].ApprovalToken}
+	applied, c = syncStandalone(t, instance, completedCHI(), legacy)
+	assert.Len(t, applied, 1)
+	state := rolloutState(t, c)
+	assert.NotEmpty(t, state.Data["chi.instance"])
 }
