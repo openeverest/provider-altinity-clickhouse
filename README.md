@@ -185,14 +185,13 @@ Component names are defined by this provider — see [definition/provider.yaml](
 `spec.version` and `spec.topology` are optional; the provider defaults apply.
 More examples live in [examples/](examples/).
 
-Watch it come up and read the connection details:
+Watch it come up, then read the connection details from the Secret named by
+`.status.connectionSecretRef` (`<instance-name>-conn`, see [Connecting](#connecting)):
 
 ```bash
 kubectl get instance my-instance -w
-kubectl get instance my-instance -o jsonpath='{.status.connection}'
+kubectl get secret my-instance-conn -o jsonpath='{.data.uri}' | base64 -d
 ```
-
-Credentials are in the secret named by `.status.connection.credentialsSecretRef`.
 
 ## Connecting
 
@@ -208,6 +207,19 @@ The provider provisions an administrative ClickHouse user for every Instance:
 - The user may manage users, roles, settings profiles and quotas through SQL
   (`CREATE USER`, `CREATE SETTINGS PROFILE`, …), so applications can get their own
   least-privileged users with limits.
+
+The connection Secret holds:
+
+| Key | Value |
+|---|---|
+| `host` | The LoadBalancer hostname or IP once assigned, when exposed through a LoadBalancer; otherwise the in-cluster Service, `clickhouse-<name>.<namespace>.svc.cluster.local` |
+| `internal_host` | The in-cluster Service, always. In-cluster clients can use it to avoid the LoadBalancer and its source ranges |
+| `port`, `uri` | The HTTP interface: `8123`, or HTTPS on `8443` with TLS. In `uri` the credentials are URL-encoded |
+| `http_port`, `native_port` | `8123` and `9000`; left out when TLS is `required` |
+| `https_port`, `native_secure_port` | `8443` and `9440`, with TLS |
+| `<port key>_node_port` | The node port of each of the above, when exposed through a NodePort |
+| `ca.crt` | The CA that signed the server certificate, with TLS |
+| `username`, `password` | The administrative user |
 
 To **rotate the password**, edit `password` in `<instance-name>-credentials`. The
 provider applies it right away: ClickHouse rolls one replica at a time (passwords

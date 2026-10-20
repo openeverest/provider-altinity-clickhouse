@@ -81,7 +81,10 @@ Provisions a standalone Instance on the `26.3` bundle, writes rows, then:
 
 Provisions a standalone Instance with a `LoadBalancer` Service and asserts the
 Altinity operator creates the root `clickhouse-<name>` Service with the
-requested `type`, annotations, and `loadBalancerSourceRanges`.
+requested `type`, annotations, and `loadBalancerSourceRanges`. The connection
+Secret's `host` and `uri` then point at the load balancer address, with
+`internal_host` keeping the in-cluster Service. Switching to a `NodePort`
+Service publishes `http_port_node_port` and `native_port_node_port`.
 
 ### `scheduling`
 

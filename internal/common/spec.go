@@ -212,6 +212,19 @@ const (
 	// signed the server certificate.
 	ConnectionKeyCACert = "ca.crt"
 
+	// Connection details keys besides the runtime's well-known ones.
+	// ConnectionKeyInternalHost is the in-cluster address, which differs from
+	// host when the Instance is exposed through a LoadBalancer.
+	ConnectionKeyInternalHost = "internal_host"
+	// The ports clients may use, for the TLS mode, on either host.
+	ConnectionKeyHTTPPort         = "http_port"
+	ConnectionKeyHTTPSPort        = "https_port"
+	ConnectionKeyNativePort       = "native_port"
+	ConnectionKeyNativeSecurePort = "native_secure_port"
+	// ConnectionKeyNodePortSuffix turns a port key into the key of the
+	// matching node port when the Instance is exposed through a NodePort.
+	ConnectionKeyNodePortSuffix = "_node_port"
+
 	// EnvOperatorNamespace and EnvOperatorPodLabels identify the Altinity
 	// operator pods, which keep plaintext access when TLS is required. The
 	// chart sets both; the namespace defaults to the provider's own.

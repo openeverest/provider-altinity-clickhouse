@@ -6,7 +6,9 @@ spec:
   description: |
     Provision a standalone ClickHouse Instance with a LoadBalancer Service and
     assert the operator creates the root Service with the requested type,
-    annotations, and load balancer source ranges.
+    annotations, and load balancer source ranges, and that the connection
+    details report the load balancer address. Switching to a NodePort Service
+    reports the node ports instead.
   catch:
     - script:
         content: kubectl -n $NAMESPACE get instance,chi,svc -o yaml
@@ -19,6 +21,12 @@ spec:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
+        - script:
+            content: sh ./connection-check.sh loadbalancer
+        - patch:
+            file: 20-nodeport.yaml
+        - script:
+            content: sh ./connection-check.sh nodeport
       finally:
         - command:
             entrypoint: kubectl
