@@ -23,9 +23,11 @@ spec:
         - script:
             content: |
               set -eu
+              # The default user is password-protected: connect as the admin user.
+              PW=$(kubectl get secret itest-ch-upgrade-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
               POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-upgrade \
                 -o jsonpath='{.items[0].metadata.name}')
-              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --multiquery -q "
+              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --user admin --password "$PW" --multiquery -q "
                 DROP TABLE IF EXISTS default.upgrade_probe SYNC;
                 CREATE TABLE default.upgrade_probe (id UInt32) ENGINE = MergeTree ORDER BY id;
                 INSERT INTO default.upgrade_probe SELECT number FROM numbers(1000);"
@@ -38,11 +40,13 @@ spec:
         - script:
             content: |
               set -eu
+              # The default user is password-protected: connect as the admin user.
+              PW=$(kubectl get secret itest-ch-upgrade-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
               POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-upgrade \
                 -o jsonpath='{.items[0].metadata.name}')
               i=0
               while [ "$i" -lt 36 ]; do
-                out=$(kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client -q \
+                out=$(kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --user admin --password "$PW" -q \
                   "SELECT version(), count() FROM default.upgrade_probe" 2>/dev/null || true)
                 case "$out" in
                   26.8.*1000) echo "upgraded: $out"; exit 0 ;;

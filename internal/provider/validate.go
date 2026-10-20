@@ -88,6 +88,10 @@ func (p *Provider) Validate(c *controller.Context) error {
 		return err
 	}
 
+	if err := validateCredentials(c); err != nil {
+		return err
+	}
+
 	if engine.Service != nil {
 		switch engine.Service.ServiceType {
 		case "",
@@ -103,6 +107,34 @@ func (p *Provider) Validate(c *controller.Context) error {
 		return err
 	}
 	return validateTransitions(c, engine)
+}
+
+// validateCredentials checks the administrative credentials: those seeding a
+// new Instance from spec.userSecretRef, and those of the credentials Secret,
+// whose password the user may edit to rotate it.
+func validateCredentials(c *controller.Context) error {
+	if ref := c.Instance().Spec.UserSecretRef; ref != nil {
+		src := &corev1.Secret{}
+		found, err := getOptional(c, src, ref.Name)
+		if err != nil {
+			return err
+		}
+		// A missing Secret is reported by the runtime.
+		if found {
+			if err := validateUserSecretData(src.Data); err != nil {
+				return fmt.Errorf("spec.userSecretRef secret %s: %w", ref.Name, err)
+			}
+		}
+	}
+	current := &corev1.Secret{}
+	found, err := getOptional(c, current, credentialsSecretName(c.Name()))
+	if err != nil || !found {
+		return err
+	}
+	if err := validateUserSecretData(current.Data); err != nil {
+		return fmt.Errorf("credentials secret %s: %w", current.Name, err)
+	}
+	return nil
 }
 
 // validateKeeper checks the keeper component, which only the replicated
@@ -191,7 +223,7 @@ var (
 		"http_port", "tcp_port", "https_port", "tcp_port_secure", "interserver_http_port",
 		"prometheus/port", "prometheus/endpoint",
 	}
-	ownedSettingPrefixes = []string{"openSSL/", "zookeeper/", "remote_servers/", "macros/"}
+	ownedSettingPrefixes = []string{"openSSL/", "zookeeper/", "remote_servers/", "macros/", "interserver_http_credentials/"}
 )
 
 // validateConfiguration rejects engine configuration that does not parse or

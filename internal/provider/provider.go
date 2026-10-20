@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/yaml"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
@@ -69,6 +70,12 @@ func New() *Provider {
 			WatchConfigs: []controller.WatchConfig{
 				controller.WatchOwned(&chiv1.ClickHouseInstallation{}),
 				controller.WatchOwned(&chkv1.ClickHouseKeeperInstallation{}),
+				// The credentials Secret, so editing a password rotates it. Only
+				// this provider's Secrets: other providers' Instances own Secrets
+				// too, and the runtime would reconcile those Instances here.
+				controller.WatchOwned(&corev1.Secret{}, predicate.NewPredicateFuncs(func(o client.Object) bool {
+					return o.GetLabels()[controller.ProviderLabel] == common.ProviderName
+				})),
 			},
 		},
 	}
@@ -519,20 +526,26 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	}
 
 	podLabels := c.PodLabels(common.ComponentEngine)
+	secretName := credentialsSecretName(c.Name())
+	username, podAnnotations, err := credentialsForCHI(c, secretName)
+	if err != nil {
+		return nil, err
+	}
+	applyInterserverAuth(settings, cluster, secretName)
 	podSpec := corev1.PodSpec{Containers: []corev1.Container{container}}
 	applySchedulingPolicy(&podSpec, engine.SchedulingPolicy, podLabels)
 
 	spec := chiv1.ChiSpec{
 		Configuration: &chiv1.Configuration{
 			Clusters: []*chiv1.Cluster{cluster},
-			Users:    buildUserSettings(credentialsSecretName(c.Name())),
+			Users:    buildUserSettings(secretName, username),
 		},
 		Templates: &chiv1.Templates{
 			PodTemplates: []chiv1.PodTemplate{{
 				Name: common.PodTemplateName,
 				// The operator copies these onto the pod template only, never onto the
 				// StatefulSet selector, so existing clusters roll once and keep their selectors.
-				ObjectMeta: metav1.ObjectMeta{Labels: podLabels},
+				ObjectMeta: metav1.ObjectMeta{Labels: podLabels, Annotations: podAnnotations},
 				Spec:       podSpec,
 			}},
 			VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{{
@@ -926,6 +939,22 @@ func buildConnectionDetails(c *controller.Context, chi *chiv1.ClickHouseInstalla
 		Password: password,
 		URI:      fmt.Sprintf("%s://%s:%s@%s:%s/", scheme, username, password, host, port),
 	}
+}
+
+// credentialsForCHI returns the administrative username and the pod
+// annotations that roll ClickHouse when a credential changes. Before the
+// credentials Secret exists (Validate on a new Instance) the defaults apply.
+func credentialsForCHI(c *controller.Context, secretName string) (string, map[string]string, error) {
+	secret := &corev1.Secret{}
+	found, err := getOptional(c, secret, secretName)
+	if err != nil || !found {
+		return common.AppUserName, nil, err
+	}
+	username := common.AppUserName
+	if v := string(secret.Data[common.CredentialsKeyUsername]); v != "" {
+		username = v
+	}
+	return username, map[string]string{common.AnnotationCredentialsDigest: credentialsDigest(secret)}, nil
 }
 
 // readCredentials reads the generated application user credentials. On any error

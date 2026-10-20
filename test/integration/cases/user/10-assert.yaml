@@ -1,6 +1,6 @@
-# The provider generates a credentials Secret for the application `admin` user.
-# The password is random, so we assert the username and that the password and
-# its SHA256 digest (64 hex chars) are present rather than exact values.
+# The credentials Secret holds the seeded administrative user, the derived
+# digest, and the generated credentials for the `default` user, replication
+# fetches and the cluster secret.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -8,12 +8,16 @@ metadata:
   namespace: default
 type: Opaque
 data:
-  username: YWRtaW4= # base64("admin")
-(data.password != null): true
+  username: ZGJh # base64("dba")
+  password: c2VlZGVkLXBhc3N3b3JkLTAxMjM= # base64("seeded-password-0123")
 (length(base64_decode(data.password_sha256_hex))): 64
+(length(base64_decode(data.default_password_sha256_hex))): 64
+(data.default_password != null): true
+(data.interserver_password != null): true
+(data.cluster_secret != null): true
 ---
-# The CHI provisions the `admin` user, referencing the password digest from the
-# credentials Secret so the plaintext never lands in the ClickHouse config.
+# Every password is referenced from the Secret by digest or environment
+# variable, so no plaintext lands in the ClickHouse configuration.
 apiVersion: clickhouse.altinity.com/v1
 kind: ClickHouseInstallation
 metadata:
@@ -22,11 +26,32 @@ metadata:
 spec:
   configuration:
     users:
-      admin/access_management: "1"
-      admin/password_sha256_hex:
+      dba/access_management: "1"
+      dba/password_sha256_hex:
         valueFrom:
           secretKeyRef:
             name: itest-ch-user-credentials
             key: password_sha256_hex
+      default/password_sha256_hex:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-user-credentials
+            key: default_password_sha256_hex
+    settings:
+      interserver_http_credentials/user: interserver
+    clusters:
+      - secret:
+          valueFrom:
+            secretKeyRef:
+              name: itest-ch-user-credentials
+              key: cluster_secret
 status:
   status: Completed
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-user
+  namespace: default
+status:
+  phase: Ready
