@@ -1,43 +1,78 @@
 # Component type version catalog.
-# Tracks supported ClickHouse releases.
 # Name the default version per type via `defaultVersion`.
 #
-# Images: official ClickHouse Docker Hub image (clickhouse/clickhouse-server).
-# LTS releases are preferred for production; latest is available for testing.
+# Images: official ClickHouse Docker Hub images (clickhouse/clickhouse-server,
+# clickhouse/clickhouse-keeper), pinned to full four-part release tags.
+#
+# Policy (see definition/README.md, "Keeping the catalog current"):
+# - New bundles track ClickHouse LTS lines only (YY.3 and YY.8), at the latest
+#   patch; Keeper follows the engine version.
+# - Versions past ClickHouse's end of support stay listed with `deprecated:
+#   true`, so existing instances keep resolving and get a warning condition.
+#   Never delete a version or bundle an instance may still use.
+# - A bundle may move to a newer patch (existing instances get it as a held
+#   maintenance action), never backwards, and never to an older Keeper.
 
 componentTypes:
   clickhouse:
-    defaultVersion: "25.3.5"
+    defaultVersion: "26.8.31.2"
     versions:
+    - version: "26.8.31.2"
+      image: clickhouse/clickhouse-server:26.8.31.2
+    - version: "26.3.56.2"
+      image: clickhouse/clickhouse-server:26.3.56.2
+    - version: "25.3.14.14"
+      image: clickhouse/clickhouse-server:25.3.14.14
+      deprecated: true
     - version: "25.3.5"
       image: clickhouse/clickhouse-server:25.3.5
+      deprecated: true
     - version: "25.5.2"
       image: clickhouse/clickhouse-server:25.5.2
+      deprecated: true
     - version: "24.8.14"
       image: clickhouse/clickhouse-server:24.8.14
+      deprecated: true
 
-  # ClickHouse Keeper (replicated topology). Every bundle pins the version
-  # existing Keepers already run: a bundle must never move Keeper backwards.
+  # ClickHouse Keeper (replicated topology).
   clickhouse-keeper:
-    defaultVersion: "25.3.5"
+    defaultVersion: "26.8.31.2"
     versions:
+    - version: "26.8.31.2"
+      image: clickhouse/clickhouse-keeper:26.8.31.2
+    - version: "26.3.56.2"
+      image: clickhouse/clickhouse-keeper:26.3.56.2
+    - version: "25.3.14.14"
+      image: clickhouse/clickhouse-keeper:25.3.14.14
+      deprecated: true
     - version: "25.3.5"
       image: clickhouse/clickhouse-keeper:25.3.5
+      deprecated: true
 
 # Version bundles: curated sets of compatible component versions.
 # Users set spec.version to a bundle name; the runtime resolves per-component versions.
 # The bundle named by defaultVersion is used when spec.version is omitted.
-defaultVersion: "25.3"
+# Listed newest first: this is the order the UI offers them in.
+defaultVersion: "26.8"
 versions:
+- name: "26.8"
+  components:
+    engine: "26.8.31.2"
+    keeper: "26.8.31.2"
+- name: "26.3"
+  components:
+    engine: "26.3.56.2"
+    keeper: "26.3.56.2"
+# Past end of support: kept for existing instances.
 - name: "25.3"
   components:
-    engine: "25.3.5"
-    keeper: "25.3.5"
+    engine: "25.3.14.14"
+    keeper: "25.3.14.14"
 - name: "25.5"
   components:
     engine: "25.5.2"
-    keeper: "25.3.5"
+    keeper: "25.3.14.14"
 - name: "24.8"
   components:
     engine: "24.8.14"
-    keeper: "25.3.5"
+    keeper: "25.3.14.14"

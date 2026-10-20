@@ -57,3 +57,24 @@ Helm chart template    ──▶  .Files.Get "generated/provider-spec.yaml"
 ```
 
 Run `make generate` to regenerate all generated files.
+
+## Keeping the catalog current
+
+`versions.yaml` follows ClickHouse's release cycle: two LTS lines a year (`YY.3`, `YY.8`),
+each supported for a year. On every check (at least monthly, and on each ClickHouse LTS
+release or security advisory):
+
+1. Find the latest patch of each supported LTS line, e.g.
+   `curl -s "https://hub.docker.com/v2/repositories/clickhouse/clickhouse-server/tags?page_size=100&name=26.8." | jq -r '.results[].name'`.
+   Use the full four-part tag; check the same tag exists for `clickhouse/clickhouse-keeper`.
+2. Add the new versions to both component types and point the bundle at them. Moving an
+   existing bundle to a newer patch is fine: running instances get it as a held
+   maintenance action. Never move a bundle, or its Keeper, to an older version.
+3. On a new LTS line, add a bundle for it (newest first), make it `defaultVersion`, and
+   mark the versions of lines past end of support `deprecated: true`.
+4. Never delete a version or bundle an Instance may still use: Instances keep their bundle
+   name in `status.version`. To retire one, set `removedInVersion` to the provider release
+   that drops it, so upgrading the provider is blocked while Instances still use it.
+5. Run `make generate`, update the README versions table, and run the `upgrade`
+   integration case.
+

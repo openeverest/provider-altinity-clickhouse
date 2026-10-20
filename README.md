@@ -59,7 +59,7 @@ provider itself is covered under [Installation](#installation).
 | Provisioning | ✅ | |
 | Horizontal scaling | ✅ | `spec.components.engine.replicas` (minimum 2 in the `replicated` topology) |
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` |
-| Version upgrades | ✅ | of the deployed ClickHouse version — change `spec.version`; see [Versions](#versions) |
+| Version upgrades | ✅ | change `spec.version` to a newer bundle; downgrades are rejected; see [Upgrading ClickHouse](#upgrading-clickhouse) |
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
 | Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
 | Authentication | ✅ | a dedicated `admin` user is provisioned automatically with a generated password (see [Connecting](#connecting)) |
@@ -371,14 +371,30 @@ spec:
 ## Versions
 
 <!-- BEGIN GENERATED: versions -->
-| Version bundle | Default | clickhouse |
-|---|---|---|
-| `25.3` | ✅ | `25.3.5` |
-| `25.5` | | `25.5.2` |
-| `24.8` | | `24.8.14` |
+| Version bundle | Default | clickhouse | clickhouse-keeper | Status |
+|---|---|---|---|---|
+| `26.8` | ✅ | `26.8.31.2` | `26.8.31.2` | LTS |
+| `26.3` | | `26.3.56.2` | `26.3.56.2` | LTS |
+| `25.3` | | `25.3.14.14` | `25.3.14.14` | deprecated |
+| `25.5` | | `25.5.2` | `25.3.14.14` | deprecated |
+| `24.8` | | `24.8.14` | `25.3.14.14` | deprecated |
 <!-- END GENERATED: versions -->
 
-Source of truth: [definition/versions.yaml](definition/versions.yaml).
+Source of truth: [definition/versions.yaml](definition/versions.yaml). New bundles track
+ClickHouse LTS releases; Keeper runs at the engine's version. Bundles past ClickHouse's end
+of support stay available for existing instances, which get a `ComponentVersionDeprecated`
+condition urging an upgrade.
+
+### Upgrading ClickHouse
+
+Set `spec.version` to a newer bundle (or pick it in the UI). Keeper is upgraded first, one
+node at a time, then ClickHouse, one replica at a time; the Instance reports `Updating`
+until both are done. Upgrades may skip bundles. Downgrades are rejected, since a newer
+ClickHouse may have written data an older one cannot read.
+
+When a provider release moves a bundle to a newer patch (for example a security fix),
+existing instances on that bundle are not restarted right away: the patch waits for
+[maintenance approval](#maintenance-approval).
 
 ### Helm (from source)
 

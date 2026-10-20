@@ -56,8 +56,8 @@ func TestBuildCHKDefaults(t *testing.T) {
 	chk, c := mustBuildCHK(t, newReplicatedTestInstance(""))
 
 	container := keeperContainer(chk)
-	// The default bundle pins Keeper to the version Keepers have always run.
-	assert.Equal(t, "clickhouse/clickhouse-keeper:25.3.5", container.Image)
+	// The default bundle runs Keeper at the engine's version.
+	assert.Equal(t, "clickhouse/clickhouse-keeper:26.8.31.2", container.Image)
 	assert.Equal(t, resource.MustParse("500m"), container.Resources.Limits[corev1.ResourceCPU])
 	assert.Equal(t, resource.MustParse("1Gi"), container.Resources.Limits[corev1.ResourceMemory])
 	assert.Equal(t, container.Resources.Limits, container.Resources.Requests)
@@ -134,8 +134,40 @@ func TestValidateKeeperTransitions(t *testing.T) {
 	assert.ErrorContains(t, validate(t, withKeeper(base, keeperStorage("20Gi", &fast)), live),
 		`keeper storageClass cannot change from the cluster default to "fast"`)
 
-	newer := withKeeper(base, func(k *corev1alpha1.ComponentSpec) { k.Image = "clickhouse/clickhouse-keeper:25.8.1" })
+	newer := withKeeper(base, func(k *corev1alpha1.ComponentSpec) { k.Image = "clickhouse/clickhouse-keeper:27.3.1" })
 	liveNewer, _ := mustBuildCHK(t, newer)
 	assert.NoError(t, validate(t, newer, liveNewer))
-	assert.ErrorContains(t, validate(t, base, liveNewer), "keeper cannot be downgraded from 25.8.1 to 25.3.5")
+	assert.ErrorContains(t, validate(t, base, liveNewer), "keeper cannot be downgraded from 27.3.1 to 26.8.31.2")
+}
+
+func TestDeprecatedBundleResolvesToFinalPatch(t *testing.T) {
+	instance := withEngine(newReplicatedTestInstance(""), image(""))
+	instance.Spec.Version = "25.3"
+
+	chk, c := mustBuildCHK(t, instance)
+	assert.Equal(t, "clickhouse/clickhouse-keeper:25.3.14.14", keeperContainer(chk).Image)
+
+	chi, err := buildCHI(c, 2)
+	require.NoError(t, err)
+	assert.Equal(t, "clickhouse/clickhouse-server:25.3.14.14", chi.Spec.Templates.PodTemplates[0].Spec.Containers[0].Image)
+}
+
+// Instances on a deprecated bundle must be able to move to a supported one:
+// every newer bundle runs Keeper and ClickHouse at or above the older ones.
+func TestBundlesUpgradeForward(t *testing.T) {
+	spec := testProvider(t).Spec
+	order := []string{"24.8", "25.3", "25.5", "26.3", "26.8"}
+	for i := 1; i < len(order); i++ {
+		from, err := controller.ResolveVersionBundle(&spec, order[i-1])
+		require.NoError(t, err)
+		to, err := controller.ResolveVersionBundle(&spec, order[i])
+		require.NoError(t, err)
+		for _, component := range []string{"engine", "keeper"} {
+			older := imageVersion(controller.GetImageForVersion(&spec, component, from.Components[component]))
+			newer := imageVersion(controller.GetImageForVersion(&spec, component, to.Components[component]))
+			require.NotNil(t, older)
+			require.NotNil(t, newer)
+			assert.GreaterOrEqual(t, compareSegments(newer, older), 0, "%s: %s -> %s", component, order[i-1], order[i])
+		}
+	}
 }
