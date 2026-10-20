@@ -939,39 +939,6 @@ func resolveEngineSettings(c *controller.Context, engine corev1alpha1.ComponentS
 	return settings, nil
 }
 
-// buildConnectionDetails extracts connection info from a ready CHI.
-func buildConnectionDetails(c *controller.Context, chi *chiv1.ClickHouseInstallation) controller.ConnectionDetails {
-	host := chi.Status.GetEndpoint()
-	if host == "" {
-		host = fmt.Sprintf("%s.%s.svc", clientServiceName(c.Name()), c.Namespace())
-	}
-
-	username, password := readCredentials(c)
-	port := strconv.Itoa(common.HTTPPort)
-
-	scheme := "http"
-	var additional map[string]string
-	if tlsEnabled(c) {
-		scheme = "https"
-		port = strconv.Itoa(common.HTTPSPort)
-		// Clients need the CA to verify a provider-managed certificate.
-		if ca := readCACert(c); ca != "" {
-			additional = map[string]string{common.ConnectionKeyCACert: ca}
-		}
-	}
-
-	return controller.ConnectionDetails{
-		Type:                 "clickhouse",
-		Provider:             common.ProviderName,
-		Host:                 host,
-		Port:                 port,
-		Username:             username,
-		Password:             password,
-		URI:                  fmt.Sprintf("%s://%s:%s@%s:%s/", scheme, username, password, host, port),
-		AdditionalProperties: additional,
-	}
-}
-
 // credentialsForCHI returns the administrative username and the pod
 // annotations that roll ClickHouse when a credential changes. Before the
 // credentials Secret exists (Validate on a new Instance) the defaults apply.

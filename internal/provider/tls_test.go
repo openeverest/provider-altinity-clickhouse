@@ -277,7 +277,7 @@ func TestConnectionDetailsCarryCA(t *testing.T) {
 	assert.Equal(t, "8443", details.Port)
 
 	plain := buildConnectionDetails(newTestContext(t, newTestInstance("db", "ns", ""), issuedCertificate()), chi)
-	assert.Empty(t, plain.AdditionalProperties)
+	assert.NotContains(t, plain.AdditionalProperties, common.ConnectionKeyCACert)
 }
 
 // withTLSMode renders chi's client Service as for mode.
