@@ -4,11 +4,12 @@
 #
 # Resources:
 #   engine   - ClickHouse replicas (configurable count, default 2)
-#   keeper   - 3 Keeper nodes are always provisioned automatically (not user-configurable)
+#   keeper   - 3 Keeper nodes, always provisioned; resources and storage configurable
 
 config:
   components:
     engine: {}
+    keeper: {}
 
 ui:
   sections:
@@ -95,6 +96,58 @@ ui:
                   edit:
                     celExpressions:
                       - celExpr: "spec.components.engine.storage.size >= original.spec.components.engine.storage.size"
+                        message: "Disk size cannot be decreased"
+          componentsOrder:
+            - cpu
+            - memory
+            - disk
+
+    keeper:
+      label: "ClickHouse Keeper"
+      description: "Resources and storage per Keeper node. The replicated topology always runs 3 Keeper nodes."
+      components:
+        compute:
+          uiType: group
+          groupType: line
+          components:
+            cpu:
+              uiType: number
+              path: spec.components.keeper.resources.limits.cpu
+              fieldParams:
+                label: "CPU"
+                defaultValue: 0.5
+                step: 0.5
+              validation:
+                required: true
+                min: 0.5
+            memory:
+              uiType: number
+              path: spec.components.keeper.resources.limits.memory
+              fieldParams:
+                label: "Memory"
+                defaultValue: 1
+                step: 1
+                badge: "Gi"
+                badgeToApi: true
+              validation:
+                required: true
+                min: 1
+            disk:
+              uiType: number
+              path: spec.components.keeper.storage.size
+              fieldParams:
+                label: "Disk"
+                defaultValue: 10
+                badge: "Gi"
+                badgeToApi: true
+              validation:
+                required: true
+                int: true
+                min: 5
+                modes:
+                  edit:
+                    celExpressions:
+                      - celExpr: "spec.components.keeper.storage.size >= original.spec.components.keeper.storage.size"
                         message: "Disk size cannot be decreased"
           componentsOrder:
             - cpu
@@ -191,5 +244,6 @@ ui:
     - databaseVersion
     - scaling
     - resources
+    - keeper
     - monitoring
     - advanced

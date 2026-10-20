@@ -8,3 +8,5 @@ components:
   engine:
     type: clickhouse
     parametersSchema: ClickHouseParameters
+  keeper:
+    type: clickhouse-keeper

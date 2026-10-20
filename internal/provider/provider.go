@@ -26,7 +26,9 @@ import (
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -72,60 +74,6 @@ func New() *Provider {
 	}
 }
 
-// Validate checks the Instance spec before reconciliation.
-func (p *Provider) Validate(c *controller.Context) error {
-	l := log.FromContext(c.Context())
-	l.Info("Validating ClickHouse instance", "name", c.Name())
-
-	engine, ok := c.Instance().Spec.Components[common.ComponentEngine]
-	if !ok {
-		return fmt.Errorf("engine component is required")
-	}
-
-	if engine.Resources != nil && engine.Resources.Limits != nil {
-		lim := engine.Resources.Limits
-		if cpu := lim.Cpu(); cpu != nil && !cpu.IsZero() {
-			if cpu.Cmp(resource.MustParse("1")) < 0 {
-				return fmt.Errorf("engine CPU limit must be at least 1 core")
-			}
-		}
-		if mem := lim.Memory(); mem != nil && !mem.IsZero() {
-			if mem.Cmp(resource.MustParse("1Gi")) < 0 {
-				return fmt.Errorf("engine memory limit must be at least 1Gi")
-			}
-		}
-	}
-
-	if c.Instance().GetTopologyType() == common.TopologyReplicated {
-		if engine.Replicas != nil && *engine.Replicas < 2 {
-			return fmt.Errorf("replicated topology requires at least 2 engine replicas")
-		}
-	}
-
-	var params components.ClickHouseParameters
-	_ = c.TryDecodeComponentParameters(engine, &params)
-	switch {
-	case params.StorageReclaimPolicy == "",
-		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyRetain),
-		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyDelete):
-	default:
-		return fmt.Errorf("engine storageReclaimPolicy must be one of Retain or Delete")
-	}
-
-	if engine.Service != nil {
-		switch engine.Service.ServiceType {
-		case "",
-			corev1.ServiceTypeClusterIP,
-			corev1.ServiceTypeLoadBalancer,
-			corev1.ServiceTypeNodePort:
-		default:
-			return fmt.Errorf("engine service.serviceType must be one of ClusterIP, LoadBalancer or NodePort")
-		}
-	}
-
-	return nil
-}
-
 // Sync provisions the required resources and, while the operator is still
 // working, publishes the intermediate phase onto the Instance.
 //
@@ -148,15 +96,50 @@ func (p *Provider) Sync(c *controller.Context) error {
 // Instance while Sync is still waiting on the operator. The metadata carried by
 // c.Instance() is preserved by the runtime's prepare step, so a status-only
 // update targets the live object safely.
+//
+// Pending maintenance is published here too: the runtime only flushes it after
+// a Sync that returns nil, so an approved change that starts a rollout would
+// otherwise stay listed as pending until the cluster is Ready again.
 func reportProvisioningStatus(c *controller.Context, st controller.Status) {
 	in := c.Instance()
 	desired := st.ToV2Alpha1()
-	if in.Status.Phase == desired.Phase && in.Status.Message == desired.Message {
-		return
-	}
+	changed := in.Status.Phase != desired.Phase || in.Status.Message != desired.Message
 	in.Status.Phase = desired.Phase
 	in.Status.Message = desired.Message
-	_ = c.Client().Status().Update(c.Context(), in)
+	if c.MaintenanceRequested() && setPendingMaintenance(c, in) {
+		changed = true
+	}
+	if changed {
+		_ = c.Client().Status().Update(c.Context(), in)
+	}
+}
+
+// setPendingMaintenance mirrors the runtime's flush of status.pendingMaintenance
+// and the MaintenancePending condition, and reports whether either changed.
+func setPendingMaintenance(c *controller.Context, in *corev1alpha1.Instance) bool {
+	pending := c.GetPendingMaintenance()
+	changed := !equality.Semantic.DeepEqual(in.Status.PendingMaintenance, pending)
+	in.Status.PendingMaintenance = pending
+
+	condition := metav1.Condition{
+		Type:               corev1alpha1.ConditionMaintenancePending,
+		Status:             metav1.ConditionTrue,
+		Reason:             corev1alpha1.ReasonAwaitingApproval,
+		Message:            fmt.Sprintf("%d action(s) require approval to proceed", len(pending)),
+		ObservedGeneration: in.Generation,
+	}
+	if len(pending) == 0 {
+		if meta.FindStatusCondition(in.Status.Conditions, corev1alpha1.ConditionMaintenancePending) == nil {
+			return changed
+		}
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = corev1alpha1.ReasonNoActionsPending
+		condition.Message = "No disruptive actions are held"
+	}
+	if meta.SetStatusCondition(&in.Status.Conditions, condition) {
+		changed = true
+	}
+	return changed
 }
 
 // sync applies and polls the required resources for the selected topology.
@@ -203,18 +186,37 @@ func (p *Provider) sync(c *controller.Context) error {
 
 // syncStandalone applies and waits on the CHI for a single-node deployment.
 func (p *Provider) syncStandalone(c *controller.Context) error {
-	return applyAndWaitForCHI(c, 1)
+	chi, err := buildCHI(c, 1)
+	if err != nil {
+		return fmt.Errorf("build ClickHouseInstallation: %w", err)
+	}
+	gate, err := newRolloutGate(c, chi)
+	if err != nil {
+		return err
+	}
+	return applyAndWaitForCHI(c, gate, chi)
 }
 
 // syncReplicated applies and waits on a CHK (Keeper) + CHI pair.
 func (p *Provider) syncReplicated(c *controller.Context) error {
-	keeperName := keeperCRName(c.Name())
+	desiredCHK, err := buildCHK(c)
+	if err != nil {
+		return fmt.Errorf("build ClickHouseKeeperInstallation: %w", err)
+	}
+	desiredCHI, err := buildCHI(c, replicasCount(c))
+	if err != nil {
+		return fmt.Errorf("build ClickHouseInstallation: %w", err)
+	}
+	gate, err := newRolloutGate(c, desiredCHK, desiredCHI)
+	if err != nil {
+		return err
+	}
 
-	if err := c.Apply(buildCHK(c)); err != nil {
+	if _, err := gate.apply(c, desiredCHK, "chk"); err != nil {
 		return fmt.Errorf("apply ClickHouseKeeperInstallation: %w", err)
 	}
 	chk := &chkv1.ClickHouseKeeperInstallation{}
-	if err := c.Get(chk, keeperName); err != nil {
+	if err := c.Get(chk, keeperCRName(c.Name())); err != nil {
 		return controller.WaitForDuration("waiting for Keeper to initialize", 15*time.Second)
 	}
 	// ClickHouse needs a Keeper quorum to start, so hold the CHI until it is ready.
@@ -222,17 +224,13 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 		return err
 	}
 
-	return applyAndWaitForCHI(c, replicasCount(c))
+	return applyAndWaitForCHI(c, gate, desiredCHI)
 }
 
-// applyAndWaitForCHI server-side applies the CHI and returns a WaitError until
-// the operator reports it Completed.
-func applyAndWaitForCHI(c *controller.Context, replicas int) error {
-	chi, err := buildCHI(c, replicas)
-	if err != nil {
-		return fmt.Errorf("build ClickHouseInstallation: %w", err)
-	}
-	if err := c.Apply(chi); err != nil {
+// applyAndWaitForCHI server-side applies the CHI, unless the rollout gate holds
+// it, and returns a WaitError until the operator reports it Completed.
+func applyAndWaitForCHI(c *controller.Context, gate *rolloutGate, chi *chiv1.ClickHouseInstallation) error {
+	if _, err := gate.apply(c, chi, "chi"); err != nil {
 		return fmt.Errorf("apply ClickHouseInstallation: %w", err)
 	}
 
@@ -343,6 +341,11 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 	credentials := &corev1.Secret{ObjectMeta: c.ObjectMeta(credentialsSecretName(c.Name()))}
 	if err := c.Delete(credentials); err != nil {
 		return fmt.Errorf("delete credentials secret: %w", err)
+	}
+
+	state := &corev1.Secret{ObjectMeta: c.ObjectMeta(rolloutStateName(c.Name()))}
+	if err := c.Delete(state); err != nil {
+		return fmt.Errorf("delete rollout state secret: %w", err)
 	}
 
 	if tlsEnabled(c) {
@@ -505,7 +508,7 @@ func deletePVCs(c *controller.Context) error {
 // buildCHI constructs a ClickHouseInstallation for the given replica count.
 func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstallation, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
-	image, err := resolveImage(c, engine)
+	image, err := resolveImage(c, common.ComponentEngine, engine)
 	if err != nil {
 		return nil, err
 	}
@@ -606,19 +609,26 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	}, nil
 }
 
-// buildCHK constructs a ClickHouseKeeperInstallation with 3 replicas (Raft quorum).
-func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
-	// Keeper nodes are small — fixed resources, not user-configurable.
-	keeperCPU := resource.MustParse("500m")
-	keeperMem := resource.MustParse("1Gi")
-	keeperStorage := resource.MustParse("10Gi")
+// buildCHK constructs the 3-node (Raft quorum) ClickHouseKeeperInstallation
+// from the keeper component, which is optional: defaults size it otherwise.
+func buildCHK(c *controller.Context) (*chkv1.ClickHouseKeeperInstallation, error) {
+	keeper := c.Instance().Spec.Components[common.ComponentKeeper]
+	image, err := resolveImage(c, common.ComponentKeeper, keeper)
+	if err != nil {
+		return nil, err
+	}
+	cpu, memory := resolveKeeperResources(keeper)
+	storageSize, storageClass, err := resolveKeeperStorage(c, keeper)
+	if err != nil {
+		return nil, err
+	}
 
 	container := corev1.Container{
 		Name:  "clickhouse-keeper",
-		Image: "clickhouse/clickhouse-keeper:25.3.5",
+		Image: image,
 		Resources: corev1.ResourceRequirements{
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: keeperCPU, corev1.ResourceMemory: keeperMem},
-			Requests: corev1.ResourceList{corev1.ResourceCPU: keeperCPU, corev1.ResourceMemory: keeperMem},
+			Limits:   corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
+			Requests: corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
 		},
 	}
 
@@ -626,7 +636,15 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	applyKeeperSchedulingPolicy(&podSpec, engine.SchedulingPolicy, map[string]string{common.LabelCHKName: keeperCRName(c.Name())})
 
-	return &chkv1.ClickHouseKeeperInstallation{
+	pvcSpec := corev1.PersistentVolumeClaimSpec{
+		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+		Resources:   corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: storageSize}},
+	}
+	if storageClass != nil {
+		pvcSpec.StorageClassName = storageClass
+	}
+
+	chk := &chkv1.ClickHouseKeeperInstallation{
 		ObjectMeta: c.ObjectMeta(keeperCRName(c.Name())),
 		Spec: chkv1.ChkSpec{
 			Configuration: &chkv1.Configuration{
@@ -647,24 +665,23 @@ func buildCHK(c *controller.Context) *chkv1.ClickHouseKeeperInstallation {
 				PodTemplates: []chiv1.PodTemplate{
 					{
 						Name: common.KeeperPodTemplateName,
-						Spec: podSpec,
+						// Counted into status.components; the operator copies these onto
+						// the pod template only, never onto the StatefulSet selector.
+						ObjectMeta: metav1.ObjectMeta{Labels: c.PodLabels(common.ComponentKeeper)},
+						Spec:       podSpec,
 					},
 				},
 				VolumeClaimTemplates: []chiv1.VolumeClaimTemplate{
 					{
 						Name:              common.KeeperDataVolumeClaimTemplateName,
 						StorageManagement: storageManagement(c),
-						Spec: corev1.PersistentVolumeClaimSpec{
-							AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-							Resources: corev1.VolumeResourceRequirements{
-								Requests: corev1.ResourceList{corev1.ResourceStorage: keeperStorage},
-							},
-						},
+						Spec:              pvcSpec,
 					},
 				},
 			},
 		},
 	}
+	return chk, nil
 }
 
 // =============================================================================
@@ -758,24 +775,35 @@ func replicasCount(c *controller.Context) int {
 	return common.DefaultReplicasCount
 }
 
-// resolveImage returns the container image for the engine component.
-func resolveImage(c *controller.Context, engine corev1alpha1.ComponentSpec) (string, error) {
-	if engine.Image != "" {
-		return engine.Image, nil
+// resolveImage returns the container image for a component: an explicit
+// image, else the component's version, else the version the Instance's bundle
+// pins for it (the runtime only fills in versions of components present in
+// spec.components, and only after Validate), else the type's default.
+func resolveImage(c *controller.Context, name string, component corev1alpha1.ComponentSpec) (string, error) {
+	if component.Image != "" {
+		return component.Image, nil
 	}
 	spec, err := c.ProviderSpec()
 	if err != nil {
 		return "", fmt.Errorf("get provider spec: %w", err)
 	}
-	if engine.Version != "" {
-		if img := controller.GetImageForVersion(spec, common.ComponentEngine, engine.Version); img != "" {
+	version := component.Version
+	if version == "" {
+		if bundleName := controller.EffectiveVersionBundleName(spec, c.Instance()); bundleName != "" {
+			if bundle, err := controller.ResolveVersionBundle(spec, bundleName); err == nil {
+				version = bundle.Components[name]
+			}
+		}
+	}
+	if version != "" {
+		if img := controller.GetImageForVersion(spec, name, version); img != "" {
 			return img, nil
 		}
 	}
-	if img := controller.GetDefaultImageForComponent(spec, common.ComponentEngine); img != "" {
+	if img := controller.GetDefaultImageForComponent(spec, name); img != "" {
 		return img, nil
 	}
-	return "", fmt.Errorf("no image found for engine component")
+	return "", fmt.Errorf("no image found for the %s component", name)
 }
 
 // resolveResources returns CPU and memory quantities with defaults applied.
@@ -805,6 +833,61 @@ func resolveStorage(engine corev1alpha1.ComponentSpec) (size resource.Quantity, 
 	}
 	storageClass = engine.Storage.StorageClass
 	return
+}
+
+// resolveKeeperResources returns the Keeper CPU and memory, defaulting each
+// to the small footprint Keeper needs.
+func resolveKeeperResources(keeper corev1alpha1.ComponentSpec) (cpu, memory resource.Quantity) {
+	cpu = resource.MustParse(common.KeeperDefaultCPU)
+	memory = resource.MustParse(common.KeeperDefaultMemory)
+	if keeper.Resources == nil || keeper.Resources.Limits == nil {
+		return
+	}
+	if v := keeper.Resources.Limits.Cpu(); v != nil && !v.IsZero() {
+		cpu = v.DeepCopy()
+	}
+	if v := keeper.Resources.Limits.Memory(); v != nil && !v.IsZero() {
+		memory = v.DeepCopy()
+	}
+	return
+}
+
+// resolveKeeperStorage returns the Keeper volume size and StorageClass. An
+// unset class keeps the one the deployed Keeper uses — volumes cannot move to
+// another class, and Keepers created before the keeper component existed
+// always used the cluster default — and otherwise follows the engine's.
+func resolveKeeperStorage(c *controller.Context, keeper corev1alpha1.ComponentSpec) (resource.Quantity, *string, error) {
+	size := resource.MustParse(common.KeeperDefaultStorage)
+	if keeper.Storage != nil && !keeper.Storage.Size.IsZero() {
+		size = keeper.Storage.Size.DeepCopy()
+	}
+	if keeper.Storage != nil && keeper.Storage.StorageClass != nil {
+		return size, keeper.Storage.StorageClass, nil
+	}
+
+	current := &chkv1.ClickHouseKeeperInstallation{}
+	if err := c.Get(current, keeperCRName(c.Name())); err == nil {
+		if vct := keeperVolumeClaimTemplate(current); vct != nil {
+			return size, vct.Spec.StorageClassName, nil
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return size, nil, fmt.Errorf("read current ClickHouseKeeperInstallation: %w", err)
+	}
+
+	_, engineClass := resolveStorage(c.Instance().Spec.Components[common.ComponentEngine])
+	return size, engineClass, nil
+}
+
+func keeperVolumeClaimTemplate(chk *chkv1.ClickHouseKeeperInstallation) *chiv1.VolumeClaimTemplate {
+	if chk.Spec.Templates == nil {
+		return nil
+	}
+	for i := range chk.Spec.Templates.VolumeClaimTemplates {
+		if chk.Spec.Templates.VolumeClaimTemplates[i].Name == common.KeeperDataVolumeClaimTemplateName {
+			return &chk.Spec.Templates.VolumeClaimTemplates[i]
+		}
+	}
+	return nil
 }
 
 // storageReclaimPolicy returns the engine's storage reclaim policy, defaulting

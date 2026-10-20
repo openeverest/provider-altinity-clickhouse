@@ -57,7 +57,9 @@ func TestBuildCHIEmptyAffinityDisablesDefault(t *testing.T) {
 func TestBuildCHKWithoutSchedulingPolicyPrefersSpreadingKeeper(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", ""))
 
-	spec := buildCHK(c).Spec.Templates.PodTemplates[0].Spec
+	chk, err := buildCHK(c)
+	require.NoError(t, err)
+	spec := chk.Spec.Templates.PodTemplates[0].Spec
 
 	assertDefaultAntiAffinity(t, spec.Affinity, map[string]string{common.LabelCHKName: "db-keeper"})
 	assert.Nil(t, spec.NodeSelector)
@@ -92,7 +94,9 @@ func TestBuildCHKFollowsEngineNodePlacement(t *testing.T) {
 	instance.Spec.Components[common.ComponentEngine] = engine
 	c := newTestContext(t, instance)
 
-	spec := buildCHK(c).Spec.Templates.PodTemplates[0].Spec
+	chk, err := buildCHK(c)
+	require.NoError(t, err)
+	spec := chk.Spec.Templates.PodTemplates[0].Spec
 
 	assert.Equal(t, "custom-scheduler", spec.SchedulerName)
 	assert.Equal(t, map[string]string{"node-role": "db"}, spec.NodeSelector)

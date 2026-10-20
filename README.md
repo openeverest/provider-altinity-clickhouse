@@ -271,6 +271,48 @@ replica. Retained PVCs are not cleaned up automatically — delete them once the
 is no longer needed. The StorageClass `reclaimPolicy` additionally decides whether
 the underlying volume outlives a deleted PVC.
 
+### Maintenance approval
+
+Changing the `Instance` rolls the ClickHouse or Keeper pods when needed, right away. A
+rolling restart the provider would cause on its own, with the `Instance` unchanged (for
+example after a provider upgrade renders the cluster differently), is held instead and
+listed under `status.pendingMaintenance` with an approval token, together with the
+`MaintenancePending` condition:
+
+```bash
+kubectl get instance my-instance -o jsonpath='{.status.pendingMaintenance}'
+```
+
+Approve it by echoing the token, or let such restarts through automatically:
+
+```yaml
+spec:
+  maintenance:
+    approved: provider-0.2.0-1a2b3c4d     # one action
+    # autoApproveUpTo: RollingRestart     # or every rolling restart
+```
+
+In the `replicated` topology Keeper and ClickHouse changes form one action. Any edit to the
+`Instance` applies a held change along with it.
+
+### Rejected changes
+
+The provider validates every Instance against the cluster it has deployed and
+rejects changes that the cluster cannot take, leaving the running database
+untouched:
+
+- shrinking `storage.size`, or changing `storage.storageClass` after creation;
+- changing the topology from `replicated` to `standalone`;
+- downgrading ClickHouse below the running version (images whose tags are not
+  versions, such as `latest`, are not compared);
+- more than one replica in the `standalone` topology;
+- a `keeper` component outside the `replicated` topology, a Keeper size other than 3,
+  or shrinking, moving or downgrading Keeper;
+- an engine `configuration` that is not valid YAML or that sets ports, TLS
+  (`openSSL/*`), Keeper (`zookeeper/*`), `macros/*`, `remote_servers/*` or the
+  metrics endpoint (`prometheus/port`, `prometheus/endpoint`), which the
+  operator and the provider manage.
+
 ## Topologies
 
 <!-- BEGIN GENERATED: topologies -->
@@ -286,6 +328,32 @@ required. It supports `ReplicatedMergeTree` and the other replicated table engin
 ClickHouse references the Keeper by name; the operator resolves it to each Keeper host's
 ready-only client Service, so ClickHouse never connects to a Keeper node that is still
 joining the quorum.
+
+### ClickHouse Keeper
+
+The `replicated` topology always runs three Keeper nodes. The optional `keeper` component
+sizes them; anything it leaves out keeps the defaults below:
+
+```yaml
+spec:
+  components:
+    keeper:
+      type: clickhouse-keeper
+      resources:
+        limits:
+          cpu: "1"        # default 500m
+          memory: 2Gi     # default 1Gi
+      storage:
+        size: 20Gi        # default 10Gi; can grow, never shrink
+        storageClass: ssd # default: the engine's class for new instances
+```
+
+- The Keeper version comes from the version bundle (`keeper` entry), unless the component
+  sets `version` or `image`. Keeper cannot be downgraded.
+- An unset `storageClass` keeps the class the deployed Keeper uses — volumes cannot move
+  between classes — so instances created before the `keeper` component existed keep the
+  cluster default.
+- Keeper pods report under `keeper` in the Instance's `status.components`.
 
 ## Versions
 

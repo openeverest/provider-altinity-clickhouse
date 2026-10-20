@@ -6,7 +6,16 @@ metadata:
 spec:
   templates:
     podTemplates:
-      - spec:
+      - metadata:
+          # Keeper pods are counted into the Instance's status.components.
+          labels:
+            core.openeverest.io/component: keeper
+            core.openeverest.io/instance: itest-ch-replicated
+        spec:
+          # The version bundle pins the Keeper image.
+          containers:
+            - name: clickhouse-keeper
+              image: clickhouse/clickhouse-keeper:25.3.5
           # Default preferred anti-affinity spreads the Keeper pods.
           affinity:
             podAntiAffinity:
@@ -24,8 +33,13 @@ spec:
                       matchLabels:
                         clickhouse-keeper.altinity.com/chk: itest-ch-replicated-keeper
     volumeClaimTemplates:
-      # Keeper volumes follow the engine's (default) reclaim policy.
+      # Keeper volumes follow the engine's (default) reclaim policy and are
+      # sized by the keeper component.
       - reclaimPolicy: Retain
+        spec:
+          resources:
+            requests:
+              storage: 5Gi
 status:
   status: Completed
 ---
