@@ -40,7 +40,7 @@ flowchart LR
 ```
 
 The provider watches `Instance` resources whose `spec.providerRef.name` is
-`provider-altinity-clickhouse`, and reports workload health back onto `Instance.status`. It
+`altinity-clickhouse`, and reports workload health back onto `Instance.status`. It
 never manages pods directly — all lifecycle work is delegated to the operator.
 
 ## Compatibility
@@ -57,8 +57,8 @@ provider itself is covered under [Installation](#installation).
 | Capability | Status | Notes |
 |---|---|---|
 | Provisioning | ✅ | |
-| Horizontal scaling | ✅ | `spec.components.engine.replicas` (minimum 2 in the `replicated` topology) |
-| Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` |
+| Horizontal scaling | ⚠️ | `spec.components.engine.replicas` through the API (minimum 2 in the `replicated` topology; `standalone` runs one). The UI fixes the replica count at creation |
+| Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` limits and requests; see [Resources](#resources) |
 | Version upgrades | ✅ | change `spec.version` to a newer bundle; downgrades are rejected; see [Upgrading ClickHouse](#upgrading-clickhouse) |
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
 | Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
@@ -94,17 +94,18 @@ Stateful workloads additionally report:
 
 ## Installation
 
-The provider chart is published as an OCI artifact:
+The provider chart is published as an OCI artifact to the GitHub Container Registry. It
+bundles the Altinity ClickHouse operator as a subchart, so a single install brings up both.
+Pick a version from the [releases](https://github.com/openeverest/provider-altinity-clickhouse/releases):
 
 ```bash
 helm install provider-altinity-clickhouse \
   oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
-  --version 0.1.0 \
+  --version <version> \
   --namespace everest-system
 ```
 
-- The Altinity ClickHouse operator is bundled as a chart dependency and is installed
-  automatically. It manages its own CRDs through pre-install/pre-upgrade hooks.
+- The operator manages its own CRDs through pre-install/pre-upgrade hooks.
 - The operator connects to ClickHouse as `clickhouse_operator` with a random password generated
   on first install (`operatorCredentials.password` sets one explicitly). Upgrades keep the existing
   password; installs made before this chart version keep the operator's former default until it is
@@ -113,50 +114,20 @@ helm install provider-altinity-clickhouse \
 Upgrade and uninstall:
 
 ```bash
-helm upgrade provider-altinity-clickhouse oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse --version 0.1.0
+helm upgrade provider-altinity-clickhouse \
+  oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
+  --version <version> --namespace everest-system
 helm uninstall provider-altinity-clickhouse --namespace everest-system
 ```
 
 Uninstalling the chart does **not** delete running `Instance` resources or their data.
 
-## Installation
-
-The provider chart is published as an OCI artifact to the GitHub Container
-Registry. It bundles the Altinity ClickHouse operator as a subchart, so a single
-install brings up both the provider and the operator.
-
-```bash
-helm install provider-altinity-clickhouse \
-  oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
-  --version 0.1.0 \
-  --create-namespace
-```
-
-Upgrade to a newer chart version:
-
-```bash
-helm upgrade provider-altinity-clickhouse \
-  oci://ghcr.io/openeverest/charts/provider-altinity-clickhouse \
-  --version 0.1.0
-```
-
-Uninstall:
-
-```bash
-helm uninstall provider-altinity-clickhouse
-```
-
-> Browse available versions on the
-> [chart package page](https://github.com/openeverest/provider-altinity-clickhouse/pkgs/container/charts%2Fprovider-altinity-clickhouse).
-
-## Quick Start
-
-## Usage
+## Quick start
 
 Verify that the provider registered itself:
 
 ```bash
-kubectl get providers.core.openeverest.io provider-altinity-clickhouse
+kubectl get providers.core.openeverest.io altinity-clickhouse
 ```
 
 Create an instance:
@@ -168,15 +139,15 @@ metadata:
   name: my-instance
 spec:
   providerRef:
-    name: provider-altinity-clickhouse
+    name: altinity-clickhouse
   components:
     engine:
       type: clickhouse
       replicas: 1
       resources:
-        requests:
-          cpu: 500m
-          memory: 2G
+        limits:
+          cpu: "1"
+          memory: 4Gi
       storage:
         size: 10Gi
 ```
@@ -184,6 +155,14 @@ spec:
 Component names are defined by this provider — see [definition/provider.yaml](definition/provider.yaml).
 `spec.version` and `spec.topology` are optional; the provider defaults apply.
 More examples live in [examples/](examples/).
+
+### Resources
+
+Each component's `resources` take CPU and memory limits and requests. An unset limit
+falls back to the default (engine: 1 CPU / 4Gi; Keeper: 500m / 1Gi), or to the request
+when that is higher; an unset request equals the limit. Setting only limits, as the UI
+does, therefore gives the pods the Guaranteed QoS class. The engine needs a limit of
+at least 1 CPU and 1Gi, and a request above its limit is rejected.
 
 Watch it come up, then read the connection details from the Secret named by
 `.status.connectionSecretRef` (`<instance-name>-conn`, see [Connecting](#connecting)):
@@ -462,25 +441,32 @@ When a provider release moves a bundle to a newer patch (for example a security 
 existing instances on that bundle are not restarted right away: the patch waits for
 [maintenance approval](#maintenance-approval).
 
-### Helm (from source)
-
-For local development you can install the chart directly from the checked-out
-source tree instead of the published OCI artifact:
+## Configuration reference
 
 - **Chart values:** [charts/provider-altinity-clickhouse/values.yaml](charts/provider-altinity-clickhouse/values.yaml)
 - **Instance parameters:** per-component and per-topology `parameters` schemas, defined under
   [definition/](definition/) and published on the `Provider` resource
-  (`kubectl get provider provider-altinity-clickhouse -o yaml`). The API server and the UI
+  (`kubectl get provider altinity-clickhouse -o yaml`). The API server and the UI
   validate user input against these schemas.
 
-This provider currently exposes no technology-specific parameters beyond the shared
-component fields (replicas, resources, storage).
+Besides the shared component fields (`replicas`, `resources`, `storage`, `service`,
+`schedulingPolicy`), the engine component takes these `parameters`:
+
+| Parameter | Values | See |
+|---|---|---|
+| `configuration` | ClickHouse server settings, one `path: value` per line | [Rejected changes](#rejected-changes) for the settings the provider manages |
+| `podMonitor` | `enabled`, `disabled` (default) | [Capabilities](#capabilities) |
+| `tls.enabled`, `tls.mode`, `tls.issuerRef` | `enabled` / `disabled` (default); `required` (default) / `optional`; an Issuer or ClusterIssuer | [TLS](#tls) |
+| `storageReclaimPolicy` | `Retain` (default), `Delete` | [Data retention](#data-retention) |
+
+The `keeper` component (`replicated` topology) takes `resources` and `storage`; see
+[ClickHouse Keeper](#clickhouse-keeper).
 
 ## Development
 
 > For installing a published release, see [Installation](#installation).
 
-### Local Development (k3d)
+### Local development (k3d)
 
 ```bash
 make dev-up             # local cluster + Tilt dev environment (see dev/README.md)
@@ -494,6 +480,15 @@ make dev-down
 `make help` lists every target. `make verify` fails when generated files are stale — run
 `make generate` and commit the result.
 
+To install the chart from the checked-out source instead of the published artifact (for
+example into a cluster that already runs OpenEverest):
+
+```bash
+helm dependency build charts/provider-altinity-clickhouse
+helm install provider-altinity-clickhouse charts/provider-altinity-clickhouse \
+  --namespace everest-system
+```
+
 The provider contract (`Validate` / `Sync` / `Status` / `Cleanup`), RBAC markers, watches,
 and code generation are documented once for all providers in
 [PROVIDER_DEVELOPMENT.md](https://github.com/openeverest/provider-sdk/blob/main/PROVIDER_DEVELOPMENT.md).
@@ -504,7 +499,7 @@ and code generation are documented once for all providers in
 |---|---|
 | `cmd/provider/` | Entry point |
 | `internal/provider/` | `ProviderInterface` implementation, RBAC markers |
-| `internal/common/` | Component name constants |
+| `internal/common/` | Shared constants (component names, ports, keys) |
 | `definition/` | Provider identity, component types, versions, topologies |
 | `charts/provider-altinity-clickhouse/` | Helm chart (`generated/` is produced by `make generate`) |
 | `config/rbac/role.yaml` | Generated `ClusterRole` — do not edit |
@@ -516,15 +511,15 @@ and code generation are documented once for all providers in
 ### Testing
 
 - **Unit tests** — `make test`.
-- **Integration tests** — `make test-integration` runs the chainsaw suites.
+- **Integration tests** — `make test-integration` runs the
+  [chainsaw](https://kyverno.github.io/chainsaw/) suites (install with
+  `go install github.com/kyverno/chainsaw@v0.2.15`); see
+  [`test/integration/README.md`](test/integration/README.md) for the cases.
 - **CI** — [.github/workflows/ci.yaml](.github/workflows/ci.yaml) runs lint, build, unit
-  tests, generated-file verification, and Helm lint on every pull request.
+  tests, generated-file verification, Helm lint and every integration case on every pull
+  request.
 
 ## Troubleshooting
-
-Integration tests use [chainsaw](https://kyverno.github.io/chainsaw/); install it
-with `go install github.com/kyverno/chainsaw@v0.2.15`. See
-[`test/integration/README.md`](test/integration/README.md) for the test cases.
 
 ```bash
 kubectl logs -n everest-system deploy/provider-altinity-clickhouse -f
@@ -535,10 +530,10 @@ kubectl logs -n everest-system deploy/provider-altinity-clickhouse -f
 | `Instance` stuck in `Provisioning` or `Updating` | `status.message` names the step (`Creating ClickHouse Keeper: 1 of 3 hosts ready`); then the `ClickHouseInstallation` / `ClickHouseKeeperInstallation` status and the provider logs |
 | `Instance` is `Failed` with a `ClickHouse:` or `ClickHouse Keeper:` message | The operator aborted the last change; the message is its error. It retries on its own, and the Instance recovers when it succeeds |
 | No `Provider` resource in the cluster | Is the chart installed? Check the provider deployment logs |
-| `Instance` ignored entirely | `spec.providerRef.name` must be `provider-altinity-clickhouse` |
+| `Instance` ignored entirely | `spec.providerRef.name` must be `altinity-clickhouse` |
 | `ClickHouseInstallation` created but no pods | Inspect its status — the failure is upstream in the operator |
-| `replicated` instance never leaves `Creating` | The Keeper quorum has to become ready first; check the `ClickHouseKeeperInstallation` |
-| Reconciliation silently stalls on k3d/kind | Raise `fs.inotify.max_user_instances` (see [Installation](#installation)) |
+| `replicated` instance stays at `Creating ClickHouse Keeper` | The Keeper quorum has to become ready before ClickHouse is created; check the `ClickHouseKeeperInstallation` |
+| Reconciliation silently stalls on k3d/kind | Raise `fs.inotify.max_user_instances` on the host, e.g. `sudo sysctl fs.inotify.max_user_instances=512` |
 
 ## Contributing
 

@@ -501,7 +501,7 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	if err != nil {
 		return nil, err
 	}
-	cpu, memory := resolveResources(engine)
+	resources := resolveResources(engine)
 	storageSize, storageClass := resolveStorage(engine)
 
 	settings, err := resolveEngineSettings(c, engine)
@@ -516,10 +516,7 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 		Ports: []corev1.ContainerPort{
 			{Name: common.MetricsPortName, ContainerPort: common.MetricsPort, Protocol: corev1.ProtocolTCP},
 		},
-		Resources: corev1.ResourceRequirements{
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
-			Requests: corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
-		},
+		Resources: resources,
 	}
 
 	pvcSpec := corev1.PersistentVolumeClaimSpec{
@@ -613,19 +610,16 @@ func buildCHK(c *controller.Context) (*chkv1.ClickHouseKeeperInstallation, error
 	if err != nil {
 		return nil, err
 	}
-	cpu, memory := resolveKeeperResources(keeper)
+	resources := resolveKeeperResources(keeper)
 	storageSize, storageClass, err := resolveKeeperStorage(c, keeper)
 	if err != nil {
 		return nil, err
 	}
 
 	container := corev1.Container{
-		Name:  "clickhouse-keeper",
-		Image: image,
-		Resources: corev1.ResourceRequirements{
-			Limits:   corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
-			Requests: corev1.ResourceList{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory},
-		},
+		Name:      "clickhouse-keeper",
+		Image:     image,
+		Resources: resources,
 	}
 
 	podSpec := corev1.PodSpec{Containers: []corev1.Container{container}}
@@ -810,20 +804,10 @@ func resolveImage(c *controller.Context, name string, component corev1alpha1.Com
 	return "", fmt.Errorf("no image found for the %s component", name)
 }
 
-// resolveResources returns CPU and memory quantities with defaults applied.
-func resolveResources(engine corev1alpha1.ComponentSpec) (cpu, memory resource.Quantity) {
-	cpu = resource.MustParse("1")
-	memory = resource.MustParse("4Gi")
-	if engine.Resources == nil || engine.Resources.Limits == nil {
-		return
-	}
-	if v := engine.Resources.Limits.Cpu(); v != nil && !v.IsZero() {
-		cpu = v.DeepCopy()
-	}
-	if v := engine.Resources.Limits.Memory(); v != nil && !v.IsZero() {
-		memory = v.DeepCopy()
-	}
-	return
+// resolveResources returns the engine's CPU and memory requirements,
+// defaulting to 1 CPU and 4Gi (see resourceRequirements).
+func resolveResources(engine corev1alpha1.ComponentSpec) corev1.ResourceRequirements {
+	return resourceRequirements(engine.Resources, resource.MustParse("1"), resource.MustParse("4Gi"))
 }
 
 // resolveStorage returns the storage size and optional storage class.
@@ -839,21 +823,44 @@ func resolveStorage(engine corev1alpha1.ComponentSpec) (size resource.Quantity, 
 	return
 }
 
-// resolveKeeperResources returns the Keeper CPU and memory, defaulting each
-// to the small footprint Keeper needs.
-func resolveKeeperResources(keeper corev1alpha1.ComponentSpec) (cpu, memory resource.Quantity) {
-	cpu = resource.MustParse(common.KeeperDefaultCPU)
-	memory = resource.MustParse(common.KeeperDefaultMemory)
-	if keeper.Resources == nil || keeper.Resources.Limits == nil {
-		return
+// resolveKeeperResources returns the Keeper CPU and memory requirements,
+// defaulting to the small footprint Keeper needs (see resourceRequirements).
+func resolveKeeperResources(keeper corev1alpha1.ComponentSpec) corev1.ResourceRequirements {
+	return resourceRequirements(keeper.Resources,
+		resource.MustParse(common.KeeperDefaultCPU), resource.MustParse(common.KeeperDefaultMemory))
+}
+
+// resourceRequirements fills in the CPU and memory requests and limits of a
+// component. An unset limit is the default, raised to the request when that
+// is higher; an unset request equals the limit, so a component that sets only
+// limits gets the Guaranteed QoS class.
+func resourceRequirements(declared *corev1.ResourceRequirements, cpu, memory resource.Quantity) corev1.ResourceRequirements {
+	out := corev1.ResourceRequirements{Limits: corev1.ResourceList{}, Requests: corev1.ResourceList{}}
+	for name, fallback := range map[corev1.ResourceName]resource.Quantity{corev1.ResourceCPU: cpu, corev1.ResourceMemory: memory} {
+		var limit, request *resource.Quantity
+		if declared != nil {
+			if q, ok := declared.Limits[name]; ok && !q.IsZero() {
+				limit = &q
+			}
+			if q, ok := declared.Requests[name]; ok && !q.IsZero() {
+				request = &q
+			}
+		}
+		effectiveLimit := fallback
+		switch {
+		case limit != nil:
+			effectiveLimit = *limit
+		case request != nil && request.Cmp(fallback) > 0:
+			effectiveLimit = *request
+		}
+		effectiveRequest := effectiveLimit
+		if request != nil {
+			effectiveRequest = *request
+		}
+		out.Limits[name] = effectiveLimit.DeepCopy()
+		out.Requests[name] = effectiveRequest.DeepCopy()
 	}
-	if v := keeper.Resources.Limits.Cpu(); v != nil && !v.IsZero() {
-		cpu = v.DeepCopy()
-	}
-	if v := keeper.Resources.Limits.Memory(); v != nil && !v.IsZero() {
-		memory = v.DeepCopy()
-	}
-	return
+	return out
 }
 
 // resolveKeeperStorage returns the Keeper volume size and StorageClass. An
