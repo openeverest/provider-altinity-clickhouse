@@ -126,6 +126,10 @@ const (
 	// Altinity operator does not create a usable external user, so we create one.
 	AppUserName = "admin"
 
+	// RolloutStateSuffix is appended to the Instance name to form the Secret
+	// recording what the provider last applied (see rolloutGate).
+	RolloutStateSuffix = "-provider-state"
+
 	// CredentialsSecretSuffix is appended to the Instance name to form the Secret
 	// holding the generated application user credentials.
 	CredentialsSecretSuffix = "-credentials"

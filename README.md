@@ -271,6 +271,30 @@ replica. Retained PVCs are not cleaned up automatically — delete them once the
 is no longer needed. The StorageClass `reclaimPolicy` additionally decides whether
 the underlying volume outlives a deleted PVC.
 
+### Maintenance approval
+
+Changing the `Instance` rolls the ClickHouse or Keeper pods when needed, right away. A
+rolling restart the provider would cause on its own, with the `Instance` unchanged (for
+example after a provider upgrade renders the cluster differently), is held instead and
+listed under `status.pendingMaintenance` with an approval token, together with the
+`MaintenancePending` condition:
+
+```bash
+kubectl get instance my-instance -o jsonpath='{.status.pendingMaintenance}'
+```
+
+Approve it by echoing the token, or let such restarts through automatically:
+
+```yaml
+spec:
+  maintenance:
+    approved: provider-0.2.0-1a2b3c4d     # one action
+    # autoApproveUpTo: RollingRestart     # or every rolling restart
+```
+
+In the `replicated` topology Keeper and ClickHouse changes form one action. Any edit to the
+`Instance` applies a held change along with it.
+
 ### Rejected changes
 
 The provider validates every Instance against the cluster it has deployed and

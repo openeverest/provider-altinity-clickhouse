@@ -26,7 +26,9 @@ import (
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -94,15 +96,50 @@ func (p *Provider) Sync(c *controller.Context) error {
 // Instance while Sync is still waiting on the operator. The metadata carried by
 // c.Instance() is preserved by the runtime's prepare step, so a status-only
 // update targets the live object safely.
+//
+// Pending maintenance is published here too: the runtime only flushes it after
+// a Sync that returns nil, so an approved change that starts a rollout would
+// otherwise stay listed as pending until the cluster is Ready again.
 func reportProvisioningStatus(c *controller.Context, st controller.Status) {
 	in := c.Instance()
 	desired := st.ToV2Alpha1()
-	if in.Status.Phase == desired.Phase && in.Status.Message == desired.Message {
-		return
-	}
+	changed := in.Status.Phase != desired.Phase || in.Status.Message != desired.Message
 	in.Status.Phase = desired.Phase
 	in.Status.Message = desired.Message
-	_ = c.Client().Status().Update(c.Context(), in)
+	if c.MaintenanceRequested() && setPendingMaintenance(c, in) {
+		changed = true
+	}
+	if changed {
+		_ = c.Client().Status().Update(c.Context(), in)
+	}
+}
+
+// setPendingMaintenance mirrors the runtime's flush of status.pendingMaintenance
+// and the MaintenancePending condition, and reports whether either changed.
+func setPendingMaintenance(c *controller.Context, in *corev1alpha1.Instance) bool {
+	pending := c.GetPendingMaintenance()
+	changed := !equality.Semantic.DeepEqual(in.Status.PendingMaintenance, pending)
+	in.Status.PendingMaintenance = pending
+
+	condition := metav1.Condition{
+		Type:               corev1alpha1.ConditionMaintenancePending,
+		Status:             metav1.ConditionTrue,
+		Reason:             corev1alpha1.ReasonAwaitingApproval,
+		Message:            fmt.Sprintf("%d action(s) require approval to proceed", len(pending)),
+		ObservedGeneration: in.Generation,
+	}
+	if len(pending) == 0 {
+		if meta.FindStatusCondition(in.Status.Conditions, corev1alpha1.ConditionMaintenancePending) == nil {
+			return changed
+		}
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = corev1alpha1.ReasonNoActionsPending
+		condition.Message = "No disruptive actions are held"
+	}
+	if meta.SetStatusCondition(&in.Status.Conditions, condition) {
+		changed = true
+	}
+	return changed
 }
 
 // sync applies and polls the required resources for the selected topology.
@@ -149,22 +186,37 @@ func (p *Provider) sync(c *controller.Context) error {
 
 // syncStandalone applies and waits on the CHI for a single-node deployment.
 func (p *Provider) syncStandalone(c *controller.Context) error {
-	return applyAndWaitForCHI(c, 1)
+	chi, err := buildCHI(c, 1)
+	if err != nil {
+		return fmt.Errorf("build ClickHouseInstallation: %w", err)
+	}
+	gate, err := newRolloutGate(c, chi)
+	if err != nil {
+		return err
+	}
+	return applyAndWaitForCHI(c, gate, chi)
 }
 
 // syncReplicated applies and waits on a CHK (Keeper) + CHI pair.
 func (p *Provider) syncReplicated(c *controller.Context) error {
-	keeperName := keeperCRName(c.Name())
-
-	desired, err := buildCHK(c)
+	desiredCHK, err := buildCHK(c)
 	if err != nil {
 		return fmt.Errorf("build ClickHouseKeeperInstallation: %w", err)
 	}
-	if err := c.Apply(desired); err != nil {
+	desiredCHI, err := buildCHI(c, replicasCount(c))
+	if err != nil {
+		return fmt.Errorf("build ClickHouseInstallation: %w", err)
+	}
+	gate, err := newRolloutGate(c, desiredCHK, desiredCHI)
+	if err != nil {
+		return err
+	}
+
+	if _, err := gate.apply(c, desiredCHK, "chk"); err != nil {
 		return fmt.Errorf("apply ClickHouseKeeperInstallation: %w", err)
 	}
 	chk := &chkv1.ClickHouseKeeperInstallation{}
-	if err := c.Get(chk, keeperName); err != nil {
+	if err := c.Get(chk, keeperCRName(c.Name())); err != nil {
 		return controller.WaitForDuration("waiting for Keeper to initialize", 15*time.Second)
 	}
 	// ClickHouse needs a Keeper quorum to start, so hold the CHI until it is ready.
@@ -172,17 +224,13 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 		return err
 	}
 
-	return applyAndWaitForCHI(c, replicasCount(c))
+	return applyAndWaitForCHI(c, gate, desiredCHI)
 }
 
-// applyAndWaitForCHI server-side applies the CHI and returns a WaitError until
-// the operator reports it Completed.
-func applyAndWaitForCHI(c *controller.Context, replicas int) error {
-	chi, err := buildCHI(c, replicas)
-	if err != nil {
-		return fmt.Errorf("build ClickHouseInstallation: %w", err)
-	}
-	if err := c.Apply(chi); err != nil {
+// applyAndWaitForCHI server-side applies the CHI, unless the rollout gate holds
+// it, and returns a WaitError until the operator reports it Completed.
+func applyAndWaitForCHI(c *controller.Context, gate *rolloutGate, chi *chiv1.ClickHouseInstallation) error {
+	if _, err := gate.apply(c, chi, "chi"); err != nil {
 		return fmt.Errorf("apply ClickHouseInstallation: %w", err)
 	}
 
@@ -293,6 +341,11 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 	credentials := &corev1.Secret{ObjectMeta: c.ObjectMeta(credentialsSecretName(c.Name()))}
 	if err := c.Delete(credentials); err != nil {
 		return fmt.Errorf("delete credentials secret: %w", err)
+	}
+
+	state := &corev1.Secret{ObjectMeta: c.ObjectMeta(rolloutStateName(c.Name()))}
+	if err := c.Delete(state); err != nil {
+		return fmt.Errorf("delete rollout state secret: %w", err)
 	}
 
 	if tlsEnabled(c) {

@@ -60,7 +60,7 @@ func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *
 	require.NoError(t, monitoringv1.AddToScheme(scheme))
 
 	all := append([]client.Object{instance, testProvider(t)}, objs...)
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).WithInterceptorFuncs(funcs).Build()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).WithStatusSubresource(&corev1alpha1.Instance{}).WithInterceptorFuncs(funcs).Build()
 	return controller.NewContext(context.Background(), fakeClient, instance, common.ProviderName)
 }
 
