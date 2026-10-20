@@ -58,6 +58,10 @@ func (p *Provider) Validate(c *controller.Context) error {
 		}
 	}
 
+	if err := validateRequestsWithinLimits(common.ComponentEngine, resolveResources(engine)); err != nil {
+		return err
+	}
+
 	if c.Instance().GetTopologyType() == common.TopologyReplicated {
 		if engine.Replicas != nil && *engine.Replicas < 2 {
 			return fmt.Errorf("replicated topology requires at least 2 engine replicas")
@@ -119,6 +123,18 @@ func (p *Provider) Validate(c *controller.Context) error {
 	return validateTransitions(c, engine)
 }
 
+// validateRequestsWithinLimits rejects a request above its limit, which
+// Kubernetes would refuse when creating the pods.
+func validateRequestsWithinLimits(component string, resources corev1.ResourceRequirements) error {
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		request, limit := resources.Requests[name], resources.Limits[name]
+		if request.Cmp(limit) > 0 {
+			return fmt.Errorf("%s %s request %s exceeds its limit %s", component, name, request.String(), limit.String())
+		}
+	}
+	return nil
+}
+
 // validateCredentials checks the administrative credentials: those seeding a
 // new Instance from spec.userSecretRef, and those of the credentials Secret,
 // whose password the user may edit to rotate it.
@@ -161,7 +177,7 @@ func validateKeeper(c *controller.Context) error {
 	if keeper.Replicas != nil && *keeper.Replicas != common.KeeperReplicas {
 		return fmt.Errorf("keeper runs %d replicas; its size cannot be changed", common.KeeperReplicas)
 	}
-	return nil
+	return validateRequestsWithinLimits(common.ComponentKeeper, resolveKeeperResources(keeper))
 }
 
 // validateKeeperTransitions rejects Keeper changes the deployed Keeper cannot
