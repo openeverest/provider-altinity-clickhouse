@@ -186,7 +186,7 @@ func inputsHash(c *controller.Context) (string, error) {
 	if found, err := getOptional(c, secret, credentialsSecretName(c.Name())); err != nil {
 		return "", err
 	} else if found {
-		credentials = userCredentialsDigest(secret)
+		credentials = userCredentialsRevision(secret)
 	}
 	return hashJSON(struct {
 		Version     string `json:"version,omitempty"`

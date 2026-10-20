@@ -161,16 +161,24 @@ const (
 	// authenticate Distributed and ON CLUSTER queries with.
 	CredentialsKeyClusterSecret = "cluster_secret"
 
+	// CredentialsKeyRevision counts changes to any credential;
+	// CredentialsKeyUserRevision counts changes to the administrative user's,
+	// which CredentialsKeyAppliedUsername records. Counters rather than
+	// digests, so nothing derived from a password leaves the Secret.
+	CredentialsKeyRevision        = "revision"
+	CredentialsKeyUserRevision    = "user_revision"
+	CredentialsKeyAppliedUsername = "applied_username"
+
 	// InterserverUser is the user replicas present on replication fetches.
 	InterserverUser = "interserver"
 
 	// MinPasswordLength is the minimum length of a user-supplied password.
 	MinPasswordLength = 12
 
-	// AnnotationCredentialsDigest on the ClickHouse pod template changes with
+	// AnnotationCredentialsRevision on the ClickHouse pod template changes with
 	// any credential, rolling the pods: the operator passes passwords as
 	// environment variables, read only at start-up.
-	AnnotationCredentialsDigest = "openeverest.io/credentials-digest"
+	AnnotationCredentialsRevision = "openeverest.io/credentials-revision"
 
 	// HTTPPort is the plaintext ClickHouse HTTP port clients connect to.
 	HTTPPort = 8123

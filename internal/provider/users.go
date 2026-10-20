@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"strconv"
 
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
@@ -48,8 +49,9 @@ import (
 //     the initiating user instead of "default".
 //
 // The generated credentials are created once and kept. The operator injects
-// all of them as environment variables, so the pods roll whenever they change
-// (see credentialsDigest).
+// all of them as environment variables, so the pods roll whenever they change:
+// the Secret counts changes in revision (any credential) and user_revision
+// (the administrative user's, for the rollout gate).
 
 // ensureCredentials creates or completes the credentials Secret and returns it.
 func ensureCredentials(c *controller.Context) (*corev1.Secret, error) {
@@ -76,6 +78,7 @@ func ensureCredentials(c *controller.Context) (*corev1.Secret, error) {
 	if len(data[common.CredentialsKeyPassword]) == 0 {
 		return nil, fmt.Errorf("credentials secret %s has no %q", name, common.CredentialsKeyPassword)
 	}
+	changed := false
 	for _, key := range []string{
 		common.CredentialsKeyDefaultPassword,
 		common.CredentialsKeyInterserverPassword,
@@ -87,11 +90,32 @@ func ensureCredentials(c *controller.Context) (*corev1.Secret, error) {
 				return nil, fmt.Errorf("generate %s: %w", key, err)
 			}
 			data[key] = []byte(generated)
+			changed = true
 		}
 	}
+
 	// Derived on every reconcile, so editing a password rotates it.
-	data[common.CredentialsKeyPasswordSHA256] = sha256Hex(data[common.CredentialsKeyPassword])
-	data[common.CredentialsKeyDefaultPasswordSHA256] = sha256Hex(data[common.CredentialsKeyDefaultPassword])
+	// ClickHouse's password_sha256_hex form mandates SHA256; the digests stay
+	// in this Secret, referenced by the CHI, never copied out of it.
+	userChanged := false
+	if digest := sha256Hex(data[common.CredentialsKeyPassword]); !bytes.Equal(digest, data[common.CredentialsKeyPasswordSHA256]) {
+		data[common.CredentialsKeyPasswordSHA256] = digest
+		userChanged = true
+	}
+	if !bytes.Equal(data[common.CredentialsKeyUsername], data[common.CredentialsKeyAppliedUsername]) {
+		data[common.CredentialsKeyAppliedUsername] = data[common.CredentialsKeyUsername]
+		userChanged = true
+	}
+	if digest := sha256Hex(data[common.CredentialsKeyDefaultPassword]); !bytes.Equal(digest, data[common.CredentialsKeyDefaultPasswordSHA256]) {
+		data[common.CredentialsKeyDefaultPasswordSHA256] = digest
+		changed = true
+	}
+	if userChanged {
+		bumpRevision(data, common.CredentialsKeyUserRevision)
+	}
+	if changed || userChanged {
+		bumpRevision(data, common.CredentialsKeyRevision)
+	}
 
 	if existing.Name != "" && maps.EqualFunc(existing.Data, data, bytes.Equal) {
 		return existing, nil
@@ -200,32 +224,22 @@ func secretSetting(secretName, key string) *chiv1.Setting {
 	})
 }
 
-// credentialsDigest fingerprints every credential the pods read at start-up.
-func credentialsDigest(secret *corev1.Secret) string {
-	return digestKeys(secret,
-		common.CredentialsKeyUsername,
-		common.CredentialsKeyPasswordSHA256,
-		common.CredentialsKeyDefaultPasswordSHA256,
-		common.CredentialsKeyInterserverPassword,
-		common.CredentialsKeyClusterSecret,
-	)
+// bumpRevision increments the counter stored under key.
+func bumpRevision(data map[string][]byte, key string) {
+	n, _ := strconv.Atoi(string(data[key]))
+	data[key] = []byte(strconv.Itoa(n + 1))
 }
 
-// userCredentialsDigest fingerprints the credentials the user controls, so
-// the rollout gate treats rotating them as a user change.
-func userCredentialsDigest(secret *corev1.Secret) string {
-	return digestKeys(secret, common.CredentialsKeyUsername, common.CredentialsKeyPasswordSHA256)
+// credentialsRevision counts changes to any credential the pods read at
+// start-up; the ClickHouse pod template carries it to roll on rotation.
+func credentialsRevision(secret *corev1.Secret) string {
+	return string(secret.Data[common.CredentialsKeyRevision])
 }
 
-func digestKeys(secret *corev1.Secret, keys ...string) string {
-	h := sha256.New()
-	for _, key := range keys {
-		h.Write([]byte(key))
-		h.Write([]byte{0})
-		h.Write(secret.Data[key])
-		h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
+// userCredentialsRevision counts changes to the administrative credentials,
+// so the rollout gate treats rotating them as a user change.
+func userCredentialsRevision(secret *corev1.Secret) string {
+	return string(secret.Data[common.CredentialsKeyUserRevision])
 }
 
 func sha256Hex(value []byte) []byte {

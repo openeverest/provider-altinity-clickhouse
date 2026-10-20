@@ -24,6 +24,7 @@ import (
 
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
@@ -57,6 +58,8 @@ func TestEnsureCredentialsGeneratesAll(t *testing.T) {
 	}
 	assert.Equal(t, sha256Hex(secret.Data[common.CredentialsKeyPassword]), secret.Data[common.CredentialsKeyPasswordSHA256])
 	assert.Equal(t, sha256Hex(secret.Data[common.CredentialsKeyDefaultPassword]), secret.Data[common.CredentialsKeyDefaultPasswordSHA256])
+	assert.Equal(t, "1", string(secret.Data[common.CredentialsKeyRevision]))
+	assert.Equal(t, "1", string(secret.Data[common.CredentialsKeyUserRevision]))
 }
 
 func TestEnsureCredentialsSeedsFromUserSecretRef(t *testing.T) {
@@ -93,6 +96,13 @@ func TestEnsureCredentialsRotatesEditedPassword(t *testing.T) {
 	for _, key := range []string{common.CredentialsKeyDefaultPassword, common.CredentialsKeyInterserverPassword, common.CredentialsKeyClusterSecret} {
 		assert.Equal(t, first.Data[key], rotated.Data[key], "%s is kept", key)
 	}
+	assert.Equal(t, "2", string(rotated.Data[common.CredentialsKeyRevision]))
+	assert.Equal(t, "2", string(rotated.Data[common.CredentialsKeyUserRevision]))
+
+	// Nothing changed: no new revision.
+	again, err := ensureCredentials(c)
+	require.NoError(t, err)
+	assert.Equal(t, "2", string(again.Data[common.CredentialsKeyRevision]))
 }
 
 func TestEnsureCredentialsCompletesEarlierSecret(t *testing.T) {
@@ -108,6 +118,20 @@ func TestEnsureCredentialsCompletesEarlierSecret(t *testing.T) {
 	assert.NotEmpty(t, secret.Data[common.CredentialsKeyDefaultPassword])
 	assert.NotEmpty(t, secret.Data[common.CredentialsKeyInterserverPassword])
 	assert.NotEmpty(t, secret.Data[common.CredentialsKeyClusterSecret])
+	assert.Equal(t, "1", string(secret.Data[common.CredentialsKeyRevision]), "the pods roll for the new credentials")
+}
+
+// The provider generating credentials is not the user changing theirs.
+func TestEnsureCredentialsGeneratedKeysKeepUserRevision(t *testing.T) {
+	current := secretWith(credentialsSecretName("db"), map[string]string{
+		"username": "admin", "applied_username": "admin",
+		"password": "existing-password-0123", "password_sha256_hex": string(sha256Hex([]byte("existing-password-0123"))),
+		"revision": "4", "user_revision": "3",
+	})
+	secret, err := ensureCredentials(newTestContext(t, newTestInstance("db", "ns", ""), current))
+	require.NoError(t, err)
+	assert.Equal(t, "5", string(secret.Data[common.CredentialsKeyRevision]))
+	assert.Equal(t, "3", string(secret.Data[common.CredentialsKeyUserRevision]))
 }
 
 func TestValidateCredentials(t *testing.T) {
@@ -142,6 +166,7 @@ func TestBuildCHIHardensAuthentication(t *testing.T) {
 	creds := secretWith(credentialsSecretName("db"), map[string]string{
 		"username": "dba", "password": "long-enough-password", "password_sha256_hex": "h",
 		"default_password_sha256_hex": "d", "interserver_password": "i", "cluster_secret": "s",
+		"revision": "7",
 	})
 	c := newTestContext(t, newTestInstance("db", "ns", ""), creds)
 
@@ -161,8 +186,8 @@ func TestBuildCHIHardensAuthentication(t *testing.T) {
 	require.NotNil(t, cluster.Secret)
 	assert.Equal(t, common.CredentialsKeyClusterSecret, cluster.Secret.ValueFrom.SecretKeyRef.Key)
 
-	digest := chi.Spec.Templates.PodTemplates[0].ObjectMeta.Annotations[common.AnnotationCredentialsDigest]
-	assert.Equal(t, credentialsDigest(creds), digest)
+	// A counter, not a digest: nothing derived from a password leaves the Secret.
+	assert.Equal(t, "7", chi.Spec.Templates.PodTemplates[0].ObjectMeta.Annotations[common.AnnotationCredentialsRevision])
 }
 
 func TestValidateRejectsOverridingInterserverCredentials(t *testing.T) {
@@ -174,30 +199,23 @@ func TestValidateRejectsOverridingInterserverCredentials(t *testing.T) {
 // without waiting for maintenance approval.
 func TestRolloutAppliesPasswordRotation(t *testing.T) {
 	instance := newTestInstance("db", "ns", "")
-	state := recordedState(t, instance)
+	_, first := syncStandalone(t, instance, completedCHI())
+	state := persisted(t, first, rolloutStateName("db"))
+	creds := persisted(t, first, credentialsSecretName("db"))
 
-	rotated := withCredentials(nil)[0].(*corev1.Secret)
-	rotated.Data["password"] = []byte("rotated-password-123")
-	applied, c := syncStandalone(t, instance, completedCHI(), state, rotated)
+	creds.Data["password"] = []byte("rotated-password-123")
+	applied, c := syncStandalone(t, instance, completedCHI(), state, creds)
 
 	require.Len(t, applied, 1)
 	assert.Empty(t, c.GetPendingMaintenance())
-	digest := applied[0].Spec.Templates.PodTemplates[0].ObjectMeta.Annotations[common.AnnotationCredentialsDigest]
-	assert.NotEqual(t, credentialsDigest(withCredentials(nil)[0].(*corev1.Secret)), digest, "the pods roll")
+	assert.Equal(t, "2", applied[0].Spec.Templates.PodTemplates[0].ObjectMeta.Annotations[common.AnnotationCredentialsRevision], "the pods roll")
 }
 
-// Credentials the provider adds on its own (here: an Instance whose Secret
-// predates the default, replication and cluster credentials) roll the pods
-// only after maintenance approval.
-func TestRolloutHoldsGeneratedCredentials(t *testing.T) {
-	instance := newTestInstance("db", "ns", "")
-	state := recordedState(t, instance)
-
-	earlier := secretWith(credentialsSecretName("db"), map[string]string{
-		"username": "admin", "password": "test-password-0123456789",
-	})
-	applied, c := syncStandalone(t, instance, completedCHI(), state, earlier)
-
-	assert.Empty(t, applied)
-	assert.Len(t, c.GetPendingMaintenance(), 1)
+// persisted returns a fresh copy of a Secret written during a sync, to seed
+// the next sync with the cluster state as it was left.
+func persisted(t *testing.T, c *controller.Context, name string) *corev1.Secret {
+	t.Helper()
+	written := &corev1.Secret{}
+	require.NoError(t, c.Get(written, name))
+	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: written.Name, Namespace: written.Namespace}, Data: written.Data}
 }

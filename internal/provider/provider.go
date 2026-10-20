@@ -954,7 +954,7 @@ func credentialsForCHI(c *controller.Context, secretName string) (string, map[st
 	if v := string(secret.Data[common.CredentialsKeyUsername]); v != "" {
 		username = v
 	}
-	return username, map[string]string{common.AnnotationCredentialsDigest: credentialsDigest(secret)}, nil
+	return username, map[string]string{common.AnnotationCredentialsRevision: credentialsRevision(secret)}, nil
 }
 
 // readCredentials reads the generated application user credentials. On any error
