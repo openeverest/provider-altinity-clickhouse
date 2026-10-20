@@ -105,6 +105,10 @@ helm install provider-altinity-clickhouse \
 
 - The Altinity ClickHouse operator is bundled as a chart dependency and is installed
   automatically. It manages its own CRDs through pre-install/pre-upgrade hooks.
+- The operator connects to ClickHouse as `clickhouse_operator` with a random password generated
+  on first install (`operatorCredentials.password` sets one explicitly). Upgrades keep the existing
+  password; installs made before this chart version keep the operator's former default until it is
+  rotated by setting `operatorCredentials.password` and restarting the operator.
 
 Upgrade and uninstall:
 
