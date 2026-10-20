@@ -1,0 +1,8 @@
+# A change to a running cluster reports Updating, not Provisioning.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-standalone
+  namespace: default
+status:
+  phase: Updating

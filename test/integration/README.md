@@ -40,6 +40,9 @@ Provisions a standalone (single-replica) Instance and asserts:
 - Custom engine `configuration` propagates to the CHI's
   `spec.configuration.settings`.
 - No `ClickHouseKeeperInstallation` is provisioned for it.
+- Changing the memory limit of the running cluster reports the Instance as
+  `Updating` while the pod rolls, then `Ready` again with the CHI at the new
+  limit.
 
 ### `replicated`
 

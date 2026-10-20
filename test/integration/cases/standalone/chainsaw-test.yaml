@@ -6,7 +6,8 @@ spec:
   description: |
     Provision a standalone (single-replica) ClickHouse Instance and assert the
     CHI converges to Completed with custom engine settings, and that no Keeper
-    is provisioned.
+    is provisioned. Then change the memory limit and assert the Instance
+    reports Updating while the pod rolls and Ready afterwards.
   catch:
     - script:
         content: kubectl -n $NAMESPACE get instance,chi,chk -o yaml
@@ -21,6 +22,13 @@ spec:
             file: 10-assert.yaml
         - error:
             file: 10-error-keeper-absent.yaml
+        # Update the running cluster: Updating while the pod rolls, then Ready.
+        - patch:
+            file: 20-update.yaml
+        - assert:
+            file: 20-assert-updating.yaml
+        - assert:
+            file: 20-assert-ready.yaml
       finally:
         - command:
             entrypoint: kubectl
