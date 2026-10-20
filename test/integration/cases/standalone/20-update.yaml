@@ -1,0 +1,12 @@
+# Change the memory limit (2G -> 2Gi): the operator rolls the pod.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-standalone
+  namespace: default
+spec:
+  components:
+    engine:
+      resources:
+        limits:
+          memory: 2Gi

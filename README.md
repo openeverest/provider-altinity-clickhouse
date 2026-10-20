@@ -317,6 +317,15 @@ untouched:
   metrics endpoint (`prometheus/port`, `prometheus/endpoint`), which the
   operator and the provider manage.
 
+### Status
+
+| Phase | When |
+|---|---|
+| `Provisioning` | The cluster is being created; `status.message` shows progress, e.g. `Creating ClickHouse: 1 of 2 hosts ready` |
+| `Updating` | A running cluster is being changed — version, settings, resources, scaling, an approved maintenance action, Keeper or TLS. It keeps serving, so connection details stay published |
+| `Ready` | ClickHouse (and Keeper) are reconciled |
+| `Failed` | The operator aborted a change; `status.message` carries its error. The operator retries, and the phase follows when it recovers |
+
 ## Topologies
 
 <!-- BEGIN GENERATED: topologies -->
@@ -441,7 +450,8 @@ kubectl logs -n everest-system deploy/provider-altinity-clickhouse -f
 
 | Symptom | Where to look |
 |---|---|
-| `Instance` stuck in `Creating` | `kubectl describe instance <name>` conditions, then the provider logs |
+| `Instance` stuck in `Provisioning` or `Updating` | `status.message` names the step (`Creating ClickHouse Keeper: 1 of 3 hosts ready`); then the `ClickHouseInstallation` / `ClickHouseKeeperInstallation` status and the provider logs |
+| `Instance` is `Failed` with a `ClickHouse:` or `ClickHouse Keeper:` message | The operator aborted the last change; the message is its error. It retries on its own, and the Instance recovers when it succeeds |
 | No `Provider` resource in the cluster | Is the chart installed? Check the provider deployment logs |
 | `Instance` ignored entirely | `spec.providerRef.name` must be `provider-altinity-clickhouse` |
 | `ClickHouseInstallation` created but no pods | Inspect its status — the failure is upstream in the operator |

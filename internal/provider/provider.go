@@ -79,28 +79,28 @@ func New() *Provider {
 //
 // The runtime only persists status after Sync returns nil; on the WaitError
 // (requeue) path it short-circuits before computing status. Without this the
-// Instance would sit in Unknown for the whole provisioning window and then jump
-// straight to Ready. We therefore surface the same Provisioning status that
-// Status() would report each time we ask the runtime to requeue.
+// Instance would keep its previous phase for the whole provisioning or update
+// window. We therefore publish what Status() reports (Provisioning, Updating
+// or Failed) each time we ask the runtime to requeue.
 func (p *Provider) Sync(c *controller.Context) error {
 	err := p.sync(c)
 	if controller.IsWaitError(err) {
 		if st, statusErr := p.Status(c); statusErr == nil {
-			reportProvisioningStatus(c, st)
+			reportStatus(c, st)
 		}
 	}
 	return err
 }
 
-// reportProvisioningStatus best-effort publishes an intermediate status to the
-// Instance while Sync is still waiting on the operator. The metadata carried by
+// reportStatus best-effort publishes the status (Provisioning, Updating or
+// Failed) to the Instance while Sync is still waiting on the operator. The metadata carried by
 // c.Instance() is preserved by the runtime's prepare step, so a status-only
 // update targets the live object safely.
 //
 // Pending maintenance is published here too: the runtime only flushes it after
 // a Sync that returns nil, so an approved change that starts a rollout would
 // otherwise stay listed as pending until the cluster is Ready again.
-func reportProvisioningStatus(c *controller.Context, st controller.Status) {
+func reportStatus(c *controller.Context, st controller.Status) {
 	in := c.Instance()
 	desired := st.ToV2Alpha1()
 	changed := in.Status.Phase != desired.Phase || in.Status.Message != desired.Message
@@ -253,7 +253,9 @@ func waitForCHI(c *controller.Context, chi *chiv1.ClickHouseInstallation) error 
 		l.Info("ClickHouseInstallation is Completed", "name", chi.Name)
 		return nil
 	case chiv1.StatusAborted:
-		return fmt.Errorf("ClickHouseInstallation aborted: %s", chi.Status.GetError())
+		// The operator retries aborted reconciles, so keep watching; Sync's
+		// wait path reports the failure (a plain error would publish nothing).
+		return controller.WaitForDuration("ClickHouseInstallation aborted: "+chi.Status.GetError(), 30*time.Second)
 	default:
 		l.Info("ClickHouseInstallation still provisioning", "name", chi.Name, "status", chi.Status.GetStatus())
 		return controller.WaitForDuration("waiting for Altinity operator to complete CHI provisioning", 15*time.Second)
@@ -272,47 +274,10 @@ func waitForCHK(c *controller.Context, chk *chkv1.ClickHouseKeeperInstallation) 
 		l.Info("ClickHouseKeeperInstallation is Completed", "name", chk.Name)
 		return nil
 	case chkv1.StatusAborted:
-		return fmt.Errorf("ClickHouseKeeperInstallation aborted: %s", chk.Status.GetError())
+		return controller.WaitForDuration("ClickHouseKeeperInstallation aborted: "+chk.Status.GetError(), 30*time.Second)
 	default:
 		l.Info("Keeper still provisioning", "name", chk.Name, "status", chk.Status.GetStatus())
 		return controller.WaitForDuration("waiting for Keeper to complete provisioning", 15*time.Second)
-	}
-}
-
-// Status reports the current status of the ClickHouse instance.
-func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
-	topology := c.Instance().GetTopologyType()
-
-	if topology == common.TopologyReplicated {
-		// For replicated, check Keeper first, then CHI.
-		chk := &chkv1.ClickHouseKeeperInstallation{}
-		if err := c.Get(chk, keeperCRName(c.Name())); err != nil {
-			return controller.Provisioning("Waiting for ClickHouseKeeperInstallation"), nil
-		}
-		if chk.Status == nil || chk.Status.GetStatus() != chkv1.StatusCompleted {
-			return controller.Provisioning("Waiting for Keeper to become ready"), nil
-		}
-	}
-
-	chi := &chiv1.ClickHouseInstallation{}
-	if err := c.Get(chi, c.Name()); err != nil {
-		return controller.Provisioning("Waiting for ClickHouseInstallation"), nil
-	}
-	if chi.Status == nil {
-		return controller.Provisioning("Waiting for operator to initialize"), nil
-	}
-
-	switch chi.Status.GetStatus() {
-	case chiv1.StatusCompleted:
-		return controller.ReadyWithConnectionDetails(buildConnectionDetails(c, chi)), nil
-	case chiv1.StatusAborted:
-		errMsg := chi.Status.GetError()
-		if errMsg == "" {
-			errMsg = "ClickHouseInstallation aborted"
-		}
-		return controller.Failed(errMsg), nil
-	default:
-		return controller.Provisioning(fmt.Sprintf("Cluster is being created (%s)", chi.Status.GetStatus())), nil
 	}
 }
 
