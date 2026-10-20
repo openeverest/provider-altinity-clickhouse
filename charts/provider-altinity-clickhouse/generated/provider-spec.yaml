@@ -66,6 +66,35 @@ spec:
   defaultVersion: "26.8"
   release:
     version: 0.1.0
+  secrets:
+    user:
+      parametersSchema:
+        openAPIV3Schema:
+          properties:
+            password:
+              type: string
+            username:
+              type: string
+          type: object
+      uiSchema:
+        components:
+          password:
+            fieldParams:
+              label: Password
+              type: password
+            uiType: text
+            validation:
+              minLength: 12
+              required: true
+          username:
+            fieldParams:
+              label: Username
+              placeholder: admin
+            uiType: text
+        componentsOrder:
+          - username
+          - password
+        label: ClickHouse admin credentials
   topologies:
     replicated:
       components:

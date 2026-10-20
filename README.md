@@ -62,7 +62,7 @@ provider itself is covered under [Installation](#installation).
 | Version upgrades | ✅ | change `spec.version` to a newer bundle; downgrades are rejected; see [Upgrading ClickHouse](#upgrading-clickhouse) |
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
 | Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
-| Authentication | ✅ | a dedicated `admin` user is provisioned automatically with a generated password (see [Connecting](#connecting)) |
+| Authentication | ✅ | an administrative user, seeded from `spec.userSecretRef` or generated, with password rotation; `default` user and replica-to-replica traffic authenticated (see [Connecting](#connecting)) |
 | TLS | ✅ | opt-in per Instance via the engine component's `tls.enabled` parameter; requires [cert-manager](#prerequisites) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; see [Pod placement](#pod-placement) |
 
@@ -196,15 +196,36 @@ Credentials are in the secret named by `.status.connection.credentialsSecretRef`
 
 ## Connecting
 
-The Altinity operator does not create a usable external user, so the provider
-provisions one automatically:
+The provider provisions an administrative ClickHouse user for every Instance:
 
-- A dedicated `admin` user is created with a randomly generated password.
-- The credentials live in the `<instance-name>-credentials` secret and are also
-  published to the connection secret referenced by
-  `.status.connection.credentialsSecretRef` (keys `username`, `password`).
-- The password is generated once and never rotated on subsequent reconciles, so
-  existing connections keep working.
+- By default it is called `admin` and gets a random password. To choose the
+  credentials, point `spec.userSecretRef` at a Secret with a `password` (at least
+  12 characters) and optionally a `username`; they seed the user when the Instance
+  is created.
+- The credentials live in the `<instance-name>-credentials` Secret and are
+  published to the connection Secret (`<instance-name>-conn`, keys `username`,
+  `password`).
+- The user may manage users, roles, settings profiles and quotas through SQL
+  (`CREATE USER`, `CREATE SETTINGS PROFILE`, …), so applications can get their own
+  least-privileged users with limits.
+
+To **rotate the password**, edit `password` in `<instance-name>-credentials`. The
+provider applies it right away: ClickHouse rolls one replica at a time (passwords
+reach ClickHouse as environment variables), and the connection Secret follows.
+
+Inside the cluster the provider also locks down what the operator leaves open:
+
+- the built-in `default` user gets a random password (it had none and accepted
+  connections from every ClickHouse pod), so `clickhouse-client` inside a pod needs
+  `--user admin --password …`;
+- replicas authenticate replication fetches (`interserver_http_credentials`), and
+  Distributed and `ON CLUSTER` queries with a shared cluster secret, which run as the
+  initiating user.
+
+These credentials are generated and kept in the same Secret. Instances created by an
+earlier provider version receive them as a held [maintenance action](#maintenance-approval):
+until every replica has restarted, replication fetches and Distributed queries between
+restarted and not-yet-restarted replicas fail and are retried.
 
 ### TLS
 

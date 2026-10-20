@@ -35,6 +35,28 @@ import (
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 )
 
+// withCredentials adds the Instance's credentials Secret to live objects
+// unless they carry one: it persists across reconciles in a real cluster, and
+// a regenerated password would look like the user rotating it.
+func withCredentials(live []client.Object) []client.Object {
+	for _, obj := range live {
+		if obj.GetName() == credentialsSecretName("db") {
+			return live
+		}
+	}
+	creds := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: credentialsSecretName("db"), Namespace: "ns"},
+		Data: map[string][]byte{
+			"username":             []byte("admin"),
+			"password":             []byte("test-password-0123456789"),
+			"default_password":     []byte("test-default-password"),
+			"interserver_password": []byte("test-interserver-password"),
+			"cluster_secret":       []byte("test-cluster-secret"),
+		},
+	}
+	return append(append([]client.Object{}, live...), creds)
+}
+
 // completedCHI is a CHI the operator has finished reconciling.
 func completedCHI() *chiv1.ClickHouseInstallation {
 	chi := &chiv1.ClickHouseInstallation{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns"}}
@@ -47,7 +69,7 @@ func completedCHI() *chiv1.ClickHouseInstallation {
 func syncStandalone(t *testing.T, instance *corev1alpha1.Instance, live ...client.Object) ([]*chiv1.ClickHouseInstallation, *controller.Context) {
 	t.Helper()
 	var applied []*chiv1.ClickHouseInstallation
-	c := newInterceptedTestContext(t, captureCHIApply(t, &applied), instance, live...)
+	c := newInterceptedTestContext(t, captureCHIApply(t, &applied), instance, withCredentials(live)...)
 	err := New().Sync(c)
 	if err != nil {
 		require.True(t, controller.IsWaitError(err), "unexpected error: %v", err)
@@ -103,7 +125,7 @@ func TestRolloutBaselinesClusterWithoutRecord(t *testing.T) {
 	state := rolloutState(t, c)
 	require.NotNil(t, state)
 	assert.NotEmpty(t, state.Data["chi.spec"])
-	assert.NotEmpty(t, state.Data["chi.instance"])
+	assert.NotEmpty(t, state.Data["chi.inputs-v3"])
 }
 
 func TestRolloutAppliesUnchangedRendering(t *testing.T) {
@@ -209,7 +231,7 @@ func completedCHK() *chkv1.ClickHouseKeeperInstallation {
 func syncReplicated(t *testing.T, instance *corev1alpha1.Instance, live ...client.Object) ([]string, *controller.Context) {
 	t.Helper()
 	var kinds []string
-	c := newInterceptedTestContext(t, captureAppliedKinds(t, &kinds), instance, live...)
+	c := newInterceptedTestContext(t, captureAppliedKinds(t, &kinds), instance, withCredentials(live)...)
 	if err := New().Sync(c); err != nil {
 		require.True(t, controller.IsWaitError(err), "unexpected error: %v", err)
 	}
@@ -278,7 +300,7 @@ func prepared(stored *corev1alpha1.Instance, engineVersion string) *corev1alpha1
 func syncPrepared(t *testing.T, stored, preparedIn *corev1alpha1.Instance, live ...client.Object) ([]*chiv1.ClickHouseInstallation, *controller.Context) {
 	t.Helper()
 	var applied []*chiv1.ClickHouseInstallation
-	base := newInterceptedTestContext(t, captureCHIApply(t, &applied), stored, live...)
+	base := newInterceptedTestContext(t, captureCHIApply(t, &applied), stored, withCredentials(live)...)
 	c := controller.NewContext(context.Background(), base.Client(), preparedIn, "altinity-clickhouse")
 	if err := New().Sync(c); err != nil {
 		require.True(t, controller.IsWaitError(err), "unexpected error: %v", err)
@@ -322,5 +344,22 @@ func TestRolloutHoldsChangeOnLegacyRecord(t *testing.T) {
 	applied, c = syncStandalone(t, instance, completedCHI(), legacy)
 	assert.Len(t, applied, 1)
 	state := rolloutState(t, c)
-	assert.NotEmpty(t, state.Data["chi.instance"])
+	assert.NotEmpty(t, state.Data["chi.inputs-v3"])
+}
+
+// A record of the previous format (<cr>.instance, before credentials were
+// fingerprinted) holds a changed rendering instead of applying it.
+func TestRolloutHoldsChangeOnPreviousFormatRecord(t *testing.T) {
+	instance := newTestInstance("db", "ns", "")
+	previous := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: rolloutStateName("db"), Namespace: "ns"},
+		Data: map[string][]byte{
+			"chi.spec":     []byte("rendered-by-an-earlier-provider"),
+			"chi.instance": []byte("fingerprint-without-credentials"),
+		},
+	}
+
+	applied, c := syncStandalone(t, instance, completedCHI(), previous)
+	assert.Empty(t, applied)
+	assert.Len(t, c.GetPendingMaintenance(), 1)
 }

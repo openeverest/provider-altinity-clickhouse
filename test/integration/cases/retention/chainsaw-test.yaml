@@ -30,9 +30,11 @@ spec:
         - script:
             content: |
               set -eu
+              # The default user is password-protected: connect as the admin user.
+              PW=$(kubectl get secret itest-ch-retention-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
               POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-retention \
                 -o jsonpath='{.items[0].metadata.name}')
-              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --multiquery -q "
+              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --user admin --password "$PW" --multiquery -q "
                 DROP TABLE IF EXISTS default.retention_probe SYNC;
                 CREATE TABLE default.retention_probe (id UInt32) ENGINE = MergeTree ORDER BY id;
                 INSERT INTO default.retention_probe VALUES (1), (2), (3);"
@@ -56,11 +58,13 @@ spec:
         - script:
             content: |
               set -eu
+              # The default user is password-protected: connect as the admin user.
+              PW=$(kubectl get secret itest-ch-retention-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
               POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-retention \
                 -o jsonpath='{.items[0].metadata.name}')
               i=0
               while [ "$i" -lt 36 ]; do
-                rows=$(kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client -q \
+                rows=$(kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client --user admin --password "$PW" -q \
                   "SELECT count() FROM default.retention_probe" 2>/dev/null || echo 0)
                 if [ "$rows" = "3" ]; then
                   exit 0

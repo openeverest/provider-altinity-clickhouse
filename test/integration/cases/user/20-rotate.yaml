@@ -1,0 +1,8 @@
+# Rotate the administrative password by editing the credentials Secret.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-user-credentials
+  namespace: default
+stringData:
+  password: rotated-password-4567

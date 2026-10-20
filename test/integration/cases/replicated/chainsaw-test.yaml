@@ -43,6 +43,8 @@ spec:
         - script:
             content: |
               set -eu
+              # The default user is password-protected: connect as the admin user.
+              PW=$(kubectl get secret itest-ch-replicated-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
               NS="default"
               CHI="itest-ch-replicated"
 
@@ -63,7 +65,7 @@ spec:
               # issuing an ON CLUSTER DDL (config reload lags pod-Ready).
               i=0
               while [ "$i" -lt "$RETRIES" ]; do
-                members=$(kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+                members=$(kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client --user admin --password "$PW" -q \
                   "SELECT count() FROM system.clusters WHERE cluster = (SELECT substitution FROM system.macros WHERE macro = 'cluster')" 2>/dev/null || echo 0)
                 if [ "$members" -ge 2 ] 2>/dev/null; then
                   break
@@ -78,21 +80,21 @@ spec:
 
               # ClickHouse must reach Keeper through the ready-only client
               # Services, never a Keeper node that is still joining the quorum.
-              zk_host=$(kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+              zk_host=$(kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client --user admin --password "$PW" -q \
                 "SELECT host FROM system.zookeeper_connection")
               case "$zk_host" in
                 *-client*) echo "Keeper connection via client Service: $zk_host" ;;
                 *) echo "expected a Keeper client Service, got: $zk_host"; exit 1 ;;
               esac
 
-              kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+              kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client --user admin --password "$PW" -q \
                 "CREATE TABLE IF NOT EXISTS default.itest_repl ON CLUSTER '{cluster}' (id UInt64) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/itest_repl', '{replica}') ORDER BY id"
-              kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client -q \
+              kubectl exec -n "$NS" "$P0" -c clickhouse -- clickhouse-client --user admin --password "$PW" -q \
                 "INSERT INTO default.itest_repl VALUES (42)"
 
               i=0
               while [ "$i" -lt "$RETRIES" ]; do
-                n=$(kubectl exec -n "$NS" "$P1" -c clickhouse -- clickhouse-client -q \
+                n=$(kubectl exec -n "$NS" "$P1" -c clickhouse -- clickhouse-client --user admin --password "$PW" -q \
                   "SELECT count() FROM default.itest_repl" 2>/dev/null || echo 0)
                 if [ "$n" = "1" ]; then echo "replication OK on $P1"; exit 0; fi
                 i=$((i + 1))

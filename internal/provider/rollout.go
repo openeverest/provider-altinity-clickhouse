@@ -66,9 +66,8 @@ func newRolloutGate(c *controller.Context, rendered ...client.Object) (*rolloutG
 	state := &corev1.Secret{}
 	if err := c.Get(state, rolloutStateName(c.Name())); err == nil {
 		for k, v := range state.Data {
-			// <cr>.inputs records fingerprinted the runtime-prepared Instance
-			// and cannot be compared; see apply.
-			if strings.HasSuffix(k, legacyInputsSuffix) {
+			// Inputs recorded in an earlier format cannot be compared; see apply.
+			if !strings.HasSuffix(k, specSuffix) && !strings.HasSuffix(k, inputsSuffix) {
 				continue
 			}
 			g.record[k] = string(v)
@@ -112,12 +111,12 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 	}
 
 	// Inputs that differ from the recorded ones mean the user changed the
-	// Instance. Without recorded inputs (a record of the earlier format) a
+	// Instance. Without recorded inputs (a record of an earlier format) a
 	// changed rendering cannot be attributed to the user, so it is held.
 	recordedInputs := g.record[key+inputsSuffix]
 	allowed := !exists ||
-		g.record[key+".spec"] == "" ||
-		g.record[key+".spec"] == spec ||
+		g.record[key+specSuffix] == "" ||
+		g.record[key+specSuffix] == spec ||
 		(recordedInputs != "" && recordedInputs != g.inputs)
 	if !allowed {
 		if g.approved == nil {
@@ -137,10 +136,10 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 	if err := c.Apply(obj); err != nil {
 		return false, err
 	}
-	if g.record[key+".spec"] == spec && recordedInputs == g.inputs {
+	if g.record[key+specSuffix] == spec && recordedInputs == g.inputs {
 		return true, nil
 	}
-	g.record[key+".spec"] = spec
+	g.record[key+specSuffix] = spec
 	g.record[key+inputsSuffix] = g.inputs
 	return true, g.save(c)
 }
@@ -161,10 +160,14 @@ func rolloutStateName(instanceName string) string {
 	return instanceName + common.RolloutStateSuffix
 }
 
-// Record keys: <cr>.spec and <cr>.instance.
+// Record keys: <cr>.spec, and <cr>.inputs-v<N> for the inputs. Bump N
+// whenever inputsHash changes what it fingerprints, so records of the earlier
+// format are recognised (and their changes held) instead of every Instance
+// looking edited after a provider upgrade. v1 was <cr>.inputs (fingerprinting
+// the runtime-prepared Instance), v2 <cr>.instance (without credentials).
 const (
-	inputsSuffix       = ".instance"
-	legacyInputsSuffix = ".inputs"
+	specSuffix   = ".spec"
+	inputsSuffix = ".inputs-v3"
 )
 
 // inputsHash fingerprints the stored Instance fields the CRs are rendered
@@ -176,12 +179,22 @@ func inputsHash(c *controller.Context) (string, error) {
 		return "", fmt.Errorf("read stored Instance: %w", err)
 	}
 	spec := stored.Spec
+	// The administrative credentials are user input too: rotating the
+	// password rolls the pods and must not wait for approval.
+	var credentials string
+	secret := &corev1.Secret{}
+	if found, err := getOptional(c, secret, credentialsSecretName(c.Name())); err != nil {
+		return "", err
+	} else if found {
+		credentials = userCredentialsRevision(secret)
+	}
 	return hashJSON(struct {
-		Version    string `json:"version,omitempty"`
-		Topology   any    `json:"topology,omitempty"`
-		Parameters any    `json:"parameters,omitempty"`
-		Components any    `json:"components,omitempty"`
-	}{spec.Version, spec.Topology, spec.Parameters, spec.Components})
+		Version     string `json:"version,omitempty"`
+		Topology    any    `json:"topology,omitempty"`
+		Parameters  any    `json:"parameters,omitempty"`
+		Components  any    `json:"components,omitempty"`
+		Credentials string `json:"credentials,omitempty"`
+	}{spec.Version, spec.Topology, spec.Parameters, spec.Components, credentials})
 }
 
 // specHash fingerprints a rendered object's spec.

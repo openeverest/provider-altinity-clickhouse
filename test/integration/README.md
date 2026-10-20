@@ -102,13 +102,18 @@ Installs a minimal `PodMonitor` CRD, provisions a standalone Instance with
 
 ### `user`
 
-Provisions a standalone Instance and asserts the provider creates the
-application `admin` user:
+Provisions a standalone Instance seeded with credentials through
+`spec.userSecretRef` (`dba` / a known password) and asserts:
 
-1. A `<name>-credentials` Secret holds the username (`admin`), a random
-   password, and its SHA256 digest (64 hex chars).
-2. The CHI provisions the `admin` user and references the password digest from
-   the credentials Secret, so the plaintext never lands in the ClickHouse config.
+1. The `<name>-credentials` Secret holds the seeded username and password, the
+   password digest, and the generated credentials for the `default` user,
+   replication fetches and the cluster secret.
+2. The CHI references every password from that Secret (by digest or environment
+   variable), configures `interserver_http_credentials` and the cluster secret,
+   and the seeded user can log in while a password-less `default` login fails.
+3. Editing `password` in the credentials Secret rotates it: after the pod rolls
+   the new password works, the old one is rejected, and the connection Secret
+   carries the new password.
 
 ### `tls`
 

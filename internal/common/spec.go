@@ -148,6 +148,38 @@ const (
 	// AppUserPasswordBytes is the entropy (in bytes) of the generated password.
 	AppUserPasswordBytes = 24
 
+	// CredentialsKeyDefaultPassword and CredentialsKeyDefaultPasswordSHA256
+	// hold the generated password of ClickHouse's built-in "default" user.
+	CredentialsKeyDefaultPassword       = "default_password"
+	CredentialsKeyDefaultPasswordSHA256 = "default_password_sha256_hex"
+
+	// CredentialsKeyInterserverPassword holds the generated password replicas
+	// authenticate replication fetches with (interserver_http_credentials).
+	CredentialsKeyInterserverPassword = "interserver_password"
+
+	// CredentialsKeyClusterSecret holds the generated shared secret replicas
+	// authenticate Distributed and ON CLUSTER queries with.
+	CredentialsKeyClusterSecret = "cluster_secret"
+
+	// CredentialsKeyRevision counts changes to any credential;
+	// CredentialsKeyUserRevision counts changes to the administrative user's,
+	// which CredentialsKeyAppliedUsername records. Counters rather than
+	// digests, so nothing derived from a password leaves the Secret.
+	CredentialsKeyRevision        = "revision"
+	CredentialsKeyUserRevision    = "user_revision"
+	CredentialsKeyAppliedUsername = "applied_username"
+
+	// InterserverUser is the user replicas present on replication fetches.
+	InterserverUser = "interserver"
+
+	// MinPasswordLength is the minimum length of a user-supplied password.
+	MinPasswordLength = 12
+
+	// AnnotationCredentialsRevision on the ClickHouse pod template changes with
+	// any credential, rolling the pods: the operator passes passwords as
+	// environment variables, read only at start-up.
+	AnnotationCredentialsRevision = "openeverest.io/credentials-revision"
+
 	// HTTPPort is the plaintext ClickHouse HTTP port clients connect to.
 	HTTPPort = 8123
 

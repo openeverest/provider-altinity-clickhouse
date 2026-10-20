@@ -4,10 +4,12 @@ metadata:
   name: user
 spec:
   description: |
-    Provision a standalone ClickHouse Instance and assert the provider creates
-    the application `admin` user: a credentials Secret holding the username,
-    plaintext password and its SHA256 digest, and a CHI that references that
-    digest from its users configuration.
+    Provision a standalone ClickHouse Instance seeded with administrative
+    credentials through spec.userSecretRef and assert the provider uses them:
+    the credentials Secret, the CHI users (by digest), a password-protected
+    `default` user, replication credentials and the cluster secret. Then
+    rotate the password by editing the credentials Secret and assert the new
+    password works, the old one is rejected and the connection Secret follows.
   catch:
     - script:
         content: kubectl -n $NAMESPACE get instance,chi,secret -o yaml
@@ -17,10 +19,67 @@ spec:
     - name: provision-and-assert
       try:
         - apply:
+            file: 05-user-secret.yaml
+        - apply:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-user \
+                -o jsonpath='{.items[0].metadata.name}')
+              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client \
+                --user dba --password seeded-password-0123 -q "SELECT currentUser()" | grep -qx dba
+              # `default` is password-protected now, even from inside the pod.
+              if kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client -q "SELECT 1" 2>/dev/null; then
+                echo "the default user must not accept a password-less login"
+                exit 1
+              fi
+        - patch:
+            file: 20-rotate.yaml
+        - script:
+            timeout: 8m
+            content: |
+              set -eu
+              # The pod rolls to pick the rotated password up.
+              i=0
+              while [ "$i" -lt 90 ]; do
+                POD=$(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-user \
+                  -o jsonpath='{.items[0].metadata.name}')
+                if kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client \
+                  --user dba --password rotated-password-4567 -q "SELECT 1" >/dev/null 2>&1; then
+                  break
+                fi
+                i=$((i + 1))
+                sleep 5
+              done
+              kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client \
+                --user dba --password rotated-password-4567 -q "SELECT 1" >/dev/null
+              if kubectl exec -n default "$POD" -c clickhouse -- clickhouse-client \
+                --user dba --password seeded-password-0123 -q "SELECT 1" 2>/dev/null; then
+                echo "the old password must be rejected"
+                exit 1
+              fi
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: itest-ch-user-conn
+                namespace: default
+              data:
+                password: cm90YXRlZC1wYXNzd29yZC00NTY3 # base64("rotated-password-4567")
       finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - secret
+              - itest-ch-user-seed
+              - -n
+              - default
+              - --ignore-not-found
         - command:
             entrypoint: kubectl
             args:

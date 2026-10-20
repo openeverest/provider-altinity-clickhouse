@@ -6,6 +6,8 @@ metadata:
 spec:
   providerRef:
     name: altinity-clickhouse
+  userSecretRef:
+    name: itest-ch-user-seed
   topology:
     type: standalone
   components:
