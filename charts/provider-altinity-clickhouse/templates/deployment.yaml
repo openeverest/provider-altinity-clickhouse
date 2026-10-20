@@ -48,10 +48,14 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with .Values.extraEnv }}
           env:
+            - name: CLICKHOUSE_OPERATOR_NAMESPACE
+              value: {{ .Values.operatorAccess.namespace | default .Release.Namespace | quote }}
+            - name: CLICKHOUSE_OPERATOR_POD_LABELS
+              value: {{ .Values.operatorAccess.podLabels | default (printf "app.kubernetes.io/name=operator,app.kubernetes.io/instance=%s" .Release.Name) | quote }}
+            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           {{- with .Values.extraVolumeMounts }}
           volumeMounts:
             {{- toYaml . | nindent 12 }}

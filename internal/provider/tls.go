@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,8 +26,15 @@ import (
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
@@ -40,33 +48,53 @@ const certManagerGroup = "cert-manager.io"
 // issuerKind is the default cert-manager issuer kind.
 const issuerKind = "Issuer"
 
-// tlsEnabled reports whether TLS is requested for the engine component.
-func tlsEnabled(c *controller.Context) bool {
+// caDuration is the lifetime of the provider-managed CA. Clients keep the CA
+// from the connection details, so it must outlive many server certificates.
+const caDuration = 10 * 365 * 24 * time.Hour
+
+// tlsParameters returns the engine's TLS parameters, or nil when unset.
+func tlsParameters(c *controller.Context) *components.TLSParameters {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	var params components.ClickHouseParameters
 	if !c.TryDecodeComponentParameters(engine, &params) {
-		return false
+		return nil
 	}
-	return params.TLS != nil && strings.EqualFold(params.TLS.Enabled, common.TLSEnabled)
+	return params.TLS
+}
+
+// tlsEnabled reports whether TLS is requested for the engine component.
+func tlsEnabled(c *controller.Context) bool {
+	params := tlsParameters(c)
+	return params != nil && strings.EqualFold(params.Enabled, common.TLSEnabled)
+}
+
+// tlsRequired reports whether clients must use TLS: TLS is enabled and the
+// mode is not "optional".
+func tlsRequired(c *controller.Context) bool {
+	return tlsEnabled(c) && !strings.EqualFold(tlsParameters(c).Mode, common.TLSModeOptional)
+}
+
+// tlsMode returns the TLS mode the Instance asks for: "required",
+// "optional", or "" with TLS off.
+func tlsMode(c *controller.Context) string {
+	switch {
+	case !tlsEnabled(c):
+		return ""
+	case tlsRequired(c):
+		return common.TLSModeRequired
+	default:
+		return common.TLSModeOptional
+	}
 }
 
 // ensureTLS provisions the cert-manager resources required for TLS and returns a
-// WaitError until the server certificate has been issued.
+// WaitError until the server certificate has first been issued.
 //
 // When the user supplies an issuerRef override only the leaf certificate is
 // created; otherwise the provider manages a self-signed CA chain scoped to the
 // Instance (self-signed Issuer → CA Certificate → CA Issuer → server Certificate).
 func ensureTLS(c *controller.Context) error {
-	engine := c.Instance().Spec.Components[common.ComponentEngine]
-	var params components.ClickHouseParameters
-	_ = c.TryDecodeComponentParameters(engine, &params)
-
-	var override *components.IssuerRef
-	if params.TLS != nil {
-		override = params.TLS.IssuerRef
-	}
-
-	issuerRef, err := ensureIssuer(c, override)
+	issuerRef, err := ensureIssuer(c, tlsParameters(c).IssuerRef)
 	if err != nil {
 		return err
 	}
@@ -75,16 +103,28 @@ func ensureTLS(c *controller.Context) error {
 		return err
 	}
 
-	cert := &cmapi.Certificate{}
-	if err := c.Get(cert, serverCertName(c.Name())); err != nil {
-		return controller.WaitForDuration("waiting for server certificate to be created", 15*time.Second)
+	// Only the first issuance blocks: a re-issue (renewal, new names) leaves
+	// the current certificate in place until the new one is written, and
+	// ClickHouse reloads the renewed files without a restart.
+	issued, err := serverCertificateIssued(c)
+	if err != nil {
+		return err
 	}
-	if !certificateReady(cert) {
-		return controller.WaitForDuration("waiting for cert-manager to issue server certificate", 15*time.Second)
+	if !issued {
+		return controller.WaitForDuration("waiting for cert-manager to issue the server certificate", 15*time.Second)
 	}
-
-	log.FromContext(c.Context()).Info("Server certificate is ready", "name", serverCertName(c.Name()))
 	return nil
+}
+
+// serverCertificateIssued reports whether the server certificate Secret holds
+// a certificate.
+func serverCertificateIssued(c *controller.Context) (bool, error) {
+	secret := &corev1.Secret{}
+	found, err := getOptional(c, secret, serverSecretName(c.Name()))
+	if err != nil {
+		return false, err
+	}
+	return found && len(secret.Data[corev1.TLSCertKey]) > 0, nil
 }
 
 // ensureIssuer resolves the issuer that signs the server certificate. If the
@@ -99,6 +139,10 @@ func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta
 		group := override.Group
 		if group == "" {
 			group = certManagerGroup
+		}
+		// Switching to an own issuer leaves the provider-managed chain unused.
+		if err := deleteCAChain(c); err != nil {
+			return cmmeta.IssuerReference{}, err
 		}
 		return cmmeta.IssuerReference{Name: override.Name, Kind: kind, Group: group}, nil
 	}
@@ -117,6 +161,7 @@ func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta
 		ObjectMeta: c.ObjectMeta(caCertName(c.Name())),
 		Spec: cmapi.CertificateSpec{
 			IsCA:       true,
+			Duration:   &metav1.Duration{Duration: caDuration},
 			CommonName: caCertName(c.Name()),
 			SecretName: caSecretName(c.Name()),
 			IssuerRef: cmmeta.IssuerReference{
@@ -144,16 +189,26 @@ func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta
 }
 
 // ensureServerCertificate creates the leaf server Certificate signed by the
-// resolved issuer, covering the root Service DNS names.
+// resolved issuer. It covers the client Service, every replica's Service (the
+// replicas' hostnames in remote_servers) and the LoadBalancer address, if any.
 func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerReference) error {
-	dnsNames := serverDNSNames(c.Name(), c.Namespace())
+	replicas := 1
+	if c.Instance().GetTopologyType() == common.TopologyReplicated {
+		replicas = replicasCount(c)
+	}
+	dnsNames := serverDNSNames(c.Name(), c.Namespace(), replicas)
+	externalNames, externalIPs, err := externalAddresses(c)
+	if err != nil {
+		return err
+	}
 	cert := &cmapi.Certificate{
 		ObjectMeta: c.ObjectMeta(serverCertName(c.Name())),
 		Spec: cmapi.CertificateSpec{
-			SecretName: serverSecretName(c.Name()),
-			CommonName: dnsNames[0],
-			DNSNames:   dnsNames,
-			IssuerRef:  issuerRef,
+			SecretName:  serverSecretName(c.Name()),
+			CommonName:  dnsNames[0],
+			DNSNames:    append(dnsNames, externalNames...),
+			IPAddresses: externalIPs,
+			IssuerRef:   issuerRef,
 		},
 	}
 	if err := c.Apply(cert); err != nil {
@@ -162,35 +217,119 @@ func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerRefer
 	return nil
 }
 
-// certificateReady reports whether a cert-manager Certificate has been issued.
-func certificateReady(cert *cmapi.Certificate) bool {
-	for _, cond := range cert.Status.Conditions {
-		if cond.Type == cmapi.CertificateConditionReady && cond.Status == cmmeta.ConditionTrue {
-			return true
-		}
+// serverDNSNames returns the DNS names the server certificate must cover: the
+// client Service and each replica's Service, in every in-cluster form.
+func serverDNSNames(instanceName, namespace string, replicas int) []string {
+	services := append([]string{clientServiceName(instanceName)}, replicaServiceNames(instanceName, replicas)...)
+	names := make([]string, 0, 4*len(services))
+	for _, svc := range services {
+		names = append(names,
+			svc,
+			fmt.Sprintf("%s.%s", svc, namespace),
+			fmt.Sprintf("%s.%s.svc", svc, namespace),
+			fmt.Sprintf("%s.%s.svc.cluster.local", svc, namespace),
+		)
 	}
-	return false
+	return names
 }
 
-// serverDNSNames returns the DNS names the server certificate must cover. The
-// Altinity operator exposes the root Service as clickhouse-<name>.
-func serverDNSNames(instanceName, namespace string) []string {
-	svc := fmt.Sprintf("clickhouse-%s", instanceName)
-	return []string{
-		svc,
-		fmt.Sprintf("%s.%s", svc, namespace),
-		fmt.Sprintf("%s.%s.svc", svc, namespace),
-		fmt.Sprintf("%s.%s.svc.cluster.local", svc, namespace),
+// clientServiceName is the operator's Service for the whole installation.
+func clientServiceName(instanceName string) string {
+	return "clickhouse-" + instanceName
+}
+
+// replicaServiceNames returns the operator's per-replica Service names,
+// chi-{chi}-{cluster}-{shard}-{replica}, which are also the replicas'
+// hostnames in remote_servers. The operator cuts the CHI name to 60
+// characters and trims separators from the ends.
+func replicaServiceNames(instanceName string, replicas int) []string {
+	chiName := instanceName
+	if len(chiName) > 60 {
+		chiName = chiName[:60]
 	}
+	chiName = strings.Trim(chiName, "-_.")
+	names := make([]string, 0, replicas)
+	for i := 0; i < replicas; i++ {
+		names = append(names, fmt.Sprintf("chi-%s-%s-0-%d", chiName, common.CHIClusterName, i))
+	}
+	return names
+}
+
+// readCACert returns the CA that signed the server certificate, as issued
+// alongside it. Issuers such as ACME do not provide one.
+func readCACert(c *controller.Context) string {
+	secret := &corev1.Secret{}
+	if err := c.Get(secret, serverSecretName(c.Name())); err != nil {
+		return ""
+	}
+	return string(secret.Data[cmmeta.TLSCAKey])
+}
+
+// instanceForClientService maps an operator client Service to the Instance
+// whose CHI it serves (the CHI and the Instance share the name).
+func instanceForClientService(_ context.Context, obj client.Object) []reconcile.Request {
+	chiName := obj.GetLabels()[common.LabelCHIName]
+	if chiName == "" || obj.GetLabels()[labelOperatorService] != operatorServiceCR || obj.GetName() != clientServiceName(chiName) {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: chiName}}}
+}
+
+// loadBalancerAddressChanged passes LoadBalancer Services whose address was
+// assigned or changed.
+func loadBalancerAddressChanged() predicate.Predicate {
+	isLoadBalancer := func(obj client.Object) bool {
+		svc, ok := obj.(*corev1.Service)
+		return ok && svc.Spec.Type == corev1.ServiceTypeLoadBalancer
+	}
+	return predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return isLoadBalancer(e.Object) },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldSvc, okOld := e.ObjectOld.(*corev1.Service)
+			newSvc, okNew := e.ObjectNew.(*corev1.Service)
+			return okOld && okNew && isLoadBalancer(newSvc) &&
+				!equality.Semantic.DeepEqual(oldSvc.Status.LoadBalancer, newSvc.Status.LoadBalancer)
+		},
+	}
+}
+
+// The operator labels the Service of the whole installation with
+// clickhouse.altinity.com/Service=chi.
+const (
+	labelOperatorService = "clickhouse.altinity.com/Service"
+	operatorServiceCR    = "chi"
+)
+
+// externalAddresses returns the LoadBalancer hostnames and IPs of the client
+// Service, so clients outside the cluster can verify the certificate too.
+func externalAddresses(c *controller.Context) (names, ips []string, err error) {
+	svc := &corev1.Service{}
+	found, err := getOptional(c, svc, clientServiceName(c.Name()))
+	if err != nil || !found || svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+		return nil, nil, err
+	}
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		if ingress.Hostname != "" {
+			names = append(names, ingress.Hostname)
+		}
+		if ingress.IP != "" {
+			ips = append(ips, ingress.IP)
+		}
+	}
+	return names, ips, nil
 }
 
 // applyTLSToCHISpec wires the server certificate and secure ports into the CHI
-// configuration. The secure ports are added alongside the plaintext ports so
-// existing clients keep working.
-func applyTLSToCHISpec(spec *chiv1.ChiSpec, settings *chiv1.Settings, instanceName string) {
+// configuration, and makes distributed queries between replicas use the
+// secure native port. The plaintext ports stay open: the operator talks to
+// ClickHouse over plain HTTP (see plaintextPolicy for who may reach them).
+func applyTLSToCHISpec(spec *chiv1.ChiSpec, settings *chiv1.Settings, cluster *chiv1.Cluster, instanceName string) {
 	spec.Configuration.Files = buildTLSFiles(serverSecretName(instanceName))
 	settings.Set("https_port", chiv1.NewSettingScalar(strconv.Itoa(common.HTTPSPort)))
 	settings.Set("tcp_port_secure", chiv1.NewSettingScalar(strconv.Itoa(common.TCPSecurePort)))
+	cluster.Secure = chtypes.NewStringBool(true)
 }
 
 // buildTLSFiles renders the ClickHouse config files that enable TLS: an
@@ -220,9 +359,11 @@ func secretFileSetting(secretName, key string) *chiv1.Setting {
 	})
 }
 
-// opensslXML renders the ClickHouse openSSL server configuration referencing the
+// opensslXML renders the ClickHouse openSSL configuration referencing the
 // certificate files mounted from the cert-manager secret. Server-auth TLS only:
 // clients validate the server certificate; client certificates are not required.
+// The client side is what a replica uses for distributed queries to the other
+// replicas: it trusts the issuing CA as well as the system CAs.
 func opensslXML(secretName string) string {
 	base := "/etc/clickhouse-server/secrets.d"
 	return fmt.Sprintf(`<clickhouse>
@@ -236,6 +377,17 @@ func opensslXML(secretName string) string {
             <disableProtocols>sslv2,sslv3</disableProtocols>
             <preferServerCiphers>true</preferServerCiphers>
         </server>
+        <client>
+            <caConfig>%[1]s/ca.crt/%[2]s/ca.crt</caConfig>
+            <loadDefaultCAFile>true</loadDefaultCAFile>
+            <verificationMode>relaxed</verificationMode>
+            <cacheSessions>true</cacheSessions>
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+            <invalidCertificateHandler>
+                <name>RejectCertificateHandler</name>
+            </invalidCertificateHandler>
+        </client>
     </openSSL>
 </clickhouse>
 `, base, secretName)
@@ -243,19 +395,79 @@ func opensslXML(secretName string) string {
 
 // deleteTLSResources removes the provider-managed cert-manager resources and the
 // issued certificate secrets. cert-manager does not set an owner reference on
-// the secrets by default, so they are deleted explicitly.
+// the secrets by default, so they are deleted explicitly. Without cert-manager
+// installed there is nothing to delete.
 func deleteTLSResources(c *controller.Context) error {
-	objects := []client.Object{
+	return deleteAll(c,
 		&cmapi.Certificate{ObjectMeta: c.ObjectMeta(serverCertName(c.Name()))},
+		&corev1.Secret{ObjectMeta: c.ObjectMeta(serverSecretName(c.Name()))},
 		&cmapi.Certificate{ObjectMeta: c.ObjectMeta(caCertName(c.Name()))},
 		&cmapi.Issuer{ObjectMeta: c.ObjectMeta(caIssuerName(c.Name()))},
 		&cmapi.Issuer{ObjectMeta: c.ObjectMeta(selfSignedIssuerName(c.Name()))},
-		&corev1.Secret{ObjectMeta: c.ObjectMeta(serverSecretName(c.Name()))},
 		&corev1.Secret{ObjectMeta: c.ObjectMeta(caSecretName(c.Name()))},
+	)
+}
+
+// deleteCAChain removes the provider-managed CA chain, if it exists.
+func deleteCAChain(c *controller.Context) error {
+	found, err := getOptional(c, &corev1.Secret{}, caSecretName(c.Name()))
+	if err != nil || !found {
+		return err
 	}
+	return deleteAll(c,
+		&cmapi.Certificate{ObjectMeta: c.ObjectMeta(caCertName(c.Name()))},
+		&cmapi.Issuer{ObjectMeta: c.ObjectMeta(caIssuerName(c.Name()))},
+		&cmapi.Issuer{ObjectMeta: c.ObjectMeta(selfSignedIssuerName(c.Name()))},
+		&corev1.Secret{ObjectMeta: c.ObjectMeta(caSecretName(c.Name()))},
+	)
+}
+
+// cleanupTLS removes the certificates of an Instance whose TLS was turned
+// off, once no ClickHouse pod mounts them: right after the CHI is applied its
+// status still reads Completed while the pods have yet to roll, and a pod
+// restarting before its turn would wait for the deleted Secret.
+func cleanupTLS(c *controller.Context, chi *chiv1.ClickHouseInstallation) error {
+	if chi.Spec.Configuration != nil && chi.Spec.Configuration.Files != nil &&
+		chi.Spec.Configuration.Files.Has("server.crt") {
+		return nil
+	}
+	if mounted, err := serverSecretMounted(c); err != nil || mounted {
+		return err
+	}
+	found, err := getOptional(c, &corev1.Secret{}, serverSecretName(c.Name()))
+	if err != nil {
+		return err
+	}
+	caFound, err := getOptional(c, &corev1.Secret{}, caSecretName(c.Name()))
+	if err != nil || (!found && !caFound) {
+		return err
+	}
+	log.FromContext(c.Context()).Info("TLS is disabled, deleting its certificates")
+	return deleteTLSResources(c)
+}
+
+// serverSecretMounted reports whether a ClickHouse pod mounts the server
+// certificate Secret.
+func serverSecretMounted(c *controller.Context) (bool, error) {
+	pods := &corev1.PodList{}
+	if err := c.List(pods, client.MatchingLabels{common.LabelCHIName: c.Name()}); err != nil {
+		return false, fmt.Errorf("list ClickHouse pods: %w", err)
+	}
+	secretName := serverSecretName(c.Name())
+	for _, pod := range pods.Items {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.Secret != nil && volume.Secret.SecretName == secretName {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func deleteAll(c *controller.Context, objects ...client.Object) error {
 	for _, obj := range objects {
-		if err := c.Delete(obj); err != nil {
-			return fmt.Errorf("delete %T: %w", obj, err)
+		if err := c.Delete(obj); err != nil && !meta.IsNoMatchError(err) {
+			return fmt.Errorf("delete %T %s: %w", obj, obj.GetName(), err)
 		}
 	}
 	return nil

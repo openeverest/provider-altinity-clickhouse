@@ -122,6 +122,15 @@ const (
 	// TLSDisabled is the parameter value (default) that keeps TLS off.
 	TLSDisabled = "disabled"
 
+	// TLSModeRequired (default with TLS enabled) serves clients over TLS only:
+	// the client Service and connection details carry only the secure ports,
+	// and a NetworkPolicy limits the plaintext ports to the operator and the
+	// Instance's own pods.
+	TLSModeRequired = "required"
+
+	// TLSModeOptional adds the secure ports alongside the plaintext ones.
+	TLSModeOptional = "optional"
+
 	// AppUserName is the application user provisioned by the provider. The
 	// Altinity operator does not create a usable external user, so we create one.
 	AppUserName = "admin"
@@ -188,6 +197,29 @@ const (
 
 	// TCPSecurePort is the ClickHouse native secure protocol port exposed when TLS is enabled.
 	TCPSecurePort = 9440
+
+	// TCPPort is the plaintext ClickHouse native protocol port.
+	TCPPort = 9000
+
+	// InterserverHTTPPort is the plaintext port replicas fetch parts over.
+	InterserverHTTPPort = 9009
+
+	// PlaintextPolicySuffix is appended to the Instance name to form the
+	// NetworkPolicy that limits the plaintext ports when TLS is required.
+	PlaintextPolicySuffix = "-plaintext"
+
+	// ConnectionKeyCACert is the connection details key holding the CA that
+	// signed the server certificate.
+	ConnectionKeyCACert = "ca.crt"
+
+	// EnvOperatorNamespace and EnvOperatorPodLabels identify the Altinity
+	// operator pods, which keep plaintext access when TLS is required. The
+	// chart sets both; the namespace defaults to the provider's own.
+	EnvOperatorNamespace = "CLICKHOUSE_OPERATOR_NAMESPACE"
+	EnvOperatorPodLabels = "CLICKHOUSE_OPERATOR_POD_LABELS"
+
+	// DefaultOperatorPodLabels selects the operator the chart bundles.
+	DefaultOperatorPodLabels = "app.kubernetes.io/name=operator"
 
 	// SelfSignedIssuerSuffix is appended to the Instance name to form the
 	// provider-managed self-signed cert-manager Issuer.

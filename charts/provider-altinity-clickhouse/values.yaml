@@ -119,6 +119,16 @@ leaderElection:
   # -- Enable leader election (recommended for HA deployments)
   enabled: true
 
+# The Altinity operator pods, which keep access to the plaintext ClickHouse
+# ports when an Instance requires TLS: the operator only connects over plain
+# HTTP. Set these when the operator is not the bundled one.
+operatorAccess:
+  # -- Namespace the operator runs in (defaults to the release namespace)
+  namespace: ""
+  # -- Label selector (key=value,...) of the operator pods (defaults to the
+  # bundled operator's labels)
+  podLabels: ""
+
 # Credentials the bundled Altinity operator uses to connect to ClickHouse.
 # The chart creates the Secret itself instead of the operator subchart, whose
 # default password is fixed and publicly known (operator.secret.create is

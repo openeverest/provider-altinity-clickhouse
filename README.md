@@ -63,7 +63,7 @@ provider itself is covered under [Installation](#installation).
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
 | Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
 | Authentication | ✅ | an administrative user, seeded from `spec.userSecretRef` or generated, with password rotation; `default` user and replica-to-replica traffic authenticated (see [Connecting](#connecting)) |
-| TLS | ✅ | opt-in per Instance via the engine component's `tls.enabled` parameter; requires [cert-manager](#prerequisites) |
+| TLS | ✅ | opt-in per Instance via the engine component's `tls` parameters; client connections over TLS only by default, distributed queries between replicas over TLS; requires [cert-manager](#prerequisites) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; see [Pod placement](#pod-placement) |
 
 Stateful workloads additionally report:
@@ -239,14 +239,46 @@ spec:
       parameters:
         tls:
           enabled: enabled
+          mode: required   # default; or "optional"
 ```
 
-When enabled, the provider uses cert-manager to issue a server certificate and
-exposes the secure ports (HTTPS `8443`, native `9440`) **additively** — the
-plaintext ports (`8123`, `9000`) remain available. `.status.connection` then
-reports the `https` endpoint. By default the provider manages a self-signed CA
-chain scoped to the Instance; to sign with an existing issuer, set
-`parameters.tls.issuerRef` (`name`, optional `kind`/`group`).
+When enabled, the provider uses cert-manager to issue a server certificate,
+ClickHouse serves HTTPS (`8443`) and the secure native protocol (`9440`), and
+distributed queries between the replicas run over the secure native port.
+`.status.connection` reports the `https` endpoint, and the connection Secret
+carries the CA that signed the certificate under `ca.crt`.
+
+| `mode` | Plaintext ports (`8123`, `9000`) |
+|---|---|
+| `required` (default) | Not exposed: the client Service carries only `8443`/`9440`, and a NetworkPolicy (`<name>-plaintext`) lets only the Altinity operator and the Instance's own pods reach `8123`, `9000` and `9009`. Everyone can still reach the secure ports and the metrics endpoint (`9363`). |
+| `optional` | Exposed alongside the secure ports. |
+
+The plaintext ports stay open inside the cluster because the Altinity operator
+only talks to ClickHouse over plain HTTP. The NetworkPolicy is only enforced when
+the cluster's network plugin supports NetworkPolicies. The chart points the
+provider at the bundled operator's pods; if you run the operator separately, set
+`operatorAccess.namespace` and `operatorAccess.podLabels` in the chart values.
+
+The certificate covers the client Service (`clickhouse-<name>`), each replica's
+Service (`chi-<name>-clickhouse-0-<n>`), both with their namespace forms, and the
+LoadBalancer hostname or IP when the Instance is exposed through one. Renewed
+certificates are picked up without restarting ClickHouse.
+
+By default the provider manages a self-signed CA chain scoped to the Instance
+(the CA is valid for 10 years). To sign with an existing issuer, set
+`parameters.tls.issuerRef` (`name`, optional `kind`/`group`); issuers such as
+ACME do not provide a CA, so `ca.crt` is then left out of the connection details.
+Disabling TLS removes the certificates once no ClickHouse pod mounts them anymore.
+
+Instances that enabled TLS with an earlier provider version, which kept the
+plaintext ports open, receive `required` mode and TLS between the replicas as a
+held [maintenance action](#maintenance-approval). Set `mode: optional` first to
+keep the previous behaviour.
+
+Not covered yet: replicas fetch replicated parts from each other over plaintext
+HTTP (`9009`, authenticated with generated interserver credentials; the Altinity
+operator does not support interserver HTTPS), and ClickHouse talks to Keeper in
+plaintext ([#75](https://github.com/openeverest/provider-altinity-clickhouse/issues/75)).
 
 ### Pod placement
 
@@ -333,6 +365,7 @@ untouched:
 - more than one replica in the `standalone` topology;
 - a `keeper` component outside the `replicated` topology, a Keeper size other than 3,
   or shrinking, moving or downgrading Keeper;
+- a `tls.mode` other than `required` or `optional`;
 - an engine `configuration` that is not valid YAML or that sets ports, TLS
   (`openSSL/*`), Keeper (`zookeeper/*`), `macros/*`, `remote_servers/*` or the
   metrics endpoint (`prometheus/port`, `prometheus/endpoint`), which the

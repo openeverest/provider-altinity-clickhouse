@@ -36,9 +36,10 @@ type ClickHouseParameters struct {
 	// whether the operator manages a PodMonitor. One of "enabled" or "disabled".
 	PodMonitor string `json:"podMonitor,omitempty"`
 
-	// TLS configures encrypted client connections. When enabled, the provider
-	// uses cert-manager to issue a server certificate and exposes the secure
-	// HTTPS/native ports additively alongside the plaintext ports.
+	// TLS configures encrypted connections. When enabled, the provider uses
+	// cert-manager to issue a server certificate, serves HTTPS (8443) and the
+	// secure native protocol (9440), and runs distributed queries between
+	// replicas over TLS. See TLSParameters.Mode for the plaintext ports.
 	TLS *TLSParameters `json:"tls,omitempty"`
 
 	// StorageReclaimPolicy controls what happens to the data volumes (ClickHouse
@@ -54,6 +55,12 @@ type TLSParameters struct {
 	// Enabled turns on TLS. One of "enabled" or "disabled" (default). Requires
 	// cert-manager to be installed in the cluster.
 	Enabled string `json:"enabled,omitempty"`
+
+	// Mode is "required" (default) or "optional". Required exposes only the
+	// secure ports to clients and restricts the plaintext ports to the
+	// operator and the Instance's own pods with a NetworkPolicy. Optional
+	// keeps the plaintext ports open alongside the secure ones.
+	Mode string `json:"mode,omitempty"`
 
 	// IssuerRef optionally references an existing cert-manager Issuer or
 	// ClusterIssuer to sign the server certificate. When omitted, the provider

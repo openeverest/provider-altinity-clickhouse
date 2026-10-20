@@ -145,6 +145,18 @@ ui:
                 value: "disabled"
               - label: "Enabled"
                 value: "enabled"
+        tlsMode:
+          uiType: select
+          path: spec.components.engine.parameters.tls.mode
+          fieldParams:
+            label: "TLS mode"
+            helperText: "Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too."
+            defaultValue: "required"
+            options:
+              - label: "Required"
+                value: "required"
+              - label: "Optional"
+                value: "optional"
         configuration:
           uiType: text
           path: spec.components.engine.parameters.configuration
@@ -161,6 +173,7 @@ ui:
         - storageReclaimPolicy
         - externalAccess
         - tls
+        - tlsMode
         - configuration
 
   sectionsOrder:

@@ -1,0 +1,12 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-tls
+  namespace: default
+spec:
+  components:
+    engine:
+      parameters:
+        tls:
+          enabled: enabled
+          mode: optional

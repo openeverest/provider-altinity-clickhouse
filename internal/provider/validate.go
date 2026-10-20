@@ -74,6 +74,16 @@ func (p *Provider) Validate(c *controller.Context) error {
 		return fmt.Errorf("engine storageReclaimPolicy must be one of Retain or Delete")
 	}
 
+	if params.TLS != nil {
+		switch {
+		case params.TLS.Mode == "",
+			strings.EqualFold(params.TLS.Mode, common.TLSModeRequired),
+			strings.EqualFold(params.TLS.Mode, common.TLSModeOptional):
+		default:
+			return fmt.Errorf("engine tls.mode must be one of required or optional")
+		}
+	}
+
 	if c.Instance().GetTopologyType() != common.TopologyReplicated &&
 		engine.Replicas != nil && *engine.Replicas > 1 {
 		return fmt.Errorf("the %s topology runs a single replica; use the %s topology for more",

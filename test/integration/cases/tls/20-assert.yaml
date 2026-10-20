@@ -1,0 +1,9 @@
+# Optional mode: the plaintext ports are back on the client Service and the
+# NetworkPolicy is gone (asserted by the test).
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-itest-ch-tls
+  namespace: default
+spec:
+  (ports[*].port): [8123, 9000, 8443, 9440]

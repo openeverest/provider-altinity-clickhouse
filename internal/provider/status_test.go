@@ -19,9 +19,9 @@ import (
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
-	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -122,10 +122,14 @@ func TestStatus(t *testing.T) {
 	}
 }
 
-func issuedCertificate() *cmapi.Certificate {
-	cert := &cmapi.Certificate{ObjectMeta: metav1.ObjectMeta{Name: serverCertName("db"), Namespace: "ns"}}
-	cert.Status.Conditions = []cmapi.CertificateCondition{{Type: cmapi.CertificateConditionReady, Status: "True"}}
-	return cert
+// issuedCertificate is the server certificate Secret as cert-manager writes it.
+// Its Certificate's Ready condition does not matter: a re-issue turns it
+// False while the issued certificate keeps serving.
+func issuedCertificate() *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serverSecretName("db"), Namespace: "ns"},
+		Data:       map[string][]byte{"tls.crt": []byte("cert"), "tls.key": []byte("key"), "ca.crt": []byte("ca")},
+	}
 }
 
 // An aborted change used to fail Sync with a plain error, which the runtime

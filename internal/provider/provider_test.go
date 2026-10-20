@@ -29,12 +29,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/managedfields"
+	"k8s.io/client-go/applyconfigurations"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/structured-merge-diff/v6/typed"
 	"sigs.k8s.io/yaml"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
@@ -54,14 +59,44 @@ func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, networkingv1.AddToScheme(scheme))
 	require.NoError(t, chiv1.AddToScheme(scheme))
 	require.NoError(t, chkv1.AddToScheme(scheme))
 	require.NoError(t, cmapi.AddToScheme(scheme))
 	require.NoError(t, monitoringv1.AddToScheme(scheme))
 
 	all := append([]client.Object{instance, testProvider(t)}, objs...)
-	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).WithStatusSubresource(&corev1alpha1.Instance{}).WithInterceptorFuncs(funcs).Build()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).WithStatusSubresource(&corev1alpha1.Instance{}).WithInterceptorFuncs(funcs).
+		WithTypeConverters(networkPolicyTypeConverter{
+			schema:  applyconfigurations.NewTypeConverter(clientgoscheme.Scheme),
+			deduced: managedfields.NewDeducedTypeConverter(),
+		}).Build()
 	return controller.NewContext(context.Background(), fakeClient, instance, common.ProviderName)
+}
+
+// networkPolicyTypeConverter is the fake client's default type conversion,
+// except that NetworkPolicies are always deduced: client-go's schema no
+// longer declares their status, which the fake tracker writes, so applying
+// one fails in the fake client only.
+type networkPolicyTypeConverter struct {
+	schema, deduced managedfields.TypeConverter
+}
+
+func (n networkPolicyTypeConverter) ObjectToTyped(obj runtime.Object, opts ...typed.ValidationOptions) (*typed.TypedValue, error) {
+	if _, ok := obj.(*networkingv1.NetworkPolicy); ok || obj.GetObjectKind().GroupVersionKind().Kind == "NetworkPolicy" {
+		return n.deduced.ObjectToTyped(obj, opts...)
+	}
+	if v, err := n.schema.ObjectToTyped(obj, opts...); err == nil {
+		return v, nil
+	}
+	return n.deduced.ObjectToTyped(obj, opts...)
+}
+
+func (n networkPolicyTypeConverter) TypedToObject(v *typed.TypedValue) (runtime.Object, error) {
+	if obj, err := n.schema.TypedToObject(v); err == nil {
+		return obj, nil
+	}
+	return n.deduced.TypedToObject(v)
 }
 
 // testProvider returns the Provider CR the chart registers, built from the
