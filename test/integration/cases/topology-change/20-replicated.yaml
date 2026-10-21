@@ -1,0 +1,15 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-topology
+  namespace: default
+spec:
+  topology:
+    type: replicated
+  components:
+    engine:
+      replicas: 2
+    keeper:
+      type: clickhouse-keeper
+      storage:
+        size: 5Gi

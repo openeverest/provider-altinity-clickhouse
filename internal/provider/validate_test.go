@@ -22,6 +22,8 @@ import (
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -75,6 +77,51 @@ func TestValidateStorageSize(t *testing.T) {
 	assert.NoError(t, validate(t, base, live))
 	assert.NoError(t, validate(t, withEngine(base, storage("100Gi", nil)), live))
 	assert.ErrorContains(t, validate(t, withEngine(base, storage("20Gi", nil)), live), "cannot shrink from 50Gi to 20Gi")
+}
+
+func storageClass(name string, expandable *bool) *storagev1.StorageClass {
+	return &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: name}, Provisioner: "example.com/csi", AllowVolumeExpansion: expandable}
+}
+
+func volume(name, class string, labels map[string]string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Labels: labels},
+		Spec:       corev1.PersistentVolumeClaimSpec{StorageClassName: &class},
+	}
+}
+
+// Growing volumes whose StorageClass cannot expand them would leave the
+// operator's PVC resize refused and the change stuck.
+func TestValidateStorageGrowthNeedsExpandableClass(t *testing.T) {
+	base := withEngine(newTestInstance("db", "ns", ""), storage("50Gi", nil))
+	live := deployedCHI(t, base, 1)
+	pvc := volume("data-chi-db-clickhouse-0-0-0", "local-path", map[string]string{common.LabelCHIName: "db"})
+	grow := withEngine(base, storage("100Gi", nil))
+	yes, no := true, false
+
+	assert.ErrorContains(t, validate(t, grow, live, pvc, storageClass("local-path", nil)),
+		"engine storage cannot grow: the local-path StorageClass does not allow volume expansion")
+	assert.ErrorContains(t, validate(t, grow, live, pvc, storageClass("local-path", &no)), "does not allow volume expansion")
+	assert.NoError(t, validate(t, grow, live, pvc, storageClass("local-path", &yes)))
+	assert.NoError(t, validate(t, grow, live, pvc), "a class that is gone is not judged")
+	assert.NoError(t, validate(t, base, live, pvc, storageClass("local-path", nil)), "unchanged size needs no expansion")
+
+	other := volume("data-chi-other-clickhouse-0-0-0", "fixed", map[string]string{common.LabelCHIName: "other"})
+	assert.NoError(t, validate(t, grow, live, other, storageClass("fixed", nil)), "another Instance's volumes")
+}
+
+func TestValidateKeeperStorageGrowthNeedsExpandableClass(t *testing.T) {
+	base := newReplicatedTestInstance("")
+	keeperSize := func(size string) func(*corev1alpha1.ComponentSpec) {
+		return func(k *corev1alpha1.ComponentSpec) {
+			k.Storage = &corev1alpha1.Storage{Size: resource.MustParse(size)}
+		}
+	}
+	live, _ := mustBuildCHK(t, withKeeper(base, keeperSize("20Gi")))
+	pvc := volume("keeper-data-chk-db-keeper-keeper-0-0-0", "local-path", map[string]string{common.LabelCHKName: "db-keeper"})
+
+	assert.ErrorContains(t, validate(t, withKeeper(base, keeperSize("30Gi")), live, pvc, storageClass("local-path", nil)),
+		"keeper storage cannot grow: the local-path StorageClass does not allow volume expansion")
 }
 
 func TestValidateStorageClass(t *testing.T) {

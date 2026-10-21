@@ -112,6 +112,10 @@ func chiInstallation(chi *chiv1.ClickHouseInstallation) installation {
 	i := installation{component: "ClickHouse", exists: true}
 	if s := chi.Status; s != nil {
 		i.state = s.GetStatus()
+		if i.state == chiv1.StatusCompleted && !rolledOut(chi.Spec.TaskID, s.TaskIDsCompleted) {
+			// The operator has yet to pick up the last change.
+			i.state = chiv1.StatusInProgress
+		}
 		i.err = s.GetError()
 		i.completedBefore = len(s.TaskIDsCompleted) > 0
 		i.hosts = s.HostsCount
@@ -124,6 +128,10 @@ func chkInstallation(chk *chkv1.ClickHouseKeeperInstallation) installation {
 	i := installation{component: "ClickHouse Keeper", exists: true}
 	if s := chk.Status; s != nil {
 		i.state = s.GetStatus()
+		if i.state == chiv1.StatusCompleted && !rolledOut(chk.Spec.TaskID, s.TaskIDsCompleted) {
+			// The operator has yet to pick up the last change.
+			i.state = chiv1.StatusInProgress
+		}
 		i.err = s.GetError()
 		i.completedBefore = len(s.TaskIDsCompleted) > 0
 		i.hosts = s.HostsCount

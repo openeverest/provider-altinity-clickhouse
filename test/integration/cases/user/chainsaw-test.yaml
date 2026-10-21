@@ -84,7 +84,7 @@ spec:
             entrypoint: kubectl
             args:
               - delete
-              - instance
+              - instances.core.openeverest.io
               - itest-ch-user
               - -n
               - default
