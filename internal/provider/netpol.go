@@ -38,21 +38,34 @@ const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccou
 // ports when the applied CHI requires TLS, and removes it otherwise. It
 // follows the applied CHI rather than the Instance, so a mode change held for
 // maintenance takes effect together with the rest of it.
+//
+// It also restricts Keeper, which authenticates no one: TLS encrypts its
+// traffic, the policy limits who can reach it (see keeperPolicy).
 func reconcilePlaintextPolicy(c *controller.Context, chi *chiv1.ClickHouseInstallation) error {
-	name := c.Name() + common.PlaintextPolicySuffix
-	if !appliedTLSRequired(chi) {
+	required := appliedTLSRequired(chi)
+	if err := reconcilePolicy(c, c.Name()+common.PlaintextPolicySuffix, required, plaintextPolicy); err != nil {
+		return err
+	}
+	replicated := c.Instance().GetTopologyType() == common.TopologyReplicated
+	return reconcilePolicy(c, c.Name()+common.KeeperPolicySuffix, required && replicated, keeperPolicy)
+}
+
+// reconcilePolicy applies the named NetworkPolicy when wanted, and removes
+// it otherwise.
+func reconcilePolicy(c *controller.Context, name string, wanted bool, build func(*controller.Context) (*networkingv1.NetworkPolicy, error)) error {
+	if !wanted {
 		found, err := getOptional(c, &networkingv1.NetworkPolicy{}, name)
 		if err != nil || !found {
 			return err
 		}
 		return c.Delete(&networkingv1.NetworkPolicy{ObjectMeta: c.ObjectMeta(name)})
 	}
-	policy, err := plaintextPolicy(c)
+	policy, err := build(c)
 	if err != nil {
 		return err
 	}
 	if err := c.Apply(policy); err != nil {
-		return fmt.Errorf("apply plaintext NetworkPolicy: %w", err)
+		return fmt.Errorf("apply NetworkPolicy %s: %w", name, err)
 	}
 	return nil
 }
@@ -85,7 +98,7 @@ func appliedTLSRequired(chi *chiv1.ClickHouseInstallation) bool {
 // plaintextPolicy lets anyone reach the secure ports and the metrics endpoint
 // of the ClickHouse pods, and limits the plaintext ports (HTTP, native and
 // interserver) to the operator, which only speaks plain HTTP, and the
-// Instance's own pods, which replicate over the interserver port.
+// Instance's own pods, which replicate over the interserver ports.
 func plaintextPolicy(c *controller.Context) (*networkingv1.NetworkPolicy, error) {
 	operator, err := operatorPeer()
 	if err != nil {
@@ -101,8 +114,37 @@ func plaintextPolicy(c *controller.Context) (*networkingv1.NetworkPolicy, error)
 				{Ports: tcpPorts(common.HTTPSPort, common.TCPSecurePort, common.MetricsPort)},
 				{
 					From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &pods}, operator},
-					Ports: tcpPorts(common.HTTPPort, common.TCPPort, common.InterserverHTTPPort),
+					Ports: tcpPorts(common.HTTPPort, common.TCPPort, common.InterserverHTTPPort, common.InterserverHTTPSPort),
 				},
+			},
+		},
+	}, nil
+}
+
+// keeperPolicy limits Keeper to the Instance's ClickHouse pods (client
+// ports), its own nodes (client and Raft ports) and the operator.
+func keeperPolicy(c *controller.Context) (*networkingv1.NetworkPolicy, error) {
+	operator, err := operatorPeer()
+	if err != nil {
+		return nil, err
+	}
+	clickhouse := metav1.LabelSelector{MatchLabels: map[string]string{common.LabelCHIName: c.Name()}}
+	keeper := metav1.LabelSelector{MatchLabels: map[string]string{common.LabelCHKName: keeperCRName(c.Name())}}
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: c.ObjectMeta(c.Name() + common.KeeperPolicySuffix),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: keeper,
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{
+					From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &clickhouse}},
+					Ports: tcpPorts(common.KeeperPort, common.KeeperSecurePort),
+				},
+				{
+					From:  []networkingv1.NetworkPolicyPeer{{PodSelector: &keeper}},
+					Ports: tcpPorts(common.KeeperPort, common.KeeperSecurePort, common.KeeperRaftPort),
+				},
+				{From: []networkingv1.NetworkPolicyPeer{operator}},
 			},
 		},
 	}, nil

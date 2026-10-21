@@ -258,13 +258,20 @@ spec:
 
 When enabled, the provider uses cert-manager to issue a server certificate,
 ClickHouse serves HTTPS (`8443`) and the secure native protocol (`9440`), and
-distributed queries between the replicas run over the secure native port.
-`.status.connection` reports the `https` endpoint, and the connection Secret
-carries the CA that signed the certificate under `ca.crt`.
+traffic between the pods is encrypted too:
+
+- distributed queries between the replicas run over the secure native port;
+- replicas fetch parts from each other over HTTPS (`9010`, replacing `9009`);
+- in the `replicated` topology, ClickHouse reaches Keeper over TLS (`2281`), and
+  the Keeper nodes talk to each other (Raft) over TLS. Keeper serves the same
+  certificate and closes its plaintext port (`2181`).
+
+The connection Secret reports the `https` endpoint and carries the CA that signed
+the certificate under `ca.crt`.
 
 | `mode` | Plaintext ports (`8123`, `9000`) |
 |---|---|
-| `required` (default) | Not exposed: the client Service carries only `8443`/`9440`, and a NetworkPolicy (`<name>-plaintext`) lets only the Altinity operator and the Instance's own pods reach `8123`, `9000` and `9009`. Everyone can still reach the secure ports and the metrics endpoint (`9363`). |
+| `required` (default) | Not exposed: the client Service carries only `8443`/`9440`, and a NetworkPolicy (`<name>-plaintext`) lets only the Altinity operator and the Instance's own pods reach `8123`, `9000` and the interserver ports. Everyone can still reach the secure ports and the metrics endpoint (`9363`). Keeper, which authenticates no one, gets a NetworkPolicy too (`<name>-keeper-access`): only the Instance's ClickHouse pods (client ports), Keeper's own nodes (client and Raft ports) and the operator reach it. |
 | `optional` | Exposed alongside the secure ports. |
 
 The plaintext ports stay open inside the cluster because the Altinity operator
@@ -274,25 +281,27 @@ provider at the bundled operator's pods; if you run the operator separately, set
 `operatorAccess.namespace` and `operatorAccess.podLabels` in the chart values.
 
 The certificate covers the client Service (`clickhouse-<name>`), each replica's
-Service (`chi-<name>-clickhouse-0-<n>`), both with their namespace forms, and the
-LoadBalancer hostname or IP when the Instance is exposed through one. Renewed
-certificates are picked up without restarting ClickHouse.
+Service (`chi-<name>-clickhouse-0-<n>`) and pods, Keeper's Services, all with
+their namespace forms, and the LoadBalancer hostname or IP when the Instance is
+exposed through one. Renewed certificates are picked up without restarting
+ClickHouse or Keeper.
 
 By default the provider manages a self-signed CA chain scoped to the Instance
 (the CA is valid for 10 years). To sign with an existing issuer, set
 `parameters.tls.issuerRef` (`name`, optional `kind`/`group`); issuers such as
 ACME do not provide a CA, so `ca.crt` is then left out of the connection details.
-Disabling TLS removes the certificates once no ClickHouse pod mounts them anymore.
+Disabling TLS removes the certificates once no ClickHouse or Keeper pod mounts them anymore.
 
-Instances that enabled TLS with an earlier provider version, which kept the
-plaintext ports open, receive `required` mode and TLS between the replicas as a
+Turning TLS on or off on a running `replicated` Instance switches Keeper in steps, so
+ClickHouse never loses it: Keeper opens the new client port next to the old one,
+ClickHouse moves to it, then Keeper closes the old one. Each step is a rolling restart
+of Keeper or ClickHouse; the Instance stays `Updating` until the last one is done. A
+held switch (see below) needs a single approval.
+
+Instances that enabled TLS with an earlier provider version receive the parts that
+version did not cover (`required` mode, TLS between the replicas and to Keeper) as a
 held [maintenance action](#maintenance-approval). Set `mode: optional` first to
-keep the previous behaviour.
-
-Not covered yet: replicas fetch replicated parts from each other over plaintext
-HTTP (`9009`, authenticated with generated interserver credentials; the Altinity
-operator does not support interserver HTTPS), and ClickHouse talks to Keeper in
-plaintext ([#75](https://github.com/openeverest/provider-altinity-clickhouse/issues/75)).
+keep the plaintext client ports.
 
 ### Pod placement
 

@@ -140,7 +140,8 @@ func TestServerDNSNames(t *testing.T) {
 	} {
 		assert.Contains(t, names, name)
 	}
-	assert.Len(t, names, 12)
+	assert.Contains(t, names, "*.chi-db-clickhouse-0-1.ns.svc.cluster.local", "pod names: replicas fetch parts by them")
+	assert.Len(t, names, 14)
 	assert.Equal(t, "clickhouse-db", names[0], "the common name")
 
 	// The operator cuts the CHI name to 60 characters and trims separators.
@@ -318,7 +319,7 @@ func TestPlaintextPolicyFollowsAppliedCHI(t *testing.T) {
 	assert.Equal(t, []int32{8443, 9440, 9363}, policyPorts(open.Ports))
 
 	restricted := policy.Spec.Ingress[1]
-	assert.Equal(t, []int32{8123, 9000, 9009}, policyPorts(restricted.Ports))
+	assert.Equal(t, []int32{8123, 9000, 9009, 9010}, policyPorts(restricted.Ports))
 	require.Len(t, restricted.From, 2)
 	assert.Equal(t, map[string]string{common.LabelCHIName: "db"}, restricted.From[0].PodSelector.MatchLabels)
 	assert.Nil(t, restricted.From[0].NamespaceSelector, "the Instance's own namespace")

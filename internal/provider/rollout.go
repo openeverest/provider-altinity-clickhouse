@@ -63,7 +63,8 @@ type rolloutGate struct {
 }
 
 // newRolloutGate loads the record and derives one approval token for the
-// rendered objects, so a replicated instance needs a single approval.
+// objects a change leads to (for a change applied in steps, those of the
+// last step), so a replicated instance needs a single approval.
 func newRolloutGate(c *controller.Context, rendered ...client.Object) (*rolloutGate, error) {
 	g := &rolloutGate{record: map[string]string{}}
 
@@ -71,7 +72,7 @@ func newRolloutGate(c *controller.Context, rendered ...client.Object) (*rolloutG
 	if err := c.Get(state, rolloutStateName(c.Name())); err == nil {
 		for k, v := range state.Data {
 			// Inputs recorded in an earlier format cannot be compared; see apply.
-			if !strings.HasSuffix(k, specSuffix) && !strings.HasSuffix(k, inputsSuffix) {
+			if !strings.HasSuffix(k, specSuffix) && !strings.HasSuffix(k, inputsSuffix) && k != targetKey {
 				continue
 			}
 			g.record[k] = string(v)
@@ -119,10 +120,12 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 	// Instance. Without recorded inputs (a record of an earlier format) a
 	// changed rendering cannot be attributed to the user, so it is held.
 	recordedInputs := g.record[key+inputsSuffix]
+	unchanged := g.record[key+specSuffix] == spec
 	allowed := !exists ||
 		g.record[key+specSuffix] == "" ||
-		g.record[key+specSuffix] == spec ||
-		(recordedInputs != "" && recordedInputs != g.inputs)
+		unchanged ||
+		(recordedInputs != "" && recordedInputs != g.inputs) ||
+		g.record[targetKey] == g.token
 	if !allowed {
 		if g.approved == nil {
 			approved := c.RequestMaintenance(g.token,
@@ -142,18 +145,22 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 	// restart ClickHouse (the operator re-renders configuration such as the
 	// pod IPs), so an unchanged cluster applied without a task ID keeps
 	// none until its next change. The ID derives from the fingerprint.
-	unchanged := g.record[key+specSuffix] == "" || g.record[key+specSuffix] == spec
-	if !exists || !unchanged || taskID(live).HasValue() {
+	changed := !unchanged && g.record[key+specSuffix] != ""
+	if !exists || changed || taskID(live).HasValue() {
 		stampTaskID(obj, spec)
 	}
 	if err := c.Apply(obj); err != nil {
 		return false, err
 	}
-	if g.record[key+specSuffix] == spec && recordedInputs == g.inputs {
+	if unchanged && recordedInputs == g.inputs {
 		return true, nil
 	}
 	g.record[key+specSuffix] = spec
 	g.record[key+inputsSuffix] = g.inputs
+	// Only a change carries its approval on to later steps.
+	if !unchanged {
+		g.record[targetKey] = g.token
+	}
 	return true, g.save(c)
 }
 
@@ -181,6 +188,11 @@ func rolloutStateName(instanceName string) string {
 const (
 	specSuffix   = ".spec"
 	inputsSuffix = ".inputs-v3"
+	// targetKey records the approval token of the change last applied. A
+	// change applied in steps (see keeperWiring) shares one token, derived
+	// from where the steps lead, so its later steps go on without asking
+	// again.
+	targetKey = "rollout.target"
 )
 
 // inputsHash fingerprints the stored Instance fields the CRs are rendered

@@ -254,7 +254,7 @@ func currentKeeperImage(chk *chkv1.ClickHouseKeeperInstallation) string {
 // user override would break ports, TLS, Keeper wiring or metrics scraping.
 var (
 	ownedSettings = []string{
-		"http_port", "tcp_port", "https_port", "tcp_port_secure", "interserver_http_port",
+		"http_port", "tcp_port", "https_port", "tcp_port_secure", "interserver_http_port", "interserver_https_port",
 		"prometheus/port", "prometheus/endpoint",
 	}
 	ownedSettingPrefixes = []string{"openSSL/", "zookeeper/", "remote_servers/", "macros/", "interserver_http_credentials/"}

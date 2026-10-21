@@ -23,6 +23,7 @@ import (
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
+	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -215,16 +216,31 @@ func (p *Provider) syncStandalone(c *controller.Context) error {
 }
 
 // syncReplicated applies and waits on a CHK (Keeper) + CHI pair.
+//
+// Keeper TLS switches in steps (see keeperWiring): the CHK and CHI rendered
+// here are the next step, and the approval covers the whole switch.
 func (p *Provider) syncReplicated(c *controller.Context) error {
-	desiredCHK, err := buildCHK(c)
+	step, target, err := planKeeperWiring(c)
+	if err != nil {
+		return err
+	}
+	desiredCHK, err := buildCHKWired(c, step)
 	if err != nil {
 		return fmt.Errorf("build ClickHouseKeeperInstallation: %w", err)
 	}
-	desiredCHI, err := buildCHI(c, replicasCount(c))
+	desiredCHI, err := buildCHIWired(c, replicasCount(c), step)
 	if err != nil {
 		return fmt.Errorf("build ClickHouseInstallation: %w", err)
 	}
-	gate, err := newRolloutGate(c, desiredCHK, desiredCHI)
+	targetCHK, err := buildCHKWired(c, target)
+	if err != nil {
+		return fmt.Errorf("build ClickHouseKeeperInstallation: %w", err)
+	}
+	targetCHI, err := buildCHIWired(c, replicasCount(c), target)
+	if err != nil {
+		return fmt.Errorf("build ClickHouseInstallation: %w", err)
+	}
+	gate, err := newRolloutGate(c, targetCHK, targetCHI)
 	if err != nil {
 		return err
 	}
@@ -241,7 +257,13 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 		return err
 	}
 
-	return applyAndWaitForCHI(c, gate, desiredCHI)
+	if err := applyAndWaitForCHI(c, gate, desiredCHI); err != nil {
+		return err
+	}
+	if step != target {
+		return controller.WaitForDuration("switching ClickHouse and Keeper to the new Keeper ports", 5*time.Second)
+	}
+	return nil
 }
 
 // applyAndWaitForCHI server-side applies the CHI, unless the rollout gate holds
@@ -502,8 +524,18 @@ func deletePVCs(c *controller.Context) error {
 // Builders
 // =============================================================================
 
-// buildCHI constructs a ClickHouseInstallation for the given replica count.
+// buildCHI constructs a ClickHouseInstallation for the given replica count,
+// wired to Keeper as the current step of the Keeper TLS switch calls for.
 func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstallation, error) {
+	step, _, err := planKeeperWiring(c)
+	if err != nil {
+		return nil, err
+	}
+	return buildCHIWired(c, replicasCount, step)
+}
+
+// buildCHIWired constructs a ClickHouseInstallation wired to Keeper as given.
+func buildCHIWired(c *controller.Context, replicasCount int, keeper keeperWiring) (*chiv1.ClickHouseInstallation, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	image, err := resolveImage(c, common.ComponentEngine, engine)
 	if err != nil {
@@ -585,23 +617,21 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 	// Wire TLS: mount the server certificate, open the secure ports and run
 	// distributed queries over them.
 	mode := tlsMode(c)
-	if mode != "" {
+	switch {
+	case mode != "":
 		applyTLSToCHISpec(&spec, settings, cluster, c.Name())
+	case keeper.port == common.KeeperSecurePort:
+		// TLS is being turned off: until ClickHouse is back on Keeper's
+		// plaintext port, it still needs the CA to verify Keeper.
+		spec.Configuration.Files = buildTLSFiles(serverSecretName(c.Name()))
 	}
 
 	// Wire the root Service exposure (ClusterIP / LoadBalancer / NodePort).
 	configureExpose(&spec, engine.Service, mode)
 
-	// Wire Keeper for replicated topology. The operator resolves the reference
-	// to the Keeper hosts' ready-only client Services, so ClickHouse never
-	// connects to a Keeper node that is still joining the quorum — doing so can
-	// keep that node from ever joining (Altinity/clickhouse-operator#1982).
+	// Wire Keeper for replicated topology (see keeperZookeeper).
 	if replicasCount > 1 {
-		spec.Configuration.Zookeeper = &chiv1.ZookeeperConfig{
-			Keeper:             &chiv1.KeeperRef{Name: keeperCRName(c.Name())},
-			SessionTimeoutMs:   30000,
-			OperationTimeoutMs: 10000,
-		}
+		spec.Configuration.Zookeeper = keeperZookeeper(c, keeper.port)
 	}
 
 	return &chiv1.ClickHouseInstallation{
@@ -612,7 +642,19 @@ func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstal
 
 // buildCHK constructs the 3-node (Raft quorum) ClickHouseKeeperInstallation
 // from the keeper component, which is optional: defaults size it otherwise.
+// Its ports follow the current step of the Keeper TLS switch.
 func buildCHK(c *controller.Context) (*chkv1.ClickHouseKeeperInstallation, error) {
+	step, _, err := planKeeperWiring(c)
+	if err != nil {
+		return nil, err
+	}
+	return buildCHKWired(c, step)
+}
+
+// buildCHKWired constructs the ClickHouseKeeperInstallation serving the
+// client ports given. With TLS, Keeper serves the Instance's server
+// certificate, also between its nodes.
+func buildCHKWired(c *controller.Context, wiring keeperWiring) (*chkv1.ClickHouseKeeperInstallation, error) {
 	keeper := c.Instance().Spec.Components[common.ComponentKeeper]
 	image, err := resolveImage(c, common.ComponentKeeper, keeper)
 	if err != nil {
@@ -678,6 +720,14 @@ func buildCHK(c *controller.Context) (*chkv1.ClickHouseKeeperInstallation, error
 				},
 			},
 		},
+	}
+	cluster := chk.Spec.Configuration.Clusters[0]
+	if wiring.secure {
+		cluster.Secure = chtypes.NewStringBool(true)
+		chk.Spec.Configuration.Files = buildTLSFiles(serverSecretName(c.Name()))
+	}
+	if !wiring.plaintext {
+		cluster.Insecure = chtypes.NewStringBool(false)
 	}
 	return chk, nil
 }

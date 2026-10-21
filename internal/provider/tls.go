@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -193,10 +194,14 @@ func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta
 // replicas' hostnames in remote_servers) and the LoadBalancer address, if any.
 func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerReference) error {
 	replicas := 1
-	if c.Instance().GetTopologyType() == common.TopologyReplicated {
+	replicated := c.Instance().GetTopologyType() == common.TopologyReplicated
+	if replicated {
 		replicas = replicasCount(c)
 	}
 	dnsNames := serverDNSNames(c.Name(), c.Namespace(), replicas)
+	if replicated {
+		dnsNames = append(dnsNames, keeperDNSNames(c.Name(), c.Namespace())...)
+	}
 	externalNames, externalIPs, err := externalAddresses(c)
 	if err != nil {
 		return err
@@ -218,9 +223,26 @@ func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerRefer
 }
 
 // serverDNSNames returns the DNS names the server certificate must cover: the
-// client Service and each replica's Service, in every in-cluster form.
+// client Service and each replica's Service, in every in-cluster form, and
+// each replica's pod names, which replicas fetch parts from each other by.
 func serverDNSNames(instanceName, namespace string, replicas int) []string {
-	services := append([]string{clientServiceName(instanceName)}, replicaServiceNames(instanceName, replicas)...)
+	replicaServices := replicaServiceNames(instanceName, replicas)
+	names := serviceDNSNames(append([]string{clientServiceName(instanceName)}, replicaServices...), namespace)
+	for _, svc := range replicaServices {
+		names = append(names, fmt.Sprintf("*.%s.%s.svc.cluster.local", svc, namespace))
+	}
+	return names
+}
+
+// keeperDNSNames returns the names Keeper is reached by: its Service, each
+// node's Service (Raft) and client Service.
+func keeperDNSNames(instanceName, namespace string) []string {
+	services := append([]string{"keeper-" + trimCRName(keeperCRName(instanceName))}, keeperHostNames(instanceName)...)
+	return serviceDNSNames(append(services, keeperClientServiceNames(instanceName)...), namespace)
+}
+
+// serviceDNSNames returns every in-cluster form of the Services' names.
+func serviceDNSNames(services []string, namespace string) []string {
 	names := make([]string, 0, 4*len(services))
 	for _, svc := range services {
 		names = append(names,
@@ -243,11 +265,7 @@ func clientServiceName(instanceName string) string {
 // hostnames in remote_servers. The operator cuts the CHI name to 60
 // characters and trims separators from the ends.
 func replicaServiceNames(instanceName string, replicas int) []string {
-	chiName := instanceName
-	if len(chiName) > 60 {
-		chiName = chiName[:60]
-	}
-	chiName = strings.Trim(chiName, "-_.")
+	chiName := trimCRName(instanceName)
 	names := make([]string, 0, replicas)
 	for i := 0; i < replicas; i++ {
 		names = append(names, fmt.Sprintf("chi-%s-%s-0-%d", chiName, common.CHIClusterName, i))
@@ -302,6 +320,15 @@ const (
 	operatorServiceCR    = "chi"
 )
 
+// trimCRName shortens a CHI or CHK name as the operator does in the names
+// of the objects it creates: cut to 60 characters, separators trimmed.
+func trimCRName(name string) string {
+	if len(name) > 60 {
+		name = name[:60]
+	}
+	return strings.Trim(name, "-_.")
+}
+
 // externalAddresses returns the LoadBalancer hostnames and IPs of the client
 // Service, so clients outside the cluster can verify the certificate too.
 func externalAddresses(c *controller.Context) (names, ips []string, err error) {
@@ -322,14 +349,20 @@ func externalAddresses(c *controller.Context) (names, ips []string, err error) {
 }
 
 // applyTLSToCHISpec wires the server certificate and secure ports into the CHI
-// configuration, and makes distributed queries between replicas use the
-// secure native port. The plaintext ports stay open: the operator talks to
+// configuration, and makes distributed queries and replication between
+// replicas use TLS. The plaintext ports stay open: the operator talks to
 // ClickHouse over plain HTTP (see plaintextPolicy for who may reach them).
 func applyTLSToCHISpec(spec *chiv1.ChiSpec, settings *chiv1.Settings, cluster *chiv1.Cluster, instanceName string) {
 	spec.Configuration.Files = buildTLSFiles(serverSecretName(instanceName))
 	settings.Set("https_port", chiv1.NewSettingScalar(strconv.Itoa(common.HTTPSPort)))
 	settings.Set("tcp_port_secure", chiv1.NewSettingScalar(strconv.Itoa(common.TCPSecurePort)))
 	cluster.Secure = chtypes.NewStringBool(true)
+	// Replicas fetch parts over HTTPS. ClickHouse refuses both interserver
+	// ports, and its default configuration sets the plaintext one; the
+	// operator renders "_removed_" as a removal. During a rolling switch
+	// replicas fetch from each other over whichever one the source serves.
+	settings.Set("interserver_https_port", chiv1.NewSettingScalar(strconv.Itoa(common.InterserverHTTPSPort)))
+	settings.Set("interserver_http_port", chiv1.NewSettingScalar("_removed_"))
 }
 
 // buildTLSFiles renders the ClickHouse config files that enable TLS: an
@@ -431,10 +464,19 @@ func cleanupTLS(c *controller.Context, chi *chiv1.ClickHouseInstallation) error 
 		chi.Spec.Configuration.Files.Has("server.crt") {
 		return nil
 	}
+	chk := &chkv1.ClickHouseKeeperInstallation{}
+	found, err := getOptional(c, chk, keeperCRName(c.Name()))
+	if err != nil {
+		return err
+	}
+	if found && chk.Spec.Configuration != nil && chk.Spec.Configuration.Files != nil &&
+		chk.Spec.Configuration.Files.Has("server.crt") {
+		return nil
+	}
 	if mounted, err := serverSecretMounted(c); err != nil || mounted {
 		return err
 	}
-	found, err := getOptional(c, &corev1.Secret{}, serverSecretName(c.Name()))
+	found, err = getOptional(c, &corev1.Secret{}, serverSecretName(c.Name()))
 	if err != nil {
 		return err
 	}
@@ -446,18 +488,23 @@ func cleanupTLS(c *controller.Context, chi *chiv1.ClickHouseInstallation) error 
 	return deleteTLSResources(c)
 }
 
-// serverSecretMounted reports whether a ClickHouse pod mounts the server
-// certificate Secret.
+// serverSecretMounted reports whether a ClickHouse or Keeper pod mounts the
+// server certificate Secret.
 func serverSecretMounted(c *controller.Context) (bool, error) {
-	pods := &corev1.PodList{}
-	if err := c.List(pods, client.MatchingLabels{common.LabelCHIName: c.Name()}); err != nil {
-		return false, fmt.Errorf("list ClickHouse pods: %w", err)
-	}
 	secretName := serverSecretName(c.Name())
-	for _, pod := range pods.Items {
-		for _, volume := range pod.Spec.Volumes {
-			if volume.Secret != nil && volume.Secret.SecretName == secretName {
-				return true, nil
+	for _, selector := range []client.MatchingLabels{
+		{common.LabelCHIName: c.Name()},
+		{common.LabelCHKName: keeperCRName(c.Name())},
+	} {
+		pods := &corev1.PodList{}
+		if err := c.List(pods, selector); err != nil {
+			return false, fmt.Errorf("list pods: %w", err)
+		}
+		for _, pod := range pods.Items {
+			for _, volume := range pod.Spec.Volumes {
+				if volume.Secret != nil && volume.Secret.SecretName == secretName {
+					return true, nil
+				}
 			}
 		}
 	}
