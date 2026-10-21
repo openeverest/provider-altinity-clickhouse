@@ -125,19 +125,23 @@ default) and asserts (needs cert-manager, installed by the dev stack):
 
 1. cert-manager issues the server certificate into the `<name>-server-tls`
    `kubernetes.io/tls` Secret, covering the client and replica Services.
-2. The CHI serves HTTPS `8443` and native `9440`, and its cluster is `secure`;
-   the client Service carries only the secure ports; the `<name>-plaintext`
-   NetworkPolicy limits the plaintext ports; the connection Secret reports port
-   `8443` and the CA.
+2. The CHI serves HTTPS `8443` and native `9440`, its cluster is `secure`,
+   replicas fetch parts over HTTPS (`9010`), and ClickHouse is wired to Keeper's
+   client Services on `2281` over TLS. The CHK is TLS-only and mounts the same
+   certificate. The client Service carries only the secure ports; the
+   `<name>-plaintext` and `<name>-keeper-access` NetworkPolicies limit the
+   plaintext ports and Keeper; the connection Secret reports port `8443` and
+   the CA.
 3. Clients connect over `9440` and `8443` verifying the certificate against
-   that CA, and a distributed query reaches both replicas over TLS.
-4. After the certificate Secret is re-issued, ClickHouse serves the new
-   certificate without restarting.
+   that CA, a distributed query reaches both replicas over TLS, ClickHouse's
+   Keeper session runs over TLS, and rows replicate over HTTPS.
+4. After the certificate Secret is re-issued, ClickHouse and Keeper serve the
+   new certificate without restarting.
 5. Switching to `mode: optional` restores the plaintext ports on the client
-   Service and removes the NetworkPolicy.
+   Service and removes both NetworkPolicies.
 
 The CI cluster does not enforce NetworkPolicies, so blocking the plaintext
-ports is only asserted through the policy itself.
+ports is only asserted through the policies themselves.
 
 ### `scale`
 

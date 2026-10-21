@@ -20,8 +20,9 @@ spec:
   (contains(dnsNames, 'clickhouse-itest-ch-tls.default.svc.cluster.local')): true
   (contains(dnsNames, 'chi-itest-ch-tls-clickhouse-0-1.default.svc.cluster.local')): true
 ---
-# The CHI serves the secure ports from the mounted certificate and runs
-# distributed queries between the replicas over the secure native port.
+# The CHI serves the secure ports from the mounted certificate, runs
+# distributed queries between the replicas over the secure native port, and
+# fetches parts between them over HTTPS.
 apiVersion: clickhouse.altinity.com/v1
 kind: ClickHouseInstallation
 metadata:
@@ -34,6 +35,16 @@ spec:
     settings:
       https_port: "8443"
       tcp_port_secure: "9440"
+      interserver_https_port: "9010"
+      interserver_http_port: _removed_
+    zookeeper:
+      nodes:
+        - port: 2281
+          secure: "True"
+        - port: 2281
+          secure: "True"
+        - port: 2281
+          secure: "True"
     files:
       server.crt:
         valueFrom:
@@ -48,6 +59,41 @@ spec:
       ("openssl.xml" != null): true
 status:
   status: Completed
+---
+# Keeper serves TLS only, to ClickHouse and between its nodes, with the same
+# certificate.
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-tls-keeper
+  namespace: default
+spec:
+  configuration:
+    clusters:
+      - secure: "True"
+        insecure: "False"
+    files:
+      server.crt:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-tls-server-tls
+            key: tls.crt
+status:
+  status: Completed
+---
+# Only the Instance's ClickHouse pods, Keeper's own nodes and the operator
+# reach Keeper.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: itest-ch-tls-keeper-access
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      clickhouse-keeper.altinity.com/chk: itest-ch-tls-keeper
+  (ingress[0].ports[*].port): [2181, 2281]
+  (ingress[1].ports[*].port): [2181, 2281, 9444]
 ---
 # Required mode: the client Service carries only the secure ports...
 apiVersion: v1
@@ -70,7 +116,7 @@ spec:
     matchLabels:
       clickhouse.altinity.com/chi: itest-ch-tls
   (ingress[0].ports[*].port): [8443, 9440, 9363]
-  (ingress[1].ports[*].port): [8123, 9000, 9009]
+  (ingress[1].ports[*].port): [8123, 9000, 9009, 9010]
 ---
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance

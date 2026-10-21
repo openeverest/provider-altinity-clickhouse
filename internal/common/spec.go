@@ -204,9 +204,22 @@ const (
 	// InterserverHTTPPort is the plaintext port replicas fetch parts over.
 	InterserverHTTPPort = 9009
 
+	// InterserverHTTPSPort replaces it with TLS enabled.
+	InterserverHTTPSPort = 9010
+
+	// KeeperPort and KeeperSecurePort are Keeper's plaintext and TLS client
+	// ports; KeeperRaftPort is where the Keeper nodes talk to each other.
+	KeeperPort       = 2181
+	KeeperSecurePort = 2281
+	KeeperRaftPort   = 9444
+
 	// PlaintextPolicySuffix is appended to the Instance name to form the
 	// NetworkPolicy that limits the plaintext ports when TLS is required.
 	PlaintextPolicySuffix = "-plaintext"
+
+	// KeeperPolicySuffix names the NetworkPolicy limiting who reaches Keeper
+	// when TLS is required.
+	KeeperPolicySuffix = "-keeper-access"
 
 	// ConnectionKeyCACert is the connection details key holding the CA that
 	// signed the server certificate.

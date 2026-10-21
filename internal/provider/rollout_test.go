@@ -106,6 +106,8 @@ func recordedState(t *testing.T, instance *corev1alpha1.Instance) *corev1.Secret
 func providerChanged(state *corev1.Secret) *corev1.Secret {
 	changed := state.DeepCopy()
 	changed.Data["chi.spec"] = []byte("rendered-by-an-earlier-provider")
+	// That rendering had its own token.
+	changed.Data[targetKey] = []byte("provider-0.0.9-earlier")
 	return changed
 }
 
