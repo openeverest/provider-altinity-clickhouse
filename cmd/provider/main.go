@@ -16,10 +16,14 @@
 package main
 
 import (
+	"errors"
+	"flag"
+	"fmt"
 	"os"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
+	"github.com/openeverest/openeverest/v2/provider-runtime/preflight"
 	"github.com/openeverest/openeverest/v2/provider-runtime/reconciler"
 
 	"github.com/openeverest/provider-altinity-clickhouse/internal/provider"
@@ -27,10 +31,28 @@ import (
 
 // main is the entry point for the provider.
 func main() {
+	var preflightSpec string
+	flag.StringVar(&preflightSpec, "preflight-spec", "",
+		"Run the upgrade preflight against the target Provider spec at this path and exit. Used by the chart's pre-upgrade hook.")
+	flag.Parse()
+
 	l := ctrl.Log.WithName("setup")
 	ctx := ctrl.SetupSignalHandler()
 
 	p := provider.New()
+
+	// A non-zero exit fails the hook Job, which aborts the Helm upgrade
+	// before any of the release's resources are applied.
+	if preflightSpec != "" {
+		if err := preflight.Run(ctx, p, preflight.Options{TargetSpecFile: preflightSpec}); err != nil {
+			if !errors.Is(err, preflight.ErrUpgradeBlocked) {
+				// The controller-runtime logger is not set up on this path.
+				fmt.Fprintln(os.Stderr, "upgrade preflight could not run:", err)
+			}
+			os.Exit(1)
+		}
+		return
+	}
 
 	r, err := reconciler.New(ctx, p,
 		// Enable HTTP server for validation and schema endpoints.
