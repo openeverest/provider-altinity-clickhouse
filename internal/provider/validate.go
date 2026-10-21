@@ -22,8 +22,10 @@ import (
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	goversion "github.com/hashicorp/go-version"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
@@ -201,8 +203,14 @@ func validateKeeperTransitions(c *controller.Context) error {
 		if err != nil {
 			return err
 		}
-		if currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]; ok && size.Cmp(currentSize) < 0 {
+		currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]
+		if ok && size.Cmp(currentSize) < 0 {
 			return fmt.Errorf("keeper storage cannot shrink from %s to %s", currentSize.String(), size.String())
+		}
+		if ok && size.Cmp(currentSize) > 0 {
+			if err := validateExpandable(c, common.ComponentKeeper, client.MatchingLabels{common.LabelCHKName: keeperCRName(c.Name())}); err != nil {
+				return err
+			}
 		}
 		if !equalStorageClass(current.Spec.StorageClassName, storageClass) {
 			return fmt.Errorf("keeper storageClass cannot change from %s to %s",
@@ -309,7 +317,7 @@ func validateTransitions(c *controller.Context, engine corev1alpha1.ComponentSpe
 		}
 	}
 
-	if err := validateStorageTransition(chi, engine); err != nil {
+	if err := validateStorageTransition(c, chi, engine); err != nil {
 		return err
 	}
 	return validateVersionTransition(c, chi, engine)
@@ -330,18 +338,54 @@ func isReplicated(c *controller.Context, chi *chiv1.ClickHouseInstallation) (boo
 
 // validateStorageTransition rejects shrinking the data volumes or moving them
 // to another StorageClass: neither can be applied to existing PVCs.
-func validateStorageTransition(chi *chiv1.ClickHouseInstallation, engine corev1alpha1.ComponentSpec) error {
+func validateStorageTransition(c *controller.Context, chi *chiv1.ClickHouseInstallation, engine corev1alpha1.ComponentSpec) error {
 	current := dataVolumeClaimTemplate(chi)
 	if current == nil {
 		return nil
 	}
 	size, storageClass := resolveStorage(engine)
-	if currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]; ok && size.Cmp(currentSize) < 0 {
+	currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]
+	if ok && size.Cmp(currentSize) < 0 {
 		return fmt.Errorf("engine storage cannot shrink from %s to %s", currentSize.String(), size.String())
+	}
+	if ok && size.Cmp(currentSize) > 0 {
+		if err := validateExpandable(c, common.ComponentEngine, client.MatchingLabels{common.LabelCHIName: c.Name()}); err != nil {
+			return err
+		}
 	}
 	if !equalStorageClass(current.Spec.StorageClassName, storageClass) {
 		return fmt.Errorf("engine storageClass cannot change from %s to %s",
 			describeStorageClass(current.Spec.StorageClassName), describeStorageClass(storageClass))
+	}
+	return nil
+}
+
+// validateExpandable rejects growing a component's volumes when their
+// StorageClass does not allow volume expansion: the operator's resize of the
+// PVCs would be refused, leaving the change stuck.
+func validateExpandable(c *controller.Context, component string, selector client.MatchingLabels) error {
+	pvcs := &corev1.PersistentVolumeClaimList{}
+	if err := c.List(pvcs, selector); err != nil {
+		return fmt.Errorf("list %s volumes: %w", component, err)
+	}
+	checked := map[string]bool{}
+	for _, pvc := range pvcs.Items {
+		if pvc.Spec.StorageClassName == nil || checked[*pvc.Spec.StorageClassName] {
+			continue
+		}
+		name := *pvc.Spec.StorageClassName
+		checked[name] = true
+		// Cluster-scoped: read without the Instance's namespace.
+		class := &storagev1.StorageClass{}
+		if err := c.Client().Get(c.Context(), client.ObjectKey{Name: name}, class); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("read StorageClass %s: %w", name, err)
+		}
+		if class.AllowVolumeExpansion == nil || !*class.AllowVolumeExpansion {
+			return fmt.Errorf("%s storage cannot grow: the %s StorageClass does not allow volume expansion", component, name)
+		}
 	}
 	return nil
 }

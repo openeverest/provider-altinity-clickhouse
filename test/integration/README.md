@@ -139,5 +139,38 @@ default) and asserts (needs cert-manager, installed by the dev stack):
 The CI cluster does not enforce NetworkPolicies, so blocking the plaintext
 ports is only asserted through the policy itself.
 
+### `scale`
+
+Scales a replicated Instance from 2 to 3 replicas, back to 2 and to 3 again:
+
+1. The new replica gets the `ReplicatedMergeTree` table and its rows.
+2. With the default `Retain` policy, the removed replica keeps its PVC and its
+   Keeper registration (3 total, 2 active), and writes continue.
+3. Scaled back up, it rejoins and catches up on the rows written meanwhile.
+
+### `day2`
+
+Day-2 operations on a replicated Instance:
+
+1. A `configuration` change rolls out to both replicas (the operator restarts
+   ClickHouse one replica at a time).
+2. A deleted ClickHouse pod comes back and catches up on rows written while
+   it was down.
+3. Inserts succeed while a Keeper pod is down, and Keeper recovers.
+4. Growing `storage.size` expands the volumes when their StorageClass allows
+   it. Otherwise, as with the CI cluster's `local-path` class, the provider
+   rejects the change (`Failed`, the CHI untouched), and reverting the size
+   recovers the Instance.
+
+### `topology-change`
+
+Switches a standalone Instance with a `MergeTree` table to the replicated
+topology: Keeper is provisioned and the CHI is reapplied with two replicas
+wired to it. The table keeps its rows on the first replica, its schema
+reaches the new replica, and rows copied into a `ReplicatedMergeTree` table
+replicate.
+
+The day-2 cases share helpers in [`lib/clickhouse.sh`](lib/clickhouse.sh).
+
 Each case cleans up its Instance in a `finally` block (the provider's own
 finalizer logic garbage-collects the CHI/CHK).

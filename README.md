@@ -72,7 +72,7 @@ Stateful workloads additionally report:
 | Capability | Status | Notes |
 |---|---|---|
 | Persistent storage | ✅ | `spec.components.engine.storage`; volumes are retained on deletion by default, see [Data retention](#data-retention) |
-| Storage expansion | ✅ | when the StorageClass allows volume expansion |
+| Storage expansion | ✅ | when the StorageClass allows volume expansion; growing volumes on one that does not is rejected |
 | Backups (on demand) | ❌ | planned |
 | Backups (scheduled) | ❌ | planned |
 | Point-in-time recovery | ❌ | planned |
@@ -338,7 +338,9 @@ when it watches all namespaces.
 With `Retain`, scaling replicas down keeps the removed replica's PVC **and** its
 metadata in Keeper, so it can rejoin with its data when scaled back up. To remove a
 replica permanently, delete its PVC and run `SYSTEM DROP REPLICA` on a remaining
-replica. Retained PVCs are not cleaned up automatically — delete them once the data
+replica. With `Delete`, both go with the replica. A removed replica follows the policy
+it was running with: switching to `Delete` in the same edit as the scale-down keeps its
+PVC (deleted with the Instance), so change the policy first. Retained PVCs are not cleaned up automatically — delete them once the data
 is no longer needed. The StorageClass `reclaimPolicy` additionally decides whether
 the underlying volume outlives a deleted PVC.
 
@@ -373,6 +375,8 @@ rejects changes that the cluster cannot take, leaving the running database
 untouched:
 
 - shrinking `storage.size`, or changing `storage.storageClass` after creation;
+- growing `storage.size` when the volumes' StorageClass does not allow volume
+  expansion (the operator could not resize them);
 - changing the topology from `replicated` to `standalone`;
 - downgrading ClickHouse below the running version (images whose tags are not
   versions, such as `latest`, are not compared);
@@ -394,6 +398,12 @@ untouched:
 | `Ready` | ClickHouse (and Keeper) are reconciled |
 | `Failed` | The operator aborted a change; `status.message` carries its error. The operator retries, and the phase follows when it recovers |
 
+`Ready` follows the change the provider applied last, not just the operator's status:
+the provider stamps each change it applies with a `spec.taskID`
+(`openeverest-<hash>`) on the `ClickHouseInstallation` and `ClickHouseKeeperInstallation`,
+and waits until the operator lists it in `status.taskIDsCompleted`. Until then the
+operator's `Completed` still describes the previous change.
+
 ## Topologies
 
 <!-- BEGIN GENERATED: topologies -->
@@ -409,6 +419,14 @@ required. It supports `ReplicatedMergeTree` and the other replicated table engin
 ClickHouse references the Keeper by name; the operator resolves it to each Keeper host's
 ready-only client Service, so ClickHouse never connects to a Keeper node that is still
 joining the quorum.
+
+A running `standalone` Instance can switch to `replicated` through the API (the UI
+fixes the topology at creation): set `spec.topology.type: replicated` and at least 2
+replicas. The provider provisions Keeper, then rolls ClickHouse onto it and adds the
+replicas. Existing tables are not converted: a `MergeTree` table keeps its rows on the
+first replica, and the new replicas get its schema with no rows. To replicate the data,
+create a `ReplicatedMergeTree` table `ON CLUSTER '{cluster}'` and
+`INSERT INTO … SELECT` from the old one. Switching back to `standalone` is rejected.
 
 ### ClickHouse Keeper
 

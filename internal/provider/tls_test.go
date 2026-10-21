@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -404,5 +405,10 @@ func TestWatchedTypesAreRegistered(t *testing.T) {
 	for _, w := range p.WatchConfigs {
 		_, _, err := scheme.ObjectKinds(w.Object)
 		assert.NoError(t, err, "%T", w.Object)
+	}
+	// Read through the cached client, which needs them registered too.
+	for _, obj := range []runtime.Object{&storagev1.StorageClass{}, &networkingv1.NetworkPolicy{}} {
+		_, _, err := scheme.ObjectKinds(obj)
+		assert.NoError(t, err, "%T", obj)
 	}
 }

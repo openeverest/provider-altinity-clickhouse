@@ -32,7 +32,7 @@ spec:
             entrypoint: kubectl
             args:
               - delete
-              - instance
+              - instances.core.openeverest.io
               - itest-ch-expose
               - -n
               - default

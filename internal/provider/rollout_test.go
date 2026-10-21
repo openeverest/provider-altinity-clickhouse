@@ -22,6 +22,7 @@ import (
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
+	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -362,4 +363,77 @@ func TestRolloutHoldsChangeOnPreviousFormatRecord(t *testing.T) {
 	applied, c := syncStandalone(t, instance, completedCHI(), previous)
 	assert.Empty(t, applied)
 	assert.Len(t, c.GetPendingMaintenance(), 1)
+}
+
+// The applied rendering carries a task ID derived from it; the same
+// rendering keeps the ID, another one gets a new ID.
+func TestRolloutStampsTaskID(t *testing.T) {
+	applied, _ := syncStandalone(t, newTestInstance("db", "ns", ""))
+	require.Len(t, applied, 1)
+	first := applied[0].Spec.TaskID.Value()
+	assert.True(t, strings.HasPrefix(first, taskIDPrefix), first)
+
+	again, _ := syncStandalone(t, newTestInstance("db", "ns", ""))
+	assert.Equal(t, first, again[0].Spec.TaskID.Value())
+
+	changed, _ := syncStandalone(t, newTestInstance("db", "ns", `{"configuration":"max_concurrent_queries: 150"}`))
+	assert.NotEqual(t, first, changed[0].Spec.TaskID.Value())
+}
+
+// A cluster applied before task IDs existed keeps none until its next
+// change: the reconcile a new task ID triggers may restart ClickHouse, which
+// the provider must not cause on its own.
+func TestRolloutStampsTaskIDOnlyWithAChange(t *testing.T) {
+	instance := newTestInstance("db", "ns", "")
+	state := recordedState(t, instance)
+
+	applied, c := syncStandalone(t, instance, completedCHI(), state)
+	require.Len(t, applied, 1)
+	assert.Empty(t, c.GetPendingMaintenance())
+	assert.Nil(t, applied[0].Spec.TaskID, "unchanged: no task ID")
+
+	edited := newTestInstance("db", "ns", `{"configuration":"max_concurrent_queries: 150"}`)
+	applied, _ = syncStandalone(t, edited, completedCHI(), recordedState(t, instance))
+	require.Len(t, applied, 1)
+	assert.True(t, applied[0].Spec.TaskID.HasValue(), "a user change gets one")
+
+	// Once it has one, reapplying the same rendering keeps it.
+	stamped := completedCHI()
+	id := chtypes.Id(taskIDPrefix + "previous")
+	stamped.Spec.TaskID = &id
+	applied, _ = syncStandalone(t, instance, stamped, state)
+	require.Len(t, applied, 1)
+	assert.True(t, applied[0].Spec.TaskID.HasValue())
+}
+
+func TestRolledOut(t *testing.T) {
+	id := chtypes.Id(taskIDPrefix + "abc")
+	assert.True(t, rolledOut(nil, nil), "applied before task IDs: Completed is enough")
+	assert.False(t, rolledOut(&id, []string{"auto-1"}), "the operator has yet to pick the change up")
+	assert.True(t, rolledOut(&id, []string{string(id), "auto-1"}))
+}
+
+// Right after a change is applied the CHI still reads Completed for the
+// previous rendering; Sync keeps waiting until the operator finished the
+// applied one.
+func TestWaitForCHIWaitsForAppliedTask(t *testing.T) {
+	id := chtypes.Id(taskIDPrefix + "abc")
+	chi := chiIn(completed)
+	chi.Spec.TaskID = &id
+	c := newTestContext(t, newTestInstance("db", "ns", ""))
+
+	err := waitForCHI(c, chi)
+	assert.True(t, controller.IsWaitError(err), "got %v", err)
+
+	chi.Status.TaskIDsCompleted = append([]string{string(id)}, chi.Status.TaskIDsCompleted...)
+	assert.NoError(t, waitForCHI(c, chi))
+}
+
+func TestStatusUpdatingUntilAppliedTaskCompletes(t *testing.T) {
+	id := chtypes.Id(taskIDPrefix + "abc")
+	chi := chiIn(completed)
+	chi.Spec.TaskID = &id
+	st, err := New().Status(newTestContext(t, newTestInstance("db", "ns", ""), chi))
+	require.NoError(t, err)
+	assert.Equal(t, corev1alpha1.InstancePhaseUpdating, st.Phase)
 }

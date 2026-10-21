@@ -1,0 +1,47 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: day2
+spec:
+  description: |
+    Day-2 operations on a running replicated Instance: a configuration change
+    rolls out to every replica; a deleted ClickHouse
+    pod comes back and catches up on rows written meanwhile; writes go on
+    while a Keeper pod is down; and growing the storage either expands the
+    volumes or, when their StorageClass cannot expand them (as on the CI
+    cluster), is rejected without touching the cluster.
+  timeouts:
+    exec: 30m
+    cleanup: 5m
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk,pods,pvc -o wide
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-day2 -o name); do
+            echo "===== $pod"
+            kubectl describe -n default "$pod" | sed -n '/^Events:/,$p' || true
+            kubectl logs -n default "$pod" -c clickhouse --tail=80 || true
+          done
+  steps:
+    - name: day2
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: sh ./day2.sh
+      finally:
+        - command:
+            entrypoint: kubectl
+            args: [delete, instances.core.openeverest.io, itest-ch-day2, -n, default, --ignore-not-found, --wait=false]
+        # Volumes are retained by default; drop them so re-runs start empty.
+        - command:
+            entrypoint: kubectl
+            args: [delete, pvc, -n, default, -l, clickhouse.altinity.com/chi=itest-ch-day2, --ignore-not-found, --wait=false]
+        - command:
+            entrypoint: kubectl
+            args: [delete, pvc, -n, default, -l, clickhouse-keeper.altinity.com/chk=itest-ch-day2-keeper, --ignore-not-found, --wait=false]

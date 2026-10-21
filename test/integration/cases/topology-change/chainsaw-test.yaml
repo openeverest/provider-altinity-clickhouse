@@ -1,0 +1,52 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: topology-change
+spec:
+  description: |
+    Switch a running standalone Instance to the replicated topology: the
+    provider provisions Keeper, then reapplies the ClickHouseInstallation
+    with two replicas wired to it. Existing tables keep their rows (they are
+    not converted to replicated engines), and data copied into a replicated
+    table reaches the new replica.
+  timeouts:
+    exec: 20m
+    cleanup: 5m
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk,pods,pvc -o wide
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-topology -o name); do
+            echo "===== $pod"
+            kubectl describe -n default "$pod" | sed -n '/^Events:/,$p' || true
+            kubectl logs -n default "$pod" -c clickhouse --tail=80 || true
+          done
+  steps:
+    - name: standalone-to-replicated
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: sh ./seed.sh
+        - patch:
+            file: 20-replicated.yaml
+        - assert:
+            file: 20-assert.yaml
+        - script:
+            content: sh ./verify.sh
+      finally:
+        - command:
+            entrypoint: kubectl
+            args: [delete, instances.core.openeverest.io, itest-ch-topology, -n, default, --ignore-not-found, --wait=false]
+        # Volumes are retained by default; drop them so re-runs start empty.
+        - command:
+            entrypoint: kubectl
+            args: [delete, pvc, -n, default, -l, clickhouse.altinity.com/chi=itest-ch-topology, --ignore-not-found, --wait=false]
+        - command:
+            entrypoint: kubectl
+            args: [delete, pvc, -n, default, -l, clickhouse-keeper.altinity.com/chk=itest-ch-topology-keeper, --ignore-not-found, --wait=false]

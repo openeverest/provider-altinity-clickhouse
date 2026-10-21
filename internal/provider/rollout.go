@@ -19,8 +19,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
+	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
+	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
+	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -105,7 +109,8 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 	if err != nil {
 		return false, err
 	}
-	exists, err := c.Exists(obj.DeepCopyObject().(client.Object), obj.GetName())
+	live := obj.DeepCopyObject().(client.Object)
+	exists, err := c.Exists(live, obj.GetName())
 	if err != nil {
 		return false, fmt.Errorf("check %s: %w", obj.GetName(), err)
 	}
@@ -133,6 +138,14 @@ func (g *rolloutGate) apply(c *controller.Context, obj client.Object, key string
 		return false, nil
 	}
 
+	// Only with a change: a reconcile the provider triggers on its own may
+	// restart ClickHouse (the operator re-renders configuration such as the
+	// pod IPs), so an unchanged cluster applied without a task ID keeps
+	// none until its next change. The ID derives from the fingerprint.
+	unchanged := g.record[key+specSuffix] == "" || g.record[key+specSuffix] == spec
+	if !exists || !unchanged || taskID(live).HasValue() {
+		stampTaskID(obj, spec)
+	}
 	if err := c.Apply(obj); err != nil {
 		return false, err
 	}
@@ -204,6 +217,42 @@ func specHash(obj client.Object) (string, error) {
 		return "", fmt.Errorf("fingerprint %s: %w", obj.GetName(), err)
 	}
 	return hashJSON(raw["spec"])
+}
+
+// taskIDPrefix marks the task IDs the provider stamps.
+const taskIDPrefix = "openeverest-"
+
+// stampTaskID names the rendering being applied in spec.taskID. The operator
+// records it in status.taskIDsCompleted once it has rolled that rendering
+// out, while status.status keeps reading Completed for the previous one
+// until it picks a change up (see rolledOut). The same rendering keeps the
+// same ID, so reapplying it is a no-op.
+func stampTaskID(obj client.Object, spec string) {
+	id := chtypes.Id(taskIDPrefix + spec[:16])
+	switch o := obj.(type) {
+	case *chiv1.ClickHouseInstallation:
+		o.Spec.TaskID = &id
+	case *chkv1.ClickHouseKeeperInstallation:
+		o.Spec.TaskID = &id
+	}
+}
+
+// taskID returns the task ID of a CHI or CHK, nil for anything else.
+func taskID(obj client.Object) *chtypes.Id {
+	switch o := obj.(type) {
+	case *chiv1.ClickHouseInstallation:
+		return o.Spec.TaskID
+	case *chkv1.ClickHouseKeeperInstallation:
+		return o.Spec.TaskID
+	}
+	return nil
+}
+
+// rolledOut reports whether the operator has finished the task the provider
+// applied last. An object applied before task IDs were stamped has none and
+// counts as rolled out once Completed.
+func rolledOut(taskID *chtypes.Id, completed []string) bool {
+	return !taskID.HasValue() || slices.Contains(completed, taskID.Value())
 }
 
 func hashJSON(v any) (string, error) {

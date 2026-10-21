@@ -1,0 +1,32 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-day2
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: replicated
+  components:
+    engine:
+      type: clickhouse
+      replicas: 2
+      # The CI cluster is a single node: request less than the limits.
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      storage:
+        size: 10Gi
+    keeper:
+      type: clickhouse-keeper
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+      storage:
+        size: 5Gi

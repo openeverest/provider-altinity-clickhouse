@@ -45,7 +45,7 @@ spec:
             timeout: 6m
             content: |
               set -eu
-              kubectl delete instance itest-ch-retention -n default --timeout=5m
+              kubectl delete instances.core.openeverest.io itest-ch-retention -n default --timeout=5m
               kubectl wait -n default --for=delete chi/itest-ch-retention --timeout=1m
         - assert:
             file: 20-assert-pvc-retained.yaml
@@ -84,14 +84,14 @@ spec:
             timeout: 8m
             content: |
               set -eu
-              kubectl delete instance itest-ch-retention -n default --timeout=5m
+              kubectl delete instances.core.openeverest.io itest-ch-retention -n default --timeout=5m
               kubectl wait -n default --for=delete pvc/data-chi-itest-ch-retention-clickhouse-0-0-0 --timeout=2m
       finally:
         - command:
             entrypoint: kubectl
             args:
               - delete
-              - instance
+              - instances.core.openeverest.io
               - itest-ch-retention
               - -n
               - default

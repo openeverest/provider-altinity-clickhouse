@@ -27,6 +27,7 @@ import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -67,6 +68,7 @@ func New() *Provider {
 				monitoringv1.AddToScheme,
 				cmapi.AddToScheme,
 				networkingv1.AddToScheme,
+				storagev1.AddToScheme,
 			},
 			// Safe to watch: server-side apply of an unchanged CHI/CHK is a
 			// no-op, so operator status/finalizer writes do not loop back.
@@ -274,6 +276,9 @@ func waitForCHI(c *controller.Context, chi *chiv1.ClickHouseInstallation) error 
 	}
 	switch chi.Status.GetStatus() {
 	case chiv1.StatusCompleted:
+		if !rolledOut(chi.Spec.TaskID, chi.Status.GetTaskIDsCompleted()) {
+			return controller.WaitForDuration("waiting for Altinity operator to pick up the ClickHouseInstallation change", 15*time.Second)
+		}
 		l.Info("ClickHouseInstallation is Completed", "name", chi.Name)
 		return nil
 	case chiv1.StatusAborted:
@@ -295,6 +300,9 @@ func waitForCHK(c *controller.Context, chk *chkv1.ClickHouseKeeperInstallation) 
 	}
 	switch chk.Status.GetStatus() {
 	case chkv1.StatusCompleted:
+		if !rolledOut(chk.Spec.TaskID, chk.Status.GetTaskIDsCompleted()) {
+			return controller.WaitForDuration("waiting for Altinity operator to pick up the Keeper change", 15*time.Second)
+		}
 		l.Info("ClickHouseKeeperInstallation is Completed", "name", chk.Name)
 		return nil
 	case chkv1.StatusAborted:
