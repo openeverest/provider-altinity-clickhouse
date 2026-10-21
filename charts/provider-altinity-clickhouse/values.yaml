@@ -1,6 +1,9 @@
 # Default values for provider-altinity-clickhouse.
 
-# -- Number of replicas for the provider deployment
+# -- Number of replicas for the provider deployment: 1, or 0 to stop it. The
+# provider runtime has no leader election yet
+# (openeverest/openeverest#3366), so more replicas would reconcile the same
+# Instances concurrently; the chart refuses them.
 replicaCount: 1
 
 image:
@@ -114,9 +117,12 @@ extraVolumeMounts: []
 # -- Additional volumes to add to the pod
 extraVolumes: []
 
-# -- Leader election configuration
-leaderElection:
-  # -- Enable leader election (recommended for HA deployments)
+# Before `helm upgrade` applies anything, a hook Job runs the new provider
+# image against the live Instances and aborts the upgrade if one would be
+# stranded (its engine version removed from the new catalog, or the
+# installed release below the new one's minUpgradableFrom).
+upgradePreflight:
+  # -- Run the upgrade preflight hook
   enabled: true
 
 # The Altinity operator pods, which keep access to the plaintext ClickHouse

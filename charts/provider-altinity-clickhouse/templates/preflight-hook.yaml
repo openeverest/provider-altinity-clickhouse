@@ -1,0 +1,136 @@
+{{- /*
+Upgrade preflight: a pre-upgrade hook Job that runs the new provider image in
+preflight mode against the target catalog (the generated provider-spec.yaml
+this release applies, delivered by the ConfigMap below) and the live
+Instances. It blocks the upgrade when an Instance runs an engine version the
+new release removes, or when the installed release is below the new one's
+minUpgradableFrom. A non-zero exit aborts the upgrade before any resource is
+applied. Runs on `helm upgrade` only, never on install.
+*/ -}}
+{{- if .Values.upgradePreflight.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "provider-altinity-clickhouse.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+data:
+  provider-spec.yaml: |
+{{ .Files.Get "generated/provider-spec.yaml" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "provider-altinity-clickhouse.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+---
+# Read-only, hook-scoped RBAC: the installed Provider and the Instances.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+  labels:
+    {{- include "provider-altinity-clickhouse.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["core.openeverest.io"]
+    resources: ["providers", "instances"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+  labels:
+    {{- include "provider-altinity-clickhouse.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "provider-altinity-clickhouse.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  # A pod that cannot be scheduled or pulled fails the upgrade instead of
+  # hanging until the Helm timeout.
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        # Not the shared labels helper: it carries the Service's selector
+        # labels, which must not match a pod that serves nothing.
+        helm.sh/chart: {{ include "provider-altinity-clickhouse.chart" . }}
+        app.kubernetes.io/managed-by: {{ .Release.Service }}
+        app.kubernetes.io/component: preflight
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: preflight
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "provider-altinity-clickhouse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --preflight-spec=/preflight/provider-spec.yaml
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: target-spec
+              mountPath: /preflight
+              readOnly: true
+      volumes:
+        - name: target-spec
+          configMap:
+            name: {{ include "provider-altinity-clickhouse.fullname" . }}-preflight
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

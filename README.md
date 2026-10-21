@@ -53,7 +53,7 @@ never manages pods directly — all lifecycle work is delegated to the operator.
 ## Capabilities
 
 What you can do to a running instance through the `Instance` API. Upgrading the
-provider itself is covered under [Installation](#installation).
+provider itself is covered under [Upgrading the provider](#upgrading-the-provider).
 
 | Capability | Status | Notes |
 |---|---|---|
@@ -107,6 +107,9 @@ helm install provider-altinity-clickhouse \
 ```
 
 - The operator manages its own CRDs through pre-install/pre-upgrade hooks.
+- The provider runs as a single replica (`replicaCount` 0 or 1): the provider runtime
+  has no leader election yet ([openeverest/openeverest#3366](https://github.com/openeverest/openeverest/issues/3366)),
+  so the chart refuses more.
 - The operator connects to ClickHouse as `clickhouse_operator` with a random password generated
   on first install (`operatorCredentials.password` sets one explicitly). Upgrades keep the existing
   password; installs made before this chart version keep the operator's former default until it is
@@ -122,6 +125,25 @@ helm uninstall provider-altinity-clickhouse --namespace everest-system
 ```
 
 Uninstalling the chart does **not** delete running `Instance` resources or their data.
+
+### Upgrading the provider
+
+Before `helm upgrade` applies anything, a pre-upgrade hook Job runs the new provider
+image against the live Instances and aborts the upgrade, leaving everything as it was,
+when:
+
+- an Instance runs a ClickHouse version the new release no longer ships: upgrade that
+  Instance to a supported [version](#versions) first;
+- the installed release is older than the new one's `minUpgradableFrom`: upgrade
+  through the intermediate release first.
+
+Instances on [deprecated](#versions) versions only produce a warning. When the
+upgrade is blocked, the Job stays behind and its log
+(`kubectl logs -n everest-system job/provider-altinity-clickhouse-preflight`) lists
+what it found. Set `upgradePreflight.enabled=false` to skip the check.
+
+After the upgrade, a running cluster the new release would render differently is not
+restarted on its own: the change waits for [maintenance approval](#maintenance-approval).
 
 ## Quick start
 

@@ -228,6 +228,9 @@ helm_resource(
         '--create-namespace',
         '--set', 'image.pullPolicy=IfNotPresent',
         '--set', 'securityContext.readOnlyRootFilesystem=false',
+        # Every chart edit re-runs `helm upgrade`; the preflight hook would
+        # run the live-update image as a one-off Job each time.
+        '--set', 'upgradePreflight.enabled=false',
     ],
     image_deps=[provider_image],
     image_keys=[('image.repository', 'image.tag')],
