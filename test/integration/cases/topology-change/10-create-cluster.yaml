@@ -12,7 +12,11 @@ spec:
     engine:
       type: clickhouse
       replicas: 1
+      # The CI cluster is a single node: request less than the limits.
       resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
         limits:
           cpu: "1"
           memory: 1Gi

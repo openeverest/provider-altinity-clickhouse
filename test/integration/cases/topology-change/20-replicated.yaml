@@ -11,5 +11,9 @@ spec:
       replicas: 2
     keeper:
       type: clickhouse-keeper
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
       storage:
         size: 5Gi
