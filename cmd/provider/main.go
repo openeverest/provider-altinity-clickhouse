@@ -34,6 +34,8 @@ func main() {
 	var preflightSpec string
 	flag.StringVar(&preflightSpec, "preflight-spec", "",
 		"Run the upgrade preflight against the target Provider spec at this path and exit. Used by the chart's pre-upgrade hook.")
+	var admission bool
+	flag.BoolVar(&admission, "admission", true, "Serve the Instance admission webhook, with the serving certificate the chart mounts.")
 	flag.Parse()
 
 	l := ctrl.Log.WithName("setup")
@@ -54,12 +56,17 @@ func main() {
 		return
 	}
 
-	r, err := reconciler.New(ctx, p,
+	opts := []reconciler.ReconcilerOption{
 		// Serve the health and readiness probes.
 		reconciler.WithServer(reconciler.ServerConfig{Port: 8082}),
 		// Bind metrics to a non-conflicting port (8080 is taken by OpenEverest v1).
 		reconciler.WithMetrics(":9091"),
-	)
+	}
+	if admission {
+		opts = append(opts, reconciler.WithAdmission())
+	}
+
+	r, err := reconciler.New(ctx, p, opts...)
 	if err != nil {
 		l.Error(err, "unable to create reconciler")
 		os.Exit(1)

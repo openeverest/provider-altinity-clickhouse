@@ -174,6 +174,23 @@ wired to it. The table keeps its rows on the first replica, its schema
 reaches the new replica, and rows copied into a `ReplicatedMergeTree` table
 replicate.
 
+### `admission`
+
+Exercises the provider's admission webhook with a standalone Instance asking
+for two replicas:
+
+1. The write is rejected, with `--dry-run=server` and for real, naming
+   `spec.components[engine].replicas`.
+2. With the provider scaled to 0 it is admitted, and once the provider is back
+   the Instance's `Ready` condition reports `ValidationFailed` with that error.
+3. An update adding a CPU limit below 1 is rejected for that limit only, while
+   an update changing the memory limit alone is admitted.
+4. With one replica the provider creates the `ClickHouseInstallation`.
+5. An Instance naming a missing `spec.userSecretRef` Secret is admitted with a
+   warning.
+
+The case scales the provider down, so it does not run alongside the others.
+
 The day-2 cases share helpers in [`lib/clickhouse.sh`](lib/clickhouse.sh).
 
 Each case cleans up its Instance in a `finally` block (the provider's own
