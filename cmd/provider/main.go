@@ -55,11 +55,8 @@ func main() {
 	}
 
 	r, err := reconciler.New(ctx, p,
-		// Enable HTTP server for validation and schema endpoints.
-		reconciler.WithServer(reconciler.ServerConfig{
-			Port:           8082,
-			ValidationPath: "/validate",
-		}),
+		// Serve the health and readiness probes.
+		reconciler.WithServer(reconciler.ServerConfig{Port: 8082}),
 		// Bind metrics to a non-conflicting port (8080 is taken by OpenEverest v1).
 		reconciler.WithMetrics(":9091"),
 	)

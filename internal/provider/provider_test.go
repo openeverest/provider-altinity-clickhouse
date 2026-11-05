@@ -252,14 +252,6 @@ func TestStorageReclaimPolicy(t *testing.T) {
 	}
 }
 
-func TestValidateStorageReclaimPolicy(t *testing.T) {
-	for _, params := range []string{"", `{"storageReclaimPolicy":"Retain"}`, `{"storageReclaimPolicy":"Delete"}`} {
-		assert.NoError(t, New().Validate(newTestContext(t, newTestInstance("db", "ns", params))), params)
-	}
-	err := New().Validate(newTestContext(t, newTestInstance("db", "ns", `{"storageReclaimPolicy":"Recycle"}`)))
-	assert.ErrorContains(t, err, "storageReclaimPolicy")
-}
-
 func TestBuildCHIWithTLS(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`))
 

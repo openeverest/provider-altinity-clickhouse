@@ -380,9 +380,10 @@ In the `replicated` topology Keeper and ClickHouse changes form one action. Any 
 
 ### Rejected changes
 
-The provider validates every Instance against the cluster it has deployed and
-rejects changes that the cluster cannot take, leaving the running database
-untouched:
+The provider validates every Instance, and every change to one, and rejects
+what the cluster cannot take, leaving the running database untouched. Each
+error names the Instance field at fault, such as
+`spec.components[engine].storage.size`:
 
 - shrinking `storage.size`, or changing `storage.storageClass` after creation;
 - growing `storage.size` when the volumes' StorageClass does not allow volume
@@ -497,8 +498,8 @@ existing instances on that bundle are not restarted right away: the patch waits 
 - **Chart values:** [charts/provider-altinity-clickhouse/values.yaml](charts/provider-altinity-clickhouse/values.yaml)
 - **Instance parameters:** per-component and per-topology `parameters` schemas, defined under
   [definition/](definition/) and published on the `Provider` resource
-  (`kubectl get provider altinity-clickhouse -o yaml`). The API server and the UI
-  validate user input against these schemas.
+  (`kubectl get provider altinity-clickhouse -o yaml`). The provider checks every
+  Instance against these schemas, and the UI validates input against them.
 
 Besides the shared component fields (`replicas`, `resources`, `storage`, `service`,
 `schedulingPolicy`), the engine component takes these `parameters`:

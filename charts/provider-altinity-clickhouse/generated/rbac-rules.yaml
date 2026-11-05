@@ -132,6 +132,13 @@
     - list
     - watch
 - apiGroups:
+    - events.k8s.io
+  resources:
+    - events
+  verbs:
+    - create
+    - patch
+- apiGroups:
     - monitoring.coreos.com
   resources:
     - podmonitors

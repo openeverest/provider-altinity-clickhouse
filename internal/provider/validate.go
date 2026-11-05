@@ -15,7 +15,9 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
@@ -25,8 +27,8 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
@@ -36,218 +38,147 @@ import (
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
-// Validate checks the Instance spec before reconciliation.
-func (p *Provider) Validate(c *controller.Context) error {
-	l := log.FromContext(c.Context())
-	l.Info("Validating ClickHouse instance", "name", c.Name())
+var _ controller.ReferenceValidator = (*Provider)(nil)
 
-	engine, ok := c.Instance().Spec.Components[common.ComponentEngine]
+var (
+	componentsPath = field.NewPath("spec", "components")
+	enginePath     = componentsPath.Key(common.ComponentEngine)
+	keeperPath     = componentsPath.Key(common.ComponentKeeper)
+)
+
+// minEngineLimits are the smallest CPU and memory limits ClickHouse runs with.
+var minEngineLimits = []struct {
+	name corev1.ResourceName
+	min  resource.Quantity
+}{
+	{corev1.ResourceCPU, resource.MustParse("1")},
+	{corev1.ResourceMemory, resource.MustParse("1Gi")},
+}
+
+// The values the engine accepts; the parameters match them in any case.
+var (
+	storageReclaimPolicies = []string{common.StorageReclaimPolicyRetain, common.StorageReclaimPolicyDelete}
+	tlsModes               = []string{common.TLSModeRequired, common.TLSModeOptional}
+	serviceTypes           = []corev1.ServiceType{
+		corev1.ServiceTypeClusterIP, corev1.ServiceTypeLoadBalancer, corev1.ServiceTypeNodePort,
+	}
+)
+
+// Validate checks the rules about the Instance alone and, on an update, the
+// changes the deployed cluster cannot take. The runtime runs it once the
+// Instance matches the topologies, components, versions and parameter schemas
+// the Provider declares.
+func (p *Provider) Validate(in controller.ValidationInput) controller.ValidationResult {
+	engine, ok := in.Instance.Spec.Components[common.ComponentEngine]
 	if !ok {
-		return fmt.Errorf("engine component is required")
+		return controller.ValidationResult{Errors: field.ErrorList{field.Required(enginePath, "")}}
 	}
 
-	if engine.Resources != nil && engine.Resources.Limits != nil {
-		lim := engine.Resources.Limits
-		if cpu := lim.Cpu(); cpu != nil && !cpu.IsZero() {
-			if cpu.Cmp(resource.MustParse("1")) < 0 {
-				return fmt.Errorf("engine CPU limit must be at least 1 core")
+	errs := validateEngine(in.Instance, engine)
+	errs = append(errs, validateKeeper(in.Instance)...)
+	errs = append(errs, validateTransitions(&in.Provider.Spec, in.Instance, in.Old)...)
+	return controller.ValidationResult{Errors: errs}
+}
+
+// ValidateReferences checks the rules that read other objects: the
+// administrative credentials in the Secrets, and the volumes and versions of
+// the deployed cluster.
+func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, error) {
+	errs, err := validateCredentials(c)
+	if err != nil {
+		return nil, err
+	}
+	engineErrs, err := validateDeployedEngine(c)
+	if err != nil {
+		return nil, err
+	}
+	keeperErrs, err := validateDeployedKeeper(c)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat(errs, engineErrs, keeperErrs), nil
+}
+
+// validateEngine checks the engine's resources, replicas, parameters and
+// service.
+func validateEngine(instance *corev1alpha1.Instance, engine corev1alpha1.ComponentSpec) field.ErrorList {
+	var errs field.ErrorList
+	if engine.Resources != nil {
+		for _, limit := range minEngineLimits {
+			value, ok := engine.Resources.Limits[limit.name]
+			if ok && !value.IsZero() && value.Cmp(limit.min) < 0 {
+				errs = append(errs, field.Invalid(enginePath.Child("resources", "limits").Key(string(limit.name)),
+					value.String(), "must be at least "+limit.min.String()))
 			}
 		}
-		if mem := lim.Memory(); mem != nil && !mem.IsZero() {
-			if mem.Cmp(resource.MustParse("1Gi")) < 0 {
-				return fmt.Errorf("engine memory limit must be at least 1Gi")
-			}
-		}
 	}
+	errs = append(errs, validateRequestsWithinLimits(enginePath, resolveResources(engine))...)
 
-	if err := validateRequestsWithinLimits(common.ComponentEngine, resolveResources(engine)); err != nil {
-		return err
-	}
-
-	if c.Instance().GetTopologyType() == common.TopologyReplicated {
-		if engine.Replicas != nil && *engine.Replicas < 2 {
-			return fmt.Errorf("replicated topology requires at least 2 engine replicas")
-		}
+	replicasPath := enginePath.Child("replicas")
+	switch replicated := instance.GetTopologyType() == common.TopologyReplicated; {
+	case engine.Replicas == nil:
+	case replicated && *engine.Replicas < 2:
+		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas, "must be at least 2 in the replicated topology"))
+	case !replicated && *engine.Replicas > 1:
+		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas,
+			"the standalone topology runs a single replica; use the replicated topology for more"))
 	}
 
 	var params components.ClickHouseParameters
-	_ = c.TryDecodeComponentParameters(engine, &params)
-	switch {
-	case params.StorageReclaimPolicy == "",
-		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyRetain),
-		strings.EqualFold(params.StorageReclaimPolicy, common.StorageReclaimPolicyDelete):
-	default:
-		return fmt.Errorf("engine storageReclaimPolicy must be one of Retain or Delete")
+	if engine.Parameters != nil {
+		// The runtime has checked them against their schema.
+		_ = json.Unmarshal(engine.Parameters.Raw, &params)
 	}
-
-	if params.TLS != nil {
-		switch {
-		case params.TLS.Mode == "",
-			strings.EqualFold(params.TLS.Mode, common.TLSModeRequired),
-			strings.EqualFold(params.TLS.Mode, common.TLSModeOptional):
-		default:
-			return fmt.Errorf("engine tls.mode must be one of required or optional")
-		}
+	paramsPath := enginePath.Child("parameters")
+	if policy := params.StorageReclaimPolicy; policy != "" &&
+		!slices.ContainsFunc(storageReclaimPolicies, func(p string) bool { return strings.EqualFold(p, policy) }) {
+		errs = append(errs, field.NotSupported(paramsPath.Child("storageReclaimPolicy"), policy, storageReclaimPolicies))
 	}
-
-	if c.Instance().GetTopologyType() != common.TopologyReplicated &&
-		engine.Replicas != nil && *engine.Replicas > 1 {
-		return fmt.Errorf("the %s topology runs a single replica; use the %s topology for more",
-			common.TopologyStandalone, common.TopologyReplicated)
+	if params.TLS != nil && params.TLS.Mode != "" &&
+		!slices.ContainsFunc(tlsModes, func(m string) bool { return strings.EqualFold(m, params.TLS.Mode) }) {
+		errs = append(errs, field.NotSupported(paramsPath.Child("tls", "mode"), params.TLS.Mode, tlsModes))
 	}
-
 	if err := validateConfiguration(params.Configuration); err != nil {
-		return err
+		errs = append(errs, field.Invalid(paramsPath.Child("configuration"), field.OmitValueType{}, err.Error()))
 	}
 
-	if err := validateKeeper(c); err != nil {
-		return err
+	if engine.Service != nil && engine.Service.ServiceType != "" && !slices.Contains(serviceTypes, engine.Service.ServiceType) {
+		errs = append(errs, field.NotSupported(enginePath.Child("service", "serviceType"), engine.Service.ServiceType, serviceTypes))
 	}
-
-	if err := validateCredentials(c); err != nil {
-		return err
-	}
-
-	if engine.Service != nil {
-		switch engine.Service.ServiceType {
-		case "",
-			corev1.ServiceTypeClusterIP,
-			corev1.ServiceTypeLoadBalancer,
-			corev1.ServiceTypeNodePort:
-		default:
-			return fmt.Errorf("engine service.serviceType must be one of ClusterIP, LoadBalancer or NodePort")
-		}
-	}
-
-	if err := validateKeeperTransitions(c); err != nil {
-		return err
-	}
-	return validateTransitions(c, engine)
+	return errs
 }
 
 // validateRequestsWithinLimits rejects a request above its limit, which
 // Kubernetes would refuse when creating the pods.
-func validateRequestsWithinLimits(component string, resources corev1.ResourceRequirements) error {
+func validateRequestsWithinLimits(path *field.Path, resources corev1.ResourceRequirements) field.ErrorList {
+	var errs field.ErrorList
 	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
 		request, limit := resources.Requests[name], resources.Limits[name]
 		if request.Cmp(limit) > 0 {
-			return fmt.Errorf("%s %s request %s exceeds its limit %s", component, name, request.String(), limit.String())
+			errs = append(errs, field.Invalid(path.Child("resources", "requests").Key(string(name)), request.String(),
+				"must not exceed the limit "+limit.String()))
 		}
 	}
-	return nil
-}
-
-// validateCredentials checks the administrative credentials: those seeding a
-// new Instance from spec.userSecretRef, and those of the credentials Secret,
-// whose password the user may edit to rotate it.
-func validateCredentials(c *controller.Context) error {
-	if ref := c.Instance().Spec.UserSecretRef; ref != nil {
-		src := &corev1.Secret{}
-		found, err := getOptional(c, src, ref.Name)
-		if err != nil {
-			return err
-		}
-		// A missing Secret is reported by the runtime.
-		if found {
-			if err := validateUserSecretData(src.Data); err != nil {
-				return fmt.Errorf("spec.userSecretRef secret %s: %w", ref.Name, err)
-			}
-		}
-	}
-	current := &corev1.Secret{}
-	found, err := getOptional(c, current, credentialsSecretName(c.Name()))
-	if err != nil || !found {
-		return err
-	}
-	if err := validateUserSecretData(current.Data); err != nil {
-		return fmt.Errorf("credentials secret %s: %w", current.Name, err)
-	}
-	return nil
+	return errs
 }
 
 // validateKeeper checks the keeper component, which only the replicated
 // topology uses and whose ensemble size is fixed.
-func validateKeeper(c *controller.Context) error {
-	keeper, ok := c.Instance().Spec.Components[common.ComponentKeeper]
+func validateKeeper(instance *corev1alpha1.Instance) field.ErrorList {
+	keeper, ok := instance.Spec.Components[common.ComponentKeeper]
 	if !ok {
 		return nil
 	}
-	if c.Instance().GetTopologyType() != common.TopologyReplicated {
-		return fmt.Errorf("the %s component is only used by the %s topology",
-			common.ComponentKeeper, common.TopologyReplicated)
+	if instance.GetTopologyType() != common.TopologyReplicated {
+		return field.ErrorList{field.Forbidden(keeperPath, "only the replicated topology runs Keeper")}
 	}
+
+	var errs field.ErrorList
 	if keeper.Replicas != nil && *keeper.Replicas != common.KeeperReplicas {
-		return fmt.Errorf("keeper runs %d replicas; its size cannot be changed", common.KeeperReplicas)
+		errs = append(errs, field.Invalid(keeperPath.Child("replicas"), *keeper.Replicas,
+			fmt.Sprintf("Keeper runs %d replicas; its size cannot be changed", common.KeeperReplicas)))
 	}
-	return validateRequestsWithinLimits(common.ComponentKeeper, resolveKeeperResources(keeper))
-}
-
-// validateKeeperTransitions rejects Keeper changes the deployed Keeper cannot
-// take: shrinking or moving its volumes, or downgrading it. The Keeper exists
-// before ClickHouse does, so it is checked on its own.
-func validateKeeperTransitions(c *controller.Context) error {
-	if c.Instance().GetTopologyType() != common.TopologyReplicated {
-		return nil
-	}
-	chk := &chkv1.ClickHouseKeeperInstallation{}
-	if err := c.Get(chk, keeperCRName(c.Name())); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("read current ClickHouseKeeperInstallation: %w", err)
-	}
-	keeper := c.Instance().Spec.Components[common.ComponentKeeper]
-
-	if current := keeperVolumeClaimTemplate(chk); current != nil {
-		size, storageClass, err := resolveKeeperStorage(c, keeper)
-		if err != nil {
-			return err
-		}
-		currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]
-		if ok && size.Cmp(currentSize) < 0 {
-			return fmt.Errorf("keeper storage cannot shrink from %s to %s", currentSize.String(), size.String())
-		}
-		if ok && size.Cmp(currentSize) > 0 {
-			if err := validateExpandable(c, common.ComponentKeeper, client.MatchingLabels{common.LabelCHKName: keeperCRName(c.Name())}); err != nil {
-				return err
-			}
-		}
-		if !equalStorageClass(current.Spec.StorageClassName, storageClass) {
-			return fmt.Errorf("keeper storageClass cannot change from %s to %s",
-				describeStorageClass(current.Spec.StorageClassName), describeStorageClass(storageClass))
-		}
-	}
-
-	current := imageVersion(currentKeeperImage(chk))
-	if current == nil {
-		return nil
-	}
-	image, err := resolveImage(c, common.ComponentKeeper, keeper)
-	if err != nil {
-		log.FromContext(c.Context()).Info("Skipping keeper version downgrade check", "reason", err.Error())
-		return nil
-	}
-	if desired := imageVersion(image); desired != nil && compareSegments(desired, current) < 0 {
-		return fmt.Errorf("keeper cannot be downgraded from %s to %s", current.Original(), desired.Original())
-	}
-	return nil
-}
-
-func currentKeeperImage(chk *chkv1.ClickHouseKeeperInstallation) string {
-	if chk.Spec.Templates == nil {
-		return ""
-	}
-	for _, tmpl := range chk.Spec.Templates.PodTemplates {
-		if tmpl.Name != common.KeeperPodTemplateName {
-			continue
-		}
-		for _, container := range tmpl.Spec.Containers {
-			if container.Name == "clickhouse-keeper" {
-				return container.Image
-			}
-		}
-	}
-	return ""
+	return append(errs, validateRequestsWithinLimits(keeperPath, resolveKeeperResources(keeper))...)
 }
 
 // ownedSettings are server settings the operator or the provider manages; a
@@ -269,7 +200,7 @@ func validateConfiguration(configuration string) error {
 	}
 	settings := chiv1.NewSettings()
 	if err := yaml.Unmarshal([]byte(cfg), settings); err != nil {
-		return fmt.Errorf("engine configuration is not valid YAML: %w", err)
+		return fmt.Errorf("not valid YAML: %w", err)
 	}
 	var owned []string
 	settings.WalkNames(func(name string) {
@@ -287,86 +218,229 @@ func validateConfiguration(configuration string) error {
 		}
 	})
 	if len(owned) > 0 {
-		return fmt.Errorf("engine configuration must not set %s: managed by the provider",
-			strings.Join(owned, ", "))
+		return fmt.Errorf("must not set %s: managed by the provider", strings.Join(owned, ", "))
 	}
 	return nil
 }
 
-// validateTransitions rejects changes the deployed cluster cannot take. The
-// runtime hands Validate only the desired Instance, so the current state is
-// read from the live ClickHouseInstallation and ClickHouseKeeperInstallation;
-// before they exist there is nothing to compare against.
-func validateTransitions(c *controller.Context, engine corev1alpha1.ComponentSpec) error {
-	chi := &chiv1.ClickHouseInstallation{}
-	if err := c.Get(chi, c.Name()); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("read current ClickHouseInstallation: %w", err)
-	}
-
-	if c.Instance().GetTopologyType() != common.TopologyReplicated {
-		replicated, err := isReplicated(c, chi)
-		if err != nil {
-			return err
-		}
-		if replicated {
-			return fmt.Errorf("the topology cannot be changed from %s to %s",
-				common.TopologyReplicated, common.TopologyStandalone)
-		}
-	}
-
-	if err := validateStorageTransition(c, chi, engine); err != nil {
-		return err
-	}
-	return validateVersionTransition(c, chi, engine)
-}
-
-// isReplicated reports whether the deployed cluster runs the replicated
-// topology: ClickHouse is wired to Keeper, or a Keeper exists for it.
-func isReplicated(c *controller.Context, chi *chiv1.ClickHouseInstallation) (bool, error) {
-	if chi.Spec.Configuration != nil && chi.Spec.Configuration.Zookeeper != nil {
-		return true, nil
-	}
-	exists, err := c.Exists(&chkv1.ClickHouseKeeperInstallation{}, keeperCRName(c.Name()))
-	if err != nil {
-		return false, fmt.Errorf("read current ClickHouseKeeperInstallation: %w", err)
-	}
-	return exists, nil
-}
-
-// validateStorageTransition rejects shrinking the data volumes or moving them
-// to another StorageClass: neither can be applied to existing PVCs.
-func validateStorageTransition(c *controller.Context, chi *chiv1.ClickHouseInstallation, engine corev1alpha1.ComponentSpec) error {
-	current := dataVolumeClaimTemplate(chi)
-	if current == nil {
+// validateTransitions rejects, on an update of an Instance whose cluster the
+// provider has started creating, the changes the cluster cannot take.
+func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.Instance) field.ErrorList {
+	if old == nil || old.Status.Phase == "" || old.Status.Phase == corev1alpha1.InstancePhasePending {
 		return nil
 	}
-	size, storageClass := resolveStorage(engine)
-	currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]
-	if ok && size.Cmp(currentSize) < 0 {
-		return fmt.Errorf("engine storage cannot shrink from %s to %s", currentSize.String(), size.String())
+	wasReplicated := old.GetTopologyType() == common.TopologyReplicated
+	if wasReplicated && in.GetTopologyType() != common.TopologyReplicated {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "topology", "type"), fmt.Sprintf(
+			"cannot change from %s to %s", common.TopologyReplicated, common.TopologyStandalone))}
 	}
-	if ok && size.Cmp(currentSize) > 0 {
-		if err := validateExpandable(c, common.ComponentEngine, client.MatchingLabels{common.LabelCHIName: c.Name()}); err != nil {
-			return err
-		}
+
+	size, class := resolveStorage(in.Spec.Components[common.ComponentEngine])
+	oldSize, oldClass := resolveStorage(old.Spec.Components[common.ComponentEngine])
+	errs := validateStorageTransition(enginePath.Child("storage"), oldSize, size, oldClass, class)
+	errs = append(errs, validateVersionTransition(spec, common.ComponentEngine, in, old)...)
+	if !wasReplicated {
+		return errs
 	}
-	if !equalStorageClass(current.Spec.StorageClassName, storageClass) {
-		return fmt.Errorf("engine storageClass cannot change from %s to %s",
-			describeStorageClass(current.Spec.StorageClassName), describeStorageClass(storageClass))
+
+	size, class = keeperVolume(in)
+	oldSize, oldClass = keeperVolume(old)
+	if keeper := in.Spec.Components[common.ComponentKeeper]; keeper.Storage == nil || keeper.Storage.StorageClass == nil {
+		// Sync keeps the class of the deployed Keeper.
+		class = oldClass
 	}
-	return nil
+	errs = append(errs, validateStorageTransition(keeperPath.Child("storage"), oldSize, size, oldClass, class)...)
+	return append(errs, validateVersionTransition(spec, common.ComponentKeeper, in, old)...)
 }
 
-// validateExpandable rejects growing a component's volumes when their
-// StorageClass does not allow volume expansion: the operator's resize of the
-// PVCs would be refused, leaving the change stuck.
-func validateExpandable(c *controller.Context, component string, selector client.MatchingLabels) error {
+// keeperVolume returns the Keeper volume size and the StorageClass a new
+// Keeper gets: its own, else the engine's.
+func keeperVolume(instance *corev1alpha1.Instance) (resource.Quantity, *string) {
+	keeper := instance.Spec.Components[common.ComponentKeeper]
+	size := resource.MustParse(common.KeeperDefaultStorage)
+	if keeper.Storage != nil && !keeper.Storage.Size.IsZero() {
+		size = keeper.Storage.Size.DeepCopy()
+	}
+	if keeper.Storage != nil && keeper.Storage.StorageClass != nil {
+		return size, keeper.Storage.StorageClass
+	}
+	_, class := resolveStorage(instance.Spec.Components[common.ComponentEngine])
+	return size, class
+}
+
+// validateStorageTransition rejects shrinking volumes or moving them to
+// another StorageClass: neither can be applied to existing PVCs.
+func validateStorageTransition(path *field.Path, fromSize, toSize resource.Quantity, fromClass, toClass *string) field.ErrorList {
+	var errs field.ErrorList
+	if toSize.Cmp(fromSize) < 0 {
+		errs = append(errs, field.Forbidden(path.Child("size"),
+			fmt.Sprintf("cannot shrink from %s to %s", fromSize.String(), toSize.String())))
+	}
+	if !equalStorageClass(fromClass, toClass) {
+		errs = append(errs, field.Forbidden(path.Child("storageClass"), fmt.Sprintf("cannot change from %s to %s",
+			describeStorageClass(fromClass), describeStorageClass(toClass))))
+	}
+	return errs
+}
+
+// validateVersionTransition rejects downgrading a component: newer releases
+// may have written data or metadata older ones cannot read.
+func validateVersionTransition(spec *corev1alpha1.ProviderSpec, name string, in, old *corev1alpha1.Instance) field.ErrorList {
+	from, err := componentImage(spec, old, name, old.Spec.Components[name])
+	if err != nil {
+		return nil
+	}
+	to, err := componentImage(spec, in, name, in.Spec.Components[name])
+	if err != nil {
+		return nil
+	}
+	return validateDowngrade(imageSourcePath(in, name), from, to)
+}
+
+// validateDowngrade rejects a desired image whose version is below the
+// current one's. Images whose tags are not versions are not compared.
+func validateDowngrade(path *field.Path, current, desired string) field.ErrorList {
+	from, to := imageVersion(current), imageVersion(desired)
+	if from == nil || to == nil || compareSegments(to, from) >= 0 {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(path,
+		fmt.Sprintf("cannot downgrade from %s to %s", from.Original(), to.Original()))}
+}
+
+// imageSourcePath is the field the component's image is chosen by.
+func imageSourcePath(instance *corev1alpha1.Instance, name string) *field.Path {
+	component := instance.Spec.Components[name]
+	switch {
+	case component.Image != "":
+		return componentsPath.Key(name).Child("image")
+	case component.Version != "":
+		return componentsPath.Key(name).Child("version")
+	default:
+		return field.NewPath("spec", "version")
+	}
+}
+
+// validateCredentials checks the administrative credentials: those seeding a
+// new Instance from spec.userSecretRef, and those of the credentials Secret,
+// whose password the user may edit to rotate it.
+func validateCredentials(c *controller.Context) (field.ErrorList, error) {
+	refPath := field.NewPath("spec", "userSecretRef")
+	var errs field.ErrorList
+	if ref := c.Instance().Spec.UserSecretRef; ref != nil {
+		src := &corev1.Secret{}
+		found, err := getOptional(c, src, ref.Name)
+		if err != nil {
+			return nil, err
+		}
+		// A missing Secret is reported by the runtime.
+		if found {
+			if err := validateUserSecretData(src.Data); err != nil {
+				errs = append(errs, field.Invalid(refPath.Child("name"), ref.Name, err.Error()))
+			}
+		}
+	}
+
+	current := &corev1.Secret{}
+	found, err := getOptional(c, current, credentialsSecretName(c.Name()))
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		if err := validateUserSecretData(current.Data); err != nil {
+			errs = append(errs, field.Invalid(refPath, field.OmitValueType{},
+				fmt.Sprintf("the credentials Secret %s: %v", current.Name, err)))
+		}
+	}
+	return errs, nil
+}
+
+// validateDeployedEngine checks the engine against the running
+// ClickHouseInstallation: its volumes grow only on a StorageClass that allows
+// it, and ClickHouse is not downgraded, also when a provider release changes
+// the version an Instance gets by default.
+func validateDeployedEngine(c *controller.Context) (field.ErrorList, error) {
+	chi := &chiv1.ClickHouseInstallation{}
+	found, err := getOptional(c, chi, c.Name())
+	if err != nil || !found {
+		return nil, err
+	}
+	engine := c.Instance().Spec.Components[common.ComponentEngine]
+
+	var errs field.ErrorList
+	if current := dataVolumeClaimTemplate(chi); current != nil {
+		size, _ := resolveStorage(engine)
+		errs, err = validateExpandable(c, enginePath.Child("storage", "size"), current, size,
+			client.MatchingLabels{common.LabelCHIName: c.Name()})
+		if err != nil {
+			return nil, err
+		}
+	}
+	// A version that does not resolve is reported by Sync.
+	if image, err := resolveImage(c, common.ComponentEngine, engine); err == nil {
+		errs = append(errs, validateDowngrade(imageSourcePath(c.Instance(), common.ComponentEngine), currentEngineImage(chi), image)...)
+	}
+	return errs, nil
+}
+
+// validateDeployedKeeper checks the keeper component against the running
+// ClickHouseKeeperInstallation, which exists before ClickHouse does: its
+// volumes keep their StorageClass and grow only on one that allows it, and
+// Keeper is not downgraded.
+func validateDeployedKeeper(c *controller.Context) (field.ErrorList, error) {
+	if c.Instance().GetTopologyType() != common.TopologyReplicated {
+		return nil, nil
+	}
+	chk := &chkv1.ClickHouseKeeperInstallation{}
+	found, err := getOptional(c, chk, keeperCRName(c.Name()))
+	if err != nil || !found {
+		return nil, err
+	}
+	keeper := c.Instance().Spec.Components[common.ComponentKeeper]
+
+	var errs field.ErrorList
+	if current := keeperVolumeClaimTemplate(chk); current != nil {
+		size, class, err := resolveKeeperStorage(c, keeper)
+		if err != nil {
+			return nil, err
+		}
+		// A Keeper created before the keeper component existed is on the
+		// cluster default, whatever the previous Instance says.
+		if !equalStorageClass(current.Spec.StorageClassName, class) {
+			errs = append(errs, field.Forbidden(keeperPath.Child("storage", "storageClass"), fmt.Sprintf(
+				"cannot change from %s to %s", describeStorageClass(current.Spec.StorageClassName), describeStorageClass(class))))
+		}
+		growErrs, err := validateExpandable(c, keeperPath.Child("storage", "size"), current, size,
+			client.MatchingLabels{common.LabelCHKName: keeperCRName(c.Name())})
+		if err != nil {
+			return nil, err
+		}
+		errs = append(errs, growErrs...)
+	}
+	if image, err := resolveImage(c, common.ComponentKeeper, keeper); err == nil {
+		errs = append(errs, validateDowngrade(imageSourcePath(c.Instance(), common.ComponentKeeper), currentKeeperImage(chk), image)...)
+	}
+	return errs, nil
+}
+
+// validateExpandable rejects growing volumes past the size of the deployed
+// volume claim template when their StorageClass does not allow volume
+// expansion: the operator's resize of the PVCs would be refused, leaving the
+// change stuck.
+func validateExpandable(
+	c *controller.Context,
+	path *field.Path,
+	current *chiv1.VolumeClaimTemplate,
+	size resource.Quantity,
+	selector client.MatchingLabels,
+) (field.ErrorList, error) {
+	currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]
+	if !ok || size.Cmp(currentSize) <= 0 {
+		return nil, nil
+	}
 	pvcs := &corev1.PersistentVolumeClaimList{}
 	if err := c.List(pvcs, selector); err != nil {
-		return fmt.Errorf("list %s volumes: %w", component, err)
+		return nil, fmt.Errorf("list volumes: %w", err)
 	}
 	checked := map[string]bool{}
 	for _, pvc := range pvcs.Items {
@@ -381,13 +455,14 @@ func validateExpandable(c *controller.Context, component string, selector client
 			if apierrors.IsNotFound(err) {
 				continue
 			}
-			return fmt.Errorf("read StorageClass %s: %w", name, err)
+			return nil, fmt.Errorf("read StorageClass %s: %w", name, err)
 		}
 		if class.AllowVolumeExpansion == nil || !*class.AllowVolumeExpansion {
-			return fmt.Errorf("%s storage cannot grow: the %s StorageClass does not allow volume expansion", component, name)
+			return field.ErrorList{field.Forbidden(path, fmt.Sprintf(
+				"cannot grow: the %s StorageClass does not allow volume expansion", name))}, nil
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func dataVolumeClaimTemplate(chi *chiv1.ClickHouseInstallation) *chiv1.VolumeClaimTemplate {
@@ -416,27 +491,6 @@ func describeStorageClass(sc *string) string {
 	return fmt.Sprintf("%q", *sc)
 }
 
-// validateVersionTransition rejects downgrading ClickHouse below the version
-// that is running: newer releases may have written data or metadata older
-// ones cannot read. Images whose tags are not versions are not compared.
-func validateVersionTransition(c *controller.Context, chi *chiv1.ClickHouseInstallation, engine corev1alpha1.ComponentSpec) error {
-	current := imageVersion(currentEngineImage(chi))
-	if current == nil {
-		return nil
-	}
-	image, err := resolveImage(c, common.ComponentEngine, engine)
-	if err != nil {
-		// Version resolution problems surface from Sync with full context.
-		log.FromContext(c.Context()).Info("Skipping version downgrade check", "reason", err.Error())
-		return nil
-	}
-	desired := imageVersion(image)
-	if desired != nil && compareSegments(desired, current) < 0 {
-		return fmt.Errorf("ClickHouse cannot be downgraded from %s to %s", current.Original(), desired.Original())
-	}
-	return nil
-}
-
 func currentEngineImage(chi *chiv1.ClickHouseInstallation) string {
 	if chi.Spec.Templates == nil {
 		return ""
@@ -447,6 +501,23 @@ func currentEngineImage(chi *chiv1.ClickHouseInstallation) string {
 		}
 		for _, container := range tmpl.Spec.Containers {
 			if container.Name == "clickhouse" {
+				return container.Image
+			}
+		}
+	}
+	return ""
+}
+
+func currentKeeperImage(chk *chkv1.ClickHouseKeeperInstallation) string {
+	if chk.Spec.Templates == nil {
+		return ""
+	}
+	for _, tmpl := range chk.Spec.Templates.PodTemplates {
+		if tmpl.Name != common.KeeperPodTemplateName {
+			continue
+		}
+		for _, container := range tmpl.Spec.Containers {
+			if container.Name == "clickhouse-keeper" {
 				return container.Image
 			}
 		}

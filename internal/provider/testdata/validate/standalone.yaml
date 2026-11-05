@@ -1,0 +1,18 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: events
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: standalone
+  components:
+    engine:
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 4Gi
+      storage:
+        size: 25Gi

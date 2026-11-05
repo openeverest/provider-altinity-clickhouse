@@ -57,12 +57,6 @@ func TestTLSMode(t *testing.T) {
 	}
 }
 
-func TestValidateTLSMode(t *testing.T) {
-	err := New().Validate(newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled","mode":"strict"}}`)))
-	assert.ErrorContains(t, err, "tls.mode")
-	assert.NoError(t, New().Validate(newTestContext(t, newTestInstance("db", "ns", tlsOptionalParams))))
-}
-
 func servicePorts(tmpl chiv1.ServiceTemplate) []int32 {
 	var ports []int32
 	for _, p := range tmpl.Spec.Ports {
