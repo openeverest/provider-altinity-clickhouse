@@ -56,11 +56,14 @@ spec:
               done
               echo "expected 26.8 with 1000 rows, got: $out"
               exit 1
-        # Downgrades are rejected: the CHI stays on 26.8.
-        - patch:
-            file: 30-downgrade.yaml
-        - sleep:
-            duration: 20s
+        # Downgrades are rejected at admission: the CHI stays on 26.8.
+        - script:
+            content: |
+              kubectl -n default patch instances.core.openeverest.io itest-ch-upgrade \
+                --type=merge -p '{"spec":{"version":"26.3"}}'
+            check:
+              ($error != null): true
+              (contains($stderr, 'cannot downgrade from 26.8.31.2 to 26.3')): true
         - assert:
             resource:
               apiVersion: clickhouse.altinity.com/v1

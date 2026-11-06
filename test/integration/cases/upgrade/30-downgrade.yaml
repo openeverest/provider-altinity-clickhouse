@@ -1,7 +1,0 @@
-apiVersion: core.openeverest.io/v1alpha1
-kind: Instance
-metadata:
-  name: itest-ch-upgrade
-  namespace: default
-spec:
-  version: "26.3"

@@ -49,11 +49,11 @@ if [ "$(kubectl get storageclass "$class" -o jsonpath='{.allowVolumeExpansion}')
   wait_until "both volumes grew to 20Gi" equals "20Gi 20Gi " capacities
 else
   # The CI cluster's local-path class cannot expand volumes: the provider
-  # rejects the change rather than leave the operator's resize stuck.
-  wait_until "the $class StorageClass cannot expand: the change is rejected" equals Failed phase
+  # blocks the Instance rather than leave the operator's resize stuck.
+  wait_until "the $class StorageClass cannot expand: the change is rejected" equals InvalidReference ready_reason
   requested=$(kubectl get clickhouseinstallations.clickhouse.altinity.com "$NAME" -n "$NS" \
     -o jsonpath='{.spec.templates.volumeClaimTemplates[?(@.name=="data")].spec.resources.requests.storage}')
   [ "$requested" = 10Gi ] || fail "a rejected change must not reach the CHI, which requests $requested"
   patch_instance '{"spec":{"components":{"engine":{"storage":{"size":"10Gi"}}}}}'
-  wait_until "reverting the size recovers the Instance" ready
+  wait_until "reverting the size recovers the Instance" equals Ready ready_reason
 fi

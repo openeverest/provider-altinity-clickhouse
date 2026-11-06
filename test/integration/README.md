@@ -74,8 +74,8 @@ Provisions a standalone Instance on the `26.3` bundle, writes rows, then:
 
 1. Moves it to `26.8` and asserts it reports `Updating`, then `Ready` on the
    26.8 image, with the rows intact and `version()` reporting 26.8.
-2. Moves it back to `26.3` and asserts the downgrade is rejected: the CHI stays
-   on 26.8.
+2. Moves it back to `26.3` and asserts admission rejects the downgrade: the
+   CHI stays on 26.8.
 
 ### `expose`
 
@@ -163,8 +163,8 @@ Day-2 operations on a replicated Instance:
 3. Inserts succeed while a Keeper pod is down, and Keeper recovers.
 4. Growing `storage.size` expands the volumes when their StorageClass allows
    it. Otherwise, as with the CI cluster's `local-path` class, the provider
-   rejects the change (`Failed`, the CHI untouched), and reverting the size
-   recovers the Instance.
+   blocks the Instance (`Ready` condition with reason `InvalidReference`, the
+   CHI untouched), and reverting the size recovers the Instance.
 
 ### `topology-change`
 

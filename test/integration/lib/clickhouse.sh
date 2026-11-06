@@ -40,6 +40,7 @@ equals() {
 }
 
 phase() { kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.phase}'; }
+ready_reason() { kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}'; }
 chi() { kubectl get clickhouseinstallations.clickhouse.altinity.com "$NAME" -n "$NS" -o jsonpath="$1"; }
 ready() { [ "$(phase)" = Ready ] && [ "$(chi '{.status.status}')" = Completed ]; }
 
