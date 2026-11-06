@@ -1,0 +1,15 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-admission
+  namespace: default
+spec:
+  components:
+    engine:
+      resources:
+        limits:
+          memory: 2Gi
+status:
+  (conditions[?type == 'Ready']):
+    - status: "False"
+      reason: ValidationFailed

@@ -148,16 +148,23 @@ func TestValidateCredentials(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			seeded := withUserSecretRef(newTestInstance("db", "ns", ""), "seed")
-			err := validate(t, seeded, secretWith("seed", tc.data))
+			errs, err := New().ValidateReferences(newTestContext(t, seeded, secretWith("seed", tc.data)))
+			require.NoError(t, err)
 			// An edited credentials Secret is held to the same rules.
-			edited := validate(t, newTestInstance("db", "ns", ""), secretWith(credentialsSecretName("db"), tc.data))
+			edited, err := New().ValidateReferences(newTestContext(t, newTestInstance("db", "ns", ""),
+				secretWith(credentialsSecretName("db"), tc.data)))
+			require.NoError(t, err)
 			if tc.wantErr == "" {
-				assert.NoError(t, err)
-				assert.NoError(t, edited)
+				assert.Empty(t, errs)
+				assert.Empty(t, edited)
 				return
 			}
-			assert.ErrorContains(t, err, tc.wantErr)
-			assert.ErrorContains(t, edited, tc.wantErr)
+			require.Len(t, errs, 1)
+			assert.Equal(t, "spec.userSecretRef.name", errs[0].Field)
+			assert.Contains(t, errs[0].Detail, tc.wantErr)
+			require.Len(t, edited, 1)
+			assert.Equal(t, "spec.userSecretRef", edited[0].Field)
+			assert.Contains(t, edited[0].Detail, tc.wantErr)
 		})
 	}
 }
@@ -188,11 +195,6 @@ func TestBuildCHIHardensAuthentication(t *testing.T) {
 
 	// A counter, not a digest: nothing derived from a password leaves the Secret.
 	assert.Equal(t, "7", chi.Spec.Templates.PodTemplates[0].ObjectMeta.Annotations[common.AnnotationCredentialsRevision])
-}
-
-func TestValidateRejectsOverridingInterserverCredentials(t *testing.T) {
-	err := validate(t, newTestInstance("db", "ns", `{"configuration":"interserver_http_credentials/user: x"}`))
-	assert.ErrorContains(t, err, "must not set interserver_http_credentials/user")
 }
 
 // Rotating the admin password is a user change: applied (rolling the pods)

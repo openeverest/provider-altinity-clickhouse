@@ -74,8 +74,8 @@ Provisions a standalone Instance on the `26.3` bundle, writes rows, then:
 
 1. Moves it to `26.8` and asserts it reports `Updating`, then `Ready` on the
    26.8 image, with the rows intact and `version()` reporting 26.8.
-2. Moves it back to `26.3` and asserts the downgrade is rejected: the CHI stays
-   on 26.8.
+2. Moves it back to `26.3` and asserts admission rejects the downgrade: the
+   CHI stays on 26.8.
 
 ### `expose`
 
@@ -163,8 +163,8 @@ Day-2 operations on a replicated Instance:
 3. Inserts succeed while a Keeper pod is down, and Keeper recovers.
 4. Growing `storage.size` expands the volumes when their StorageClass allows
    it. Otherwise, as with the CI cluster's `local-path` class, the provider
-   rejects the change (`Failed`, the CHI untouched), and reverting the size
-   recovers the Instance.
+   blocks the Instance (`Ready` condition with reason `InvalidReference`, the
+   CHI untouched), and reverting the size recovers the Instance.
 
 ### `topology-change`
 
@@ -173,6 +173,23 @@ topology: Keeper is provisioned and the CHI is reapplied with two replicas
 wired to it. The table keeps its rows on the first replica, its schema
 reaches the new replica, and rows copied into a `ReplicatedMergeTree` table
 replicate.
+
+### `admission`
+
+Exercises the provider's admission webhook with a standalone Instance asking
+for two replicas:
+
+1. The write is rejected, with `--dry-run=server` and for real, naming
+   `spec.components[engine].replicas`.
+2. With the provider scaled to 0 it is admitted, and once the provider is back
+   the Instance's `Ready` condition reports `ValidationFailed` with that error.
+3. An update adding a CPU limit below 1 is rejected for that limit only, while
+   an update changing the memory limit alone is admitted.
+4. With one replica the provider creates the `ClickHouseInstallation`.
+5. An Instance naming a missing `spec.userSecretRef` Secret is admitted with a
+   warning.
+
+The case scales the provider down, so it does not run alongside the others.
 
 The day-2 cases share helpers in [`lib/clickhouse.sh`](lib/clickhouse.sh).
 

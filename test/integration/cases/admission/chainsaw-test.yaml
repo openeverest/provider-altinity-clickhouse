@@ -1,0 +1,130 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: admission
+spec:
+  description: |
+    The provider's admission webhook: it rejects an invalid Instance with the
+    field path, admits it while the provider is down and reports the errors
+    once it is back, blocks an update only on errors the stored Instance did
+    not already have, and warns about a missing user Secret.
+  # Scales the provider down, which every other case depends on.
+  concurrent: false
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi -o yaml
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: provider-ready
+      try:
+        - assert:
+            file: 00-assert.yaml
+
+    - name: reject-invalid
+      try:
+        - script:
+            timeout: 1m
+            content: |
+              # Writes are admitted until the webhook serves.
+              for i in $(seq 1 25); do
+                kubectl apply --dry-run=server -f 10-invalid-cluster.yaml >/dev/null 2>&1 || break
+                sleep 2
+              done
+              kubectl apply --dry-run=server -f 10-invalid-cluster.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'spec.components[engine].replicas')): true
+        - script:
+            content: kubectl apply -f 10-invalid-cluster.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'spec.components[engine].replicas')): true
+        - error:
+            file: 10-error.yaml
+
+    - name: admit-while-provider-down
+      try:
+        - script:
+            timeout: 1m
+            content: |
+              kubectl -n default scale deployment/provider-altinity-clickhouse --replicas=0
+              while kubectl -n default get pods -o name \
+                -l app.kubernetes.io/name=provider-altinity-clickhouse | grep -q .; do
+                sleep 1
+              done
+        - apply:
+            file: 10-invalid-cluster.yaml
+      finally:
+        - script:
+            timeout: 2m
+            content: |
+              kubectl -n default scale deployment/provider-altinity-clickhouse --replicas=1
+              kubectl -n default rollout status deployment/provider-altinity-clickhouse --timeout=110s
+
+    - name: report-once-back
+      try:
+        - assert:
+            file: 20-assert.yaml
+
+    - name: block-new-errors-only
+      try:
+        - script:
+            timeout: 1m
+            content: |
+              # Writes are admitted until the webhook serves again.
+              for i in $(seq 1 25); do
+                kubectl apply --dry-run=server -f 30-new-error.yaml >/dev/null 2>&1 || break
+                sleep 2
+              done
+              kubectl apply -f 30-new-error.yaml
+            check:
+              ($error != null): true
+              (contains($stderr, 'spec.components[engine].resources.limits[cpu]')): true
+              (contains($stderr, 'spec.components[engine].replicas')): false
+        - script:
+            content: kubectl apply -f 31-unrelated-change.yaml
+        - assert:
+            file: 31-assert.yaml
+
+    - name: fix
+      try:
+        - apply:
+            file: 40-fixed-cluster.yaml
+        - assert:
+            file: 40-assert.yaml
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-admission
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-admission
+              - --ignore-not-found
+              - --wait=false
+
+    - name: warn-about-a-missing-user-secret
+      try:
+        - script:
+            content: kubectl apply -f 50-missing-user-secret.yaml
+            check:
+              ($error == null): true
+              (contains($stderr, 'itest-ch-admission-missing-users named by spec.userSecretRef not found')): true
+      cleanup:
+        - script:
+            content: kubectl -n default delete instances.core.openeverest.io/itest-ch-admission-nosecret --ignore-not-found --timeout=60s
