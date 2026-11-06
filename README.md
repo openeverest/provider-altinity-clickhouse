@@ -121,7 +121,9 @@ helm install provider-altinity-clickhouse \
   cert-manager issue it, or supply one through `admission.certs`. If the provider is down,
   writes are admitted and the `Instance` reports the errors in its `Ready` condition. A
   missing object the `Instance` names, such as its user Secret, is never a reason to reject
-  it: `kubectl` prints a warning, and the `Instance` reports it once created.
+  it: `kubectl` prints a warning, and the `Instance` reports it once created. Changes checked
+  against the running cluster, such as volume sizes, are also admitted with a warning, and
+  block the `Instance` until they are reverted.
 
 Upgrade and uninstall:
 

@@ -347,23 +347,25 @@ func TestValidateTransitions(t *testing.T) {
 			after:   component(common.ComponentEngine, storage("100Gi", nil)),
 		},
 		{
+			// Compared with the deployed volumes by ValidateReferences.
 			name:    "engine storage shrinks",
 			fixture: standaloneFixture,
 			after:   component(common.ComponentEngine, storage("20Gi", nil)),
-			want:    []string{"spec.components[engine].storage.size"},
 		},
 		{
-			name:    "engine storage shrinks on a failed cluster",
+			name:    "engine storage class changes on a failed cluster",
 			fixture: standaloneFixture,
 			phase:   corev1alpha1.InstancePhaseFailed,
-			after:   component(common.ComponentEngine, storage("20Gi", nil)),
-			want:    []string{"spec.components[engine].storage.size"},
+			before:  component(common.ComponentEngine, storage("25Gi", new("fast"))),
+			after:   component(common.ComponentEngine, storage("25Gi", new("slow"))),
+			want:    []string{"spec.components[engine].storage.storageClass"},
 		},
 		{
-			name:    "engine storage shrinks before the cluster is created",
+			name:    "engine storage class changes before the cluster is created",
 			fixture: standaloneFixture,
 			phase:   corev1alpha1.InstancePhasePending,
-			after:   component(common.ComponentEngine, storage("20Gi", nil)),
+			before:  component(common.ComponentEngine, storage("25Gi", new("fast"))),
+			after:   component(common.ComponentEngine, storage("25Gi", new("slow"))),
 		},
 		{
 			name:    "engine storage class changes",
@@ -456,7 +458,6 @@ func TestValidateTransitions(t *testing.T) {
 			name:    "Keeper storage shrinks",
 			fixture: replicatedFixture,
 			after:   component(common.ComponentKeeper, storage("5Gi", nil)),
-			want:    []string{"spec.components[keeper].storage.size"},
 		},
 		{
 			name:    "Keeper storage class unset",
@@ -571,6 +572,12 @@ func TestValidateReferences(t *testing.T) {
 			objects:  []client.Object{live, pvc, storageClass("local-path", nil)},
 		},
 		{
+			name:     "engine storage shrinks below the deployed volumes",
+			instance: withEngine(base, storage("20Gi", nil)),
+			objects:  []client.Object{live, pvc, storageClass("local-path", nil)},
+			want:     []string{"spec.components[engine].storage.size"},
+		},
+		{
 			name:     "engine storage grows on a StorageClass without volume expansion",
 			instance: grown,
 			objects:  []client.Object{live, pvc, storageClass("local-path", nil)},
@@ -606,6 +613,12 @@ func TestValidateReferences(t *testing.T) {
 		{
 			name:     "Keeper storage grows on a StorageClass without volume expansion",
 			instance: withKeeper(replicated, storage("30Gi", nil)),
+			objects:  []client.Object{liveKeeper, keeperPVC, storageClass("local-path", nil)},
+			want:     []string{"spec.components[keeper].storage.size"},
+		},
+		{
+			name:     "Keeper storage shrinks below the deployed volumes",
+			instance: withKeeper(replicated, storage("5Gi", nil)),
 			objects:  []client.Object{liveKeeper, keeperPVC, storageClass("local-path", nil)},
 			want:     []string{"spec.components[keeper].storage.size"},
 		},

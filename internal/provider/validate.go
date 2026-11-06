@@ -235,52 +235,43 @@ func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.
 			"cannot change from %s to %s", common.TopologyReplicated, common.TopologyStandalone))}
 	}
 
-	size, class := resolveStorage(in.Spec.Components[common.ComponentEngine])
-	oldSize, oldClass := resolveStorage(old.Spec.Components[common.ComponentEngine])
-	errs := validateStorageTransition(enginePath.Child("storage"), oldSize, size, oldClass, class)
+	// Sizes are compared with the deployed volumes, in ValidateReferences: a
+	// growth blocked there is stored, and must stay revertible.
+	_, class := resolveStorage(in.Spec.Components[common.ComponentEngine])
+	_, oldClass := resolveStorage(old.Spec.Components[common.ComponentEngine])
+	errs := validateStorageClassTransition(enginePath.Child("storage", "storageClass"), oldClass, class)
 	errs = append(errs, validateVersionTransition(spec, common.ComponentEngine, in, old)...)
 	if !wasReplicated {
 		return errs
 	}
 
-	size, class = keeperVolume(in)
-	oldSize, oldClass = keeperVolume(old)
+	class, oldClass = keeperStorageClass(in), keeperStorageClass(old)
 	if keeper := in.Spec.Components[common.ComponentKeeper]; keeper.Storage == nil || keeper.Storage.StorageClass == nil {
 		// Sync keeps the class of the deployed Keeper.
 		class = oldClass
 	}
-	errs = append(errs, validateStorageTransition(keeperPath.Child("storage"), oldSize, size, oldClass, class)...)
+	errs = append(errs, validateStorageClassTransition(keeperPath.Child("storage", "storageClass"), oldClass, class)...)
 	return append(errs, validateVersionTransition(spec, common.ComponentKeeper, in, old)...)
 }
 
-// keeperVolume returns the Keeper volume size and the StorageClass a new
-// Keeper gets: its own, else the engine's.
-func keeperVolume(instance *corev1alpha1.Instance) (resource.Quantity, *string) {
-	keeper := instance.Spec.Components[common.ComponentKeeper]
-	size := resource.MustParse(common.KeeperDefaultStorage)
-	if keeper.Storage != nil && !keeper.Storage.Size.IsZero() {
-		size = keeper.Storage.Size.DeepCopy()
-	}
-	if keeper.Storage != nil && keeper.Storage.StorageClass != nil {
-		return size, keeper.Storage.StorageClass
+// keeperStorageClass returns the StorageClass a new Keeper gets: its own,
+// else the engine's.
+func keeperStorageClass(instance *corev1alpha1.Instance) *string {
+	if keeper := instance.Spec.Components[common.ComponentKeeper]; keeper.Storage != nil && keeper.Storage.StorageClass != nil {
+		return keeper.Storage.StorageClass
 	}
 	_, class := resolveStorage(instance.Spec.Components[common.ComponentEngine])
-	return size, class
+	return class
 }
 
-// validateStorageTransition rejects shrinking volumes or moving them to
-// another StorageClass: neither can be applied to existing PVCs.
-func validateStorageTransition(path *field.Path, fromSize, toSize resource.Quantity, fromClass, toClass *string) field.ErrorList {
-	var errs field.ErrorList
-	if toSize.Cmp(fromSize) < 0 {
-		errs = append(errs, field.Forbidden(path.Child("size"),
-			fmt.Sprintf("cannot shrink from %s to %s", fromSize.String(), toSize.String())))
+// validateStorageClassTransition rejects moving volumes to another
+// StorageClass, which existing PVCs cannot follow.
+func validateStorageClassTransition(path *field.Path, fromClass, toClass *string) field.ErrorList {
+	if equalStorageClass(fromClass, toClass) {
+		return nil
 	}
-	if !equalStorageClass(fromClass, toClass) {
-		errs = append(errs, field.Forbidden(path.Child("storageClass"), fmt.Sprintf("cannot change from %s to %s",
-			describeStorageClass(fromClass), describeStorageClass(toClass))))
-	}
-	return errs
+	return field.ErrorList{field.Forbidden(path, fmt.Sprintf("cannot change from %s to %s",
+		describeStorageClass(fromClass), describeStorageClass(toClass)))}
 }
 
 // validateVersionTransition rejects downgrading a component: newer releases
@@ -356,9 +347,9 @@ func validateCredentials(c *controller.Context) (field.ErrorList, error) {
 }
 
 // validateDeployedEngine checks the engine against the running
-// ClickHouseInstallation: its volumes grow only on a StorageClass that allows
-// it, and ClickHouse is not downgraded, also when a provider release changes
-// the version an Instance gets by default.
+// ClickHouseInstallation: its volumes do not shrink and grow only on a
+// StorageClass that allows it, and ClickHouse is not downgraded, also when a
+// provider release changes the version an Instance gets by default.
 func validateDeployedEngine(c *controller.Context) (field.ErrorList, error) {
 	chi := &chiv1.ClickHouseInstallation{}
 	found, err := getOptional(c, chi, c.Name())
@@ -370,7 +361,7 @@ func validateDeployedEngine(c *controller.Context) (field.ErrorList, error) {
 	var errs field.ErrorList
 	if current := dataVolumeClaimTemplate(chi); current != nil {
 		size, _ := resolveStorage(engine)
-		errs, err = validateExpandable(c, enginePath.Child("storage", "size"), current, size,
+		errs, err = validateResize(c, enginePath.Child("storage", "size"), current, size,
 			client.MatchingLabels{common.LabelCHIName: c.Name()})
 		if err != nil {
 			return nil, err
@@ -385,8 +376,8 @@ func validateDeployedEngine(c *controller.Context) (field.ErrorList, error) {
 
 // validateDeployedKeeper checks the keeper component against the running
 // ClickHouseKeeperInstallation, which exists before ClickHouse does: its
-// volumes keep their StorageClass and grow only on one that allows it, and
-// Keeper is not downgraded.
+// volumes keep their StorageClass, do not shrink and grow only on a
+// StorageClass that allows it, and Keeper is not downgraded.
 func validateDeployedKeeper(c *controller.Context) (field.ErrorList, error) {
 	if c.Instance().GetTopologyType() != common.TopologyReplicated {
 		return nil, nil
@@ -410,12 +401,12 @@ func validateDeployedKeeper(c *controller.Context) (field.ErrorList, error) {
 			errs = append(errs, field.Forbidden(keeperPath.Child("storage", "storageClass"), fmt.Sprintf(
 				"cannot change from %s to %s", describeStorageClass(current.Spec.StorageClassName), describeStorageClass(class))))
 		}
-		growErrs, err := validateExpandable(c, keeperPath.Child("storage", "size"), current, size,
+		resizeErrs, err := validateResize(c, keeperPath.Child("storage", "size"), current, size,
 			client.MatchingLabels{common.LabelCHKName: keeperCRName(c.Name())})
 		if err != nil {
 			return nil, err
 		}
-		errs = append(errs, growErrs...)
+		errs = append(errs, resizeErrs...)
 	}
 	if image, err := resolveImage(c, common.ComponentKeeper, keeper); err == nil {
 		errs = append(errs, validateDowngrade(imageSourcePath(c.Instance(), common.ComponentKeeper), currentKeeperImage(chk), image)...)
@@ -423,11 +414,11 @@ func validateDeployedKeeper(c *controller.Context) (field.ErrorList, error) {
 	return errs, nil
 }
 
-// validateExpandable rejects growing volumes past the size of the deployed
-// volume claim template when their StorageClass does not allow volume
-// expansion: the operator's resize of the PVCs would be refused, leaving the
-// change stuck.
-func validateExpandable(
+// validateResize compares volumes with the deployed volume claim template. It
+// rejects shrinking them, and growing them when their StorageClass does not
+// allow volume expansion: the operator's resize of the PVCs would be refused,
+// leaving the change stuck.
+func validateResize(
 	c *controller.Context,
 	path *field.Path,
 	current *chiv1.VolumeClaimTemplate,
@@ -435,8 +426,12 @@ func validateExpandable(
 	selector client.MatchingLabels,
 ) (field.ErrorList, error) {
 	currentSize, ok := current.Spec.Resources.Requests[corev1.ResourceStorage]
-	if !ok || size.Cmp(currentSize) <= 0 {
+	if !ok || size.Cmp(currentSize) == 0 {
 		return nil, nil
+	}
+	if size.Cmp(currentSize) < 0 {
+		return field.ErrorList{field.Forbidden(path,
+			fmt.Sprintf("cannot shrink from %s to %s", currentSize.String(), size.String()))}, nil
 	}
 	pvcs := &corev1.PersistentVolumeClaimList{}
 	if err := c.List(pvcs, selector); err != nil {
