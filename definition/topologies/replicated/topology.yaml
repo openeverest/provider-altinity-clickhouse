@@ -100,161 +100,30 @@ ui:
             - memory
             - disk
 
-    keeper:
-      label: "ClickHouse Keeper"
-      description: "Resources and storage per Keeper node. The replicated topology always runs 3 Keeper nodes."
+    # dbaas: form cho khách chỉ giữ version, tài nguyên và TLS. Monitoring, StorageClass, chính sách giữ dữ
+    # liệu, kiểu Service và config tự do là việc của platform: bỏ khỏi form, provider dùng mặc định
+    # (không PodMonitor, StorageClass mặc định, Retain, ClusterIP, không config thêm).
+    security:
+      label: "Security"
+      description: "Encrypt client connections."
       components:
-        compute:
-          uiType: group
-          groupType: line
-          components:
-            cpu:
-              uiType: number
-              path: spec.components.keeper.resources.limits.cpu
-              fieldParams:
-                label: "CPU"
-                defaultValue: 0.5
-                step: 0.5
-              validation:
-                required: true
-                min: 0.5
-            memory:
-              uiType: number
-              path: spec.components.keeper.resources.limits.memory
-              fieldParams:
-                label: "Memory"
-                defaultValue: 1
-                step: 1
-                badge: "Gi"
-                badgeToApi: true
-              validation:
-                required: true
-                min: 1
-            disk:
-              uiType: number
-              path: spec.components.keeper.storage.size
-              fieldParams:
-                label: "Disk"
-                defaultValue: 10
-                badge: "Gi"
-                badgeToApi: true
-              validation:
-                required: true
-                int: true
-                min: 5
-                modes:
-                  edit:
-                    celExpressions:
-                      - celExpr: "spec.components.keeper.storage.size >= original.spec.components.keeper.storage.size"
-                        message: "Disk size cannot be decreased"
-          componentsOrder:
-            - cpu
-            - memory
-            - disk
-
-    monitoring:
-      label: "Monitoring"
-      description: "Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled."
-      components:
-        podMonitor:
-          uiType: select
-          path: spec.components.engine.parameters.podMonitor
-          fieldParams:
-            label: "Prometheus PodMonitor"
-            defaultValue: "disabled"
-            options:
-              - label: "Disabled"
-                value: "disabled"
-              - label: "Enabled"
-                value: "enabled"
-
-    advanced:
-      label: "Advanced"
-      description: "Optional advanced settings."
-      components:
-        storageClass:
-          uiType: select
-          path: spec.components.engine.storage.storageClass
-          fieldParams:
-            label: "Storage class"
-            displayEmpty: true
-            modes:
-              edit:
-                disabled: true
-          dataSource:
-            provider: storageClasses
-        storageReclaimPolicy:
-          uiType: select
-          path: spec.components.engine.parameters.storageReclaimPolicy
-          fieldParams:
-            label: "Data on deletion"
-            helperText: "Whether the ClickHouse and Keeper data volumes are kept or deleted when the instance is deleted or a replica is removed. Kept volumes are re-attached to a new instance with the same name and namespace."
-            defaultValue: "Retain"
-            options:
-              - label: "Keep (Retain)"
-                value: "Retain"
-              - label: "Delete"
-                value: "Delete"
-        externalAccess:
-          uiType: select
-          path: spec.components.engine.service.serviceType
-          fieldParams:
-            label: "External access"
-            defaultValue: "ClusterIP"
-            options:
-              - label: "ClusterIP"
-                value: "ClusterIP"
-              - label: "LoadBalancer"
-                value: "LoadBalancer"
-              - label: "NodePort"
-                value: "NodePort"
         tls:
           uiType: select
           path: spec.components.engine.parameters.tls.enabled
           fieldParams:
             label: "TLS"
-            helperText: "Encrypt client connections. Requires cert-manager in the cluster."
+            helperText: "Clients connect over HTTPS (8443) and native TLS (9440) only."
             defaultValue: "disabled"
             options:
               - label: "Disabled"
                 value: "disabled"
               - label: "Enabled"
                 value: "enabled"
-        tlsMode:
-          uiType: select
-          path: spec.components.engine.parameters.tls.mode
-          fieldParams:
-            label: "TLS mode"
-            helperText: "Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too."
-            defaultValue: "required"
-            options:
-              - label: "Required"
-                value: "required"
-              - label: "Optional"
-                value: "optional"
-        configuration:
-          uiType: text
-          path: spec.components.engine.parameters.configuration
-          fieldParams:
-            label: "ClickHouse configuration"
-            placeholder: |2
-              max_concurrent_queries: 200
-              logger/level: information
-            multiline: true
-            minRows: 3
-            maxRows: 8
       componentsOrder:
-        - storageClass
-        - storageReclaimPolicy
-        - externalAccess
         - tls
-        - tlsMode
-        - configuration
 
   sectionsOrder:
     - databaseVersion
     - scaling
     - resources
-    - keeper
-    - monitoring
-    - advanced
+    - security

@@ -77,107 +77,29 @@ ui:
             - memory
             - disk
 
-    monitoring:
-      label: "Monitoring"
-      description: "Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled."
+    # dbaas: form cho khách chỉ giữ version, tài nguyên và TLS. Monitoring, StorageClass, chính sách giữ dữ
+    # liệu, kiểu Service và config tự do là việc của platform: bỏ khỏi form, provider dùng mặc định
+    # (không PodMonitor, StorageClass mặc định, Retain, ClusterIP, không config thêm).
+    security:
+      label: "Security"
+      description: "Encrypt client connections."
       components:
-        podMonitor:
-          uiType: select
-          path: spec.components.engine.parameters.podMonitor
-          fieldParams:
-            label: "Prometheus PodMonitor"
-            defaultValue: "disabled"
-            options:
-              - label: "Disabled"
-                value: "disabled"
-              - label: "Enabled"
-                value: "enabled"
-
-    advanced:
-      label: "Advanced"
-      description: "Optional advanced settings."
-      components:
-        storageClass:
-          uiType: select
-          path: spec.components.engine.storage.storageClass
-          fieldParams:
-            label: "Storage class"
-            displayEmpty: true
-            modes:
-              edit:
-                disabled: true
-          dataSource:
-            provider: storageClasses
-        storageReclaimPolicy:
-          uiType: select
-          path: spec.components.engine.parameters.storageReclaimPolicy
-          fieldParams:
-            label: "Data on deletion"
-            helperText: "Whether the ClickHouse data volume are kept or deleted when the instance is deleted or a replica is removed. Kept volumes are re-attached to a new instance with the same name and namespace."
-            defaultValue: "Retain"
-            options:
-              - label: "Keep (Retain)"
-                value: "Retain"
-              - label: "Delete"
-                value: "Delete"
-        externalAccess:
-          uiType: select
-          path: spec.components.engine.service.serviceType
-          fieldParams:
-            label: "External access"
-            defaultValue: "ClusterIP"
-            options:
-              - label: "ClusterIP"
-                value: "ClusterIP"
-              - label: "LoadBalancer"
-                value: "LoadBalancer"
-              - label: "NodePort"
-                value: "NodePort"
         tls:
           uiType: select
           path: spec.components.engine.parameters.tls.enabled
           fieldParams:
             label: "TLS"
-            helperText: "Encrypt client connections. Requires cert-manager in the cluster."
+            helperText: "Clients connect over HTTPS (8443) and native TLS (9440) only."
             defaultValue: "disabled"
             options:
               - label: "Disabled"
                 value: "disabled"
               - label: "Enabled"
                 value: "enabled"
-        tlsMode:
-          uiType: select
-          path: spec.components.engine.parameters.tls.mode
-          fieldParams:
-            label: "TLS mode"
-            helperText: "Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too."
-            defaultValue: "required"
-            options:
-              - label: "Required"
-                value: "required"
-              - label: "Optional"
-                value: "optional"
-        configuration:
-          uiType: text
-          path: spec.components.engine.parameters.configuration
-          fieldParams:
-            label: "ClickHouse configuration"
-            placeholder: |2
-              max_concurrent_queries: 200
-              logger/level: information
-            multiline: true
-            minRows: 3
-            maxRows: 8
       componentsOrder:
-        - storageClass
-        - storageReclaimPolicy
-        - externalAccess
         - tls
-        - tlsMode
-        - configuration
 
   sectionsOrder:
     - databaseVersion
     - resources
-    - monitoring
-    - advanced
+    - security

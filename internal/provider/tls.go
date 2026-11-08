@@ -194,11 +194,11 @@ func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta
 // replicas' hostnames in remote_servers) and the LoadBalancer address, if any.
 func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerReference) error {
 	replicas := 1
-	replicated := c.Instance().GetTopologyType() == common.TopologyReplicated
+	replicated := usesKeeper(c)
 	if replicated {
 		replicas = replicasCount(c)
 	}
-	dnsNames := serverDNSNames(c.Name(), c.Namespace(), replicas)
+	dnsNames := serverDNSNames(c.Name(), c.Namespace(), shardsCount(c), replicas)
 	if replicated {
 		dnsNames = append(dnsNames, keeperDNSNames(c.Name(), c.Namespace())...)
 	}
@@ -225,8 +225,8 @@ func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerRefer
 // serverDNSNames returns the DNS names the server certificate must cover: the
 // client Service and each replica's Service, in every in-cluster form, and
 // each replica's pod names, which replicas fetch parts from each other by.
-func serverDNSNames(instanceName, namespace string, replicas int) []string {
-	replicaServices := replicaServiceNames(instanceName, replicas)
+func serverDNSNames(instanceName, namespace string, shards, replicas int) []string {
+	replicaServices := replicaServiceNames(instanceName, shards, replicas)
 	names := serviceDNSNames(append([]string{clientServiceName(instanceName)}, replicaServices...), namespace)
 	for _, svc := range replicaServices {
 		names = append(names, fmt.Sprintf("*.%s.%s.svc.cluster.local", svc, namespace))
@@ -264,11 +264,13 @@ func clientServiceName(instanceName string) string {
 // chi-{chi}-{cluster}-{shard}-{replica}, which are also the replicas'
 // hostnames in remote_servers. The operator cuts the CHI name to 60
 // characters and trims separators from the ends.
-func replicaServiceNames(instanceName string, replicas int) []string {
+func replicaServiceNames(instanceName string, shards, replicas int) []string {
 	chiName := trimCRName(instanceName)
-	names := make([]string, 0, replicas)
-	for i := 0; i < replicas; i++ {
-		names = append(names, fmt.Sprintf("chi-%s-%s-0-%d", chiName, common.CHIClusterName, i))
+	names := make([]string, 0, shards*replicas)
+	for s := 0; s < shards; s++ {
+		for i := 0; i < replicas; i++ {
+			names = append(names, fmt.Sprintf("chi-%s-%s-%d-%d", chiName, common.CHIClusterName, s, i))
+		}
 	}
 	return names
 }

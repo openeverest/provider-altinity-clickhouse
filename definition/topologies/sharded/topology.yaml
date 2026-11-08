@@ -1,0 +1,155 @@
+# Sharded topology: ClickHouse split into shards, each with one or more replicas, coordinated by
+# ClickHouse Keeper (3 nodes, Raft quorum, same as the replicated topology).
+# Data is spread across shards by the client (Distributed tables over ReplicatedMergeTree on the
+# "clickhouse" cluster); shards can be added but not removed, and existing data is not rebalanced.
+#
+# Resources:
+#   engine   - shards x replicas ClickHouse pods (default 2 shards x 1 replica)
+#   keeper   - 3 Keeper nodes, always provisioned with the provider defaults
+
+config:
+  parametersSchema: ShardedTopologyParameters
+  components:
+    engine: {}
+    keeper: {}
+
+ui:
+  sections:
+    databaseVersion:
+      label: "Database Version"
+      description: "Select the ClickHouse version to deploy."
+      components:
+        version:
+          uiType: select
+          path: spec.version
+          fieldParams:
+            label: "ClickHouse Version"
+            optionsPath: spec.versions
+            optionsPathConfig:
+              labelPath: "name"
+              valuePath: "name"
+            helperText: "Upgrades are applied as a rolling restart. Downgrades are rejected."
+          validation:
+            required: true
+
+    scaling:
+      label: "Scaling"
+      description: "Shards split the data; replicas copy each shard. Shards can be added later but not removed."
+      components:
+        layout:
+          uiType: group
+          groupType: line
+          components:
+            shards:
+              uiType: number
+              path: spec.topology.parameters.shards
+              fieldParams:
+                label: "Shards"
+                defaultValue: 2
+                step: 1
+              validation:
+                required: true
+                int: true
+                min: 2
+                modes:
+                  edit:
+                    celExpressions:
+                      - celExpr: "spec.topology.parameters.shards >= original.spec.topology.parameters.shards"
+                        message: "Shards cannot be decreased"
+            replicas:
+              uiType: number
+              path: spec.components.engine.replicas
+              fieldParams:
+                label: "Replicas per shard"
+                defaultValue: 1
+                step: 1
+                modes:
+                  edit:
+                    disabled: true
+              validation:
+                required: true
+                int: true
+                min: 1
+          componentsOrder:
+            - shards
+            - replicas
+
+    resources:
+      label: "Resources"
+      description: "Compute resources and storage per ClickHouse pod (each replica of each shard)."
+      components:
+        compute:
+          uiType: group
+          groupType: line
+          components:
+            cpu:
+              uiType: number
+              path: spec.components.engine.resources.limits.cpu
+              fieldParams:
+                label: "CPU"
+                defaultValue: 2
+                step: 1
+              validation:
+                required: true
+                min: 1
+            memory:
+              uiType: number
+              path: spec.components.engine.resources.limits.memory
+              fieldParams:
+                label: "Memory"
+                defaultValue: 8
+                step: 1
+                badge: "Gi"
+                badgeToApi: true
+              validation:
+                required: true
+                min: 2
+            disk:
+              uiType: number
+              path: spec.components.engine.storage.size
+              fieldParams:
+                label: "Disk"
+                defaultValue: 50
+                badge: "Gi"
+                badgeToApi: true
+              validation:
+                required: true
+                int: true
+                min: 10
+                modes:
+                  edit:
+                    celExpressions:
+                      - celExpr: "spec.components.engine.storage.size >= original.spec.components.engine.storage.size"
+                        message: "Disk size cannot be decreased"
+          componentsOrder:
+            - cpu
+            - memory
+            - disk
+
+    # dbaas: form cho khách chỉ giữ version, tài nguyên và TLS. Monitoring, StorageClass, chính sách giữ dữ
+    # liệu, kiểu Service và config tự do là việc của platform: bỏ khỏi form, provider dùng mặc định
+    # (không PodMonitor, StorageClass mặc định, Retain, ClusterIP, không config thêm).
+    security:
+      label: "Security"
+      description: "Encrypt client connections."
+      components:
+        tls:
+          uiType: select
+          path: spec.components.engine.parameters.tls.enabled
+          fieldParams:
+            label: "TLS"
+            helperText: "Clients connect over HTTPS (8443) and native TLS (9440) only."
+            defaultValue: "disabled"
+            options:
+              - label: "Disabled"
+                value: "disabled"
+              - label: "Enabled"
+                value: "enabled"
+      componentsOrder:
+        - tls
+
+  sectionsOrder:
+    - databaseVersion
+    - scaling
+    - resources
+    - security

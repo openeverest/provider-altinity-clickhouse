@@ -148,94 +148,31 @@ spec:
       components:
         engine: {}
         keeper: {}
+    sharded:
+      components:
+        engine: {}
+        keeper: {}
+      parametersSchema:
+        openAPIV3Schema:
+          description: |-
+            ShardedTopologyParameters configures the sharded topology
+            (Instance.spec.topology.parameters).
+          properties:
+            shards:
+              description: |-
+                Shards is the number of shards. Each shard runs
+                spec.components.engine.replicas replicas. Shards can be added but not
+                removed, and existing data is not rebalanced onto new shards.
+              format: int32
+              minimum: 2
+              type: integer
+          type: object
     standalone:
       components:
         engine: {}
   uiSchema:
     replicated:
       sections:
-        advanced:
-          components:
-            configuration:
-              fieldParams:
-                label: ClickHouse configuration
-                maxRows: 8
-                minRows: 3
-                multiline: true
-                placeholder: |
-                  max_concurrent_queries: 200
-                  logger/level: information
-              path: spec.components.engine.parameters.configuration
-              uiType: text
-            externalAccess:
-              fieldParams:
-                defaultValue: ClusterIP
-                label: External access
-                options:
-                  - label: ClusterIP
-                    value: ClusterIP
-                  - label: LoadBalancer
-                    value: LoadBalancer
-                  - label: NodePort
-                    value: NodePort
-              path: spec.components.engine.service.serviceType
-              uiType: select
-            storageClass:
-              dataSource:
-                provider: storageClasses
-              fieldParams:
-                displayEmpty: true
-                label: Storage class
-                modes:
-                  edit:
-                    disabled: true
-              path: spec.components.engine.storage.storageClass
-              uiType: select
-            storageReclaimPolicy:
-              fieldParams:
-                defaultValue: Retain
-                helperText: Whether the ClickHouse and Keeper data volumes are kept or deleted when the instance is deleted or a replica is removed. Kept volumes are re-attached to a new instance with the same name and namespace.
-                label: Data on deletion
-                options:
-                  - label: Keep (Retain)
-                    value: Retain
-                  - label: Delete
-                    value: Delete
-              path: spec.components.engine.parameters.storageReclaimPolicy
-              uiType: select
-            tls:
-              fieldParams:
-                defaultValue: disabled
-                helperText: Encrypt client connections. Requires cert-manager in the cluster.
-                label: TLS
-                options:
-                  - label: Disabled
-                    value: disabled
-                  - label: Enabled
-                    value: enabled
-              path: spec.components.engine.parameters.tls.enabled
-              uiType: select
-            tlsMode:
-              fieldParams:
-                defaultValue: required
-                helperText: Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too.
-                label: TLS mode
-                options:
-                  - label: Required
-                    value: required
-                  - label: Optional
-                    value: optional
-              path: spec.components.engine.parameters.tls.mode
-              uiType: select
-          componentsOrder:
-            - storageClass
-            - storageReclaimPolicy
-            - externalAccess
-            - tls
-            - tlsMode
-            - configuration
-          description: Optional advanced settings.
-          label: Advanced
         databaseVersion:
           components:
             version:
@@ -253,72 +190,6 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
-        keeper:
-          components:
-            compute:
-              components:
-                cpu:
-                  fieldParams:
-                    defaultValue: 0.5
-                    label: CPU
-                    step: 0.5
-                  path: spec.components.keeper.resources.limits.cpu
-                  uiType: number
-                  validation:
-                    min: 0.5
-                    required: true
-                disk:
-                  fieldParams:
-                    badge: Gi
-                    badgeToApi: true
-                    defaultValue: 10
-                    label: Disk
-                  path: spec.components.keeper.storage.size
-                  uiType: number
-                  validation:
-                    int: true
-                    min: 5
-                    modes:
-                      edit:
-                        celExpressions:
-                          - celExpr: spec.components.keeper.storage.size >= original.spec.components.keeper.storage.size
-                            message: Disk size cannot be decreased
-                    required: true
-                memory:
-                  fieldParams:
-                    badge: Gi
-                    badgeToApi: true
-                    defaultValue: 1
-                    label: Memory
-                    step: 1
-                  path: spec.components.keeper.resources.limits.memory
-                  uiType: number
-                  validation:
-                    min: 1
-                    required: true
-              componentsOrder:
-                - cpu
-                - memory
-                - disk
-              groupType: line
-              uiType: group
-          description: Resources and storage per Keeper node. The replicated topology always runs 3 Keeper nodes.
-          label: ClickHouse Keeper
-        monitoring:
-          components:
-            podMonitor:
-              fieldParams:
-                defaultValue: disabled
-                label: Prometheus PodMonitor
-                options:
-                  - label: Disabled
-                    value: disabled
-                  - label: Enabled
-                    value: enabled
-              path: spec.components.engine.parameters.podMonitor
-              uiType: select
-          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
-          label: Monitoring
         resources:
           components:
             compute:
@@ -387,68 +258,12 @@ spec:
                 required: true
           description: Number of ClickHouse replicas. Minimum 2 for HA.
           label: Scaling
-      sectionsOrder:
-        - databaseVersion
-        - scaling
-        - resources
-        - keeper
-        - monitoring
-        - advanced
-    standalone:
-      sections:
-        advanced:
+        security:
           components:
-            configuration:
-              fieldParams:
-                label: ClickHouse configuration
-                maxRows: 8
-                minRows: 3
-                multiline: true
-                placeholder: |
-                  max_concurrent_queries: 200
-                  logger/level: information
-              path: spec.components.engine.parameters.configuration
-              uiType: text
-            externalAccess:
-              fieldParams:
-                defaultValue: ClusterIP
-                label: External access
-                options:
-                  - label: ClusterIP
-                    value: ClusterIP
-                  - label: LoadBalancer
-                    value: LoadBalancer
-                  - label: NodePort
-                    value: NodePort
-              path: spec.components.engine.service.serviceType
-              uiType: select
-            storageClass:
-              dataSource:
-                provider: storageClasses
-              fieldParams:
-                displayEmpty: true
-                label: Storage class
-                modes:
-                  edit:
-                    disabled: true
-              path: spec.components.engine.storage.storageClass
-              uiType: select
-            storageReclaimPolicy:
-              fieldParams:
-                defaultValue: Retain
-                helperText: Whether the ClickHouse data volume are kept or deleted when the instance is deleted or a replica is removed. Kept volumes are re-attached to a new instance with the same name and namespace.
-                label: Data on deletion
-                options:
-                  - label: Keep (Retain)
-                    value: Retain
-                  - label: Delete
-                    value: Delete
-              path: spec.components.engine.parameters.storageReclaimPolicy
-              uiType: select
             tls:
               fieldParams:
                 defaultValue: disabled
-                helperText: Encrypt client connections. Requires cert-manager in the cluster.
+                helperText: Clients connect over HTTPS (8443) and native TLS (9440) only.
                 label: TLS
                 options:
                   - label: Disabled
@@ -457,27 +272,17 @@ spec:
                     value: enabled
               path: spec.components.engine.parameters.tls.enabled
               uiType: select
-            tlsMode:
-              fieldParams:
-                defaultValue: required
-                helperText: Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too.
-                label: TLS mode
-                options:
-                  - label: Required
-                    value: required
-                  - label: Optional
-                    value: optional
-              path: spec.components.engine.parameters.tls.mode
-              uiType: select
           componentsOrder:
-            - storageClass
-            - storageReclaimPolicy
-            - externalAccess
             - tls
-            - tlsMode
-            - configuration
-          description: Optional advanced settings.
-          label: Advanced
+          description: Encrypt client connections.
+          label: Security
+      sectionsOrder:
+        - databaseVersion
+        - scaling
+        - resources
+        - security
+    sharded:
+      sections:
         databaseVersion:
           components:
             version:
@@ -495,21 +300,140 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
-        monitoring:
+        resources:
           components:
-            podMonitor:
+            compute:
+              components:
+                cpu:
+                  fieldParams:
+                    defaultValue: 2
+                    label: CPU
+                    step: 1
+                  path: spec.components.engine.resources.limits.cpu
+                  uiType: number
+                  validation:
+                    min: 1
+                    required: true
+                disk:
+                  fieldParams:
+                    badge: Gi
+                    badgeToApi: true
+                    defaultValue: 50
+                    label: Disk
+                  path: spec.components.engine.storage.size
+                  uiType: number
+                  validation:
+                    int: true
+                    min: 10
+                    modes:
+                      edit:
+                        celExpressions:
+                          - celExpr: spec.components.engine.storage.size >= original.spec.components.engine.storage.size
+                            message: Disk size cannot be decreased
+                    required: true
+                memory:
+                  fieldParams:
+                    badge: Gi
+                    badgeToApi: true
+                    defaultValue: 8
+                    label: Memory
+                    step: 1
+                  path: spec.components.engine.resources.limits.memory
+                  uiType: number
+                  validation:
+                    min: 2
+                    required: true
+              componentsOrder:
+                - cpu
+                - memory
+                - disk
+              groupType: line
+              uiType: group
+          description: Compute resources and storage per ClickHouse pod (each replica of each shard).
+          label: Resources
+        scaling:
+          components:
+            layout:
+              components:
+                replicas:
+                  fieldParams:
+                    defaultValue: 1
+                    label: Replicas per shard
+                    modes:
+                      edit:
+                        disabled: true
+                    step: 1
+                  path: spec.components.engine.replicas
+                  uiType: number
+                  validation:
+                    int: true
+                    min: 1
+                    required: true
+                shards:
+                  fieldParams:
+                    defaultValue: 2
+                    label: Shards
+                    step: 1
+                  path: spec.topology.parameters.shards
+                  uiType: number
+                  validation:
+                    int: true
+                    min: 2
+                    modes:
+                      edit:
+                        celExpressions:
+                          - celExpr: spec.topology.parameters.shards >= original.spec.topology.parameters.shards
+                            message: Shards cannot be decreased
+                    required: true
+              componentsOrder:
+                - shards
+                - replicas
+              groupType: line
+              uiType: group
+          description: Shards split the data; replicas copy each shard. Shards can be added later but not removed.
+          label: Scaling
+        security:
+          components:
+            tls:
               fieldParams:
                 defaultValue: disabled
-                label: Prometheus PodMonitor
+                helperText: Clients connect over HTTPS (8443) and native TLS (9440) only.
+                label: TLS
                 options:
                   - label: Disabled
                     value: disabled
                   - label: Enabled
                     value: enabled
-              path: spec.components.engine.parameters.podMonitor
+              path: spec.components.engine.parameters.tls.enabled
               uiType: select
-          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
-          label: Monitoring
+          componentsOrder:
+            - tls
+          description: Encrypt client connections.
+          label: Security
+      sectionsOrder:
+        - databaseVersion
+        - scaling
+        - resources
+        - security
+    standalone:
+      sections:
+        databaseVersion:
+          components:
+            version:
+              fieldParams:
+                helperText: Upgrades are applied as a rolling restart. Downgrades are rejected.
+                label: ClickHouse Version
+                optionsPath: spec.versions
+                optionsPathConfig:
+                  defaultValuePath: spec.defaultVersion
+                  labelPath: name
+                  valuePath: name
+              path: spec.version
+              uiType: select
+              validation:
+                required: true
+          description: Select the ClickHouse version to deploy.
+          label: Database Version
         resources:
           components:
             compute:
@@ -561,11 +485,28 @@ spec:
               uiType: group
           description: Configure compute resources and storage for the ClickHouse instance.
           label: Resources
+        security:
+          components:
+            tls:
+              fieldParams:
+                defaultValue: disabled
+                helperText: Clients connect over HTTPS (8443) and native TLS (9440) only.
+                label: TLS
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: Enabled
+                    value: enabled
+              path: spec.components.engine.parameters.tls.enabled
+              uiType: select
+          componentsOrder:
+            - tls
+          description: Encrypt client connections.
+          label: Security
       sectionsOrder:
         - databaseVersion
         - resources
-        - monitoring
-        - advanced
+        - security
   versions:
     - components:
         engine: 26.8.31.2

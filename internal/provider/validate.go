@@ -35,6 +35,7 @@ import (
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/definition/components"
+	"github.com/openeverest/provider-altinity-clickhouse/definition/topologies/sharded"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
@@ -75,6 +76,7 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	}
 
 	errs := validateEngine(in.Instance, engine)
+	errs = append(errs, validateShards(in.Instance)...)
 	errs = append(errs, validateKeeper(in.Instance)...)
 	errs = append(errs, validateTransitions(&in.Provider.Spec, in.Instance, in.Old)...)
 	return controller.ValidationResult{Errors: errs}
@@ -115,13 +117,15 @@ func validateEngine(instance *corev1alpha1.Instance, engine corev1alpha1.Compone
 	errs = append(errs, validateRequestsWithinLimits(enginePath, resolveResources(engine))...)
 
 	replicasPath := enginePath.Child("replicas")
-	switch replicated := instance.GetTopologyType() == common.TopologyReplicated; {
+	switch topology := instance.GetTopologyType(); {
 	case engine.Replicas == nil:
-	case replicated && *engine.Replicas < 2:
+	case topology == common.TopologyReplicated && *engine.Replicas < 2:
 		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas, "must be at least 2 in the replicated topology"))
-	case !replicated && *engine.Replicas > 1:
+	case topology == common.TopologySharded && *engine.Replicas < 1:
+		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas, "must be at least 1 in the sharded topology"))
+	case topology != common.TopologyReplicated && topology != common.TopologySharded && *engine.Replicas > 1:
 		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas,
-			"the standalone topology runs a single replica; use the replicated topology for more"))
+			"the standalone topology runs a single replica; use the replicated or sharded topology for more"))
 	}
 
 	var params components.ClickHouseParameters
@@ -162,15 +166,37 @@ func validateRequestsWithinLimits(path *field.Path, resources corev1.ResourceReq
 	return errs
 }
 
-// validateKeeper checks the keeper component, which only the replicated
-// topology uses and whose ensemble size is fixed.
+// validateShards checks the sharded topology's shard count, and that no other
+// topology carries a shards parameter it would ignore.
+func validateShards(instance *corev1alpha1.Instance) field.ErrorList {
+	var params sharded.ShardedTopologyParameters
+	topologyPath := field.NewPath("spec", "topology")
+	hasParams := false
+	if topology := instance.Spec.Topology; topology != nil && topology.Parameters != nil {
+		hasParams = true
+		_ = json.Unmarshal(topology.Parameters.Raw, &params)
+	}
+	if instance.GetTopologyType() != common.TopologySharded {
+		if hasParams && params.Shards != 0 {
+			return field.ErrorList{field.Forbidden(topologyPath.Child("parameters", "shards"), "shards is only used by the sharded topology")}
+		}
+		return nil
+	}
+	if hasParams && params.Shards != 0 && params.Shards < 2 {
+		return field.ErrorList{field.Invalid(topologyPath.Child("parameters", "shards"), params.Shards, "must be at least 2 in the sharded topology")}
+	}
+	return nil
+}
+
+// validateKeeper checks the keeper component, which only the replicated and
+// sharded topologies use and whose ensemble size is fixed.
 func validateKeeper(instance *corev1alpha1.Instance) field.ErrorList {
 	keeper, ok := instance.Spec.Components[common.ComponentKeeper]
 	if !ok {
 		return nil
 	}
-	if instance.GetTopologyType() != common.TopologyReplicated {
-		return field.ErrorList{field.Forbidden(keeperPath, "only the replicated topology runs Keeper")}
+	if !usesKeeperType(instance.GetTopologyType()) {
+		return field.ErrorList{field.Forbidden(keeperPath, "only the replicated and sharded topologies run Keeper")}
 	}
 
 	var errs field.ErrorList
@@ -229,19 +255,35 @@ func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.
 	if old == nil || old.Status.Phase == "" || old.Status.Phase == corev1alpha1.InstancePhasePending {
 		return nil
 	}
+	wasSharded := old.GetTopologyType() == common.TopologySharded
+	isSharded := in.GetTopologyType() == common.TopologySharded
+	if (wasSharded && !isSharded) || (!wasSharded && isSharded) {
+		return field.ErrorList{field.Forbidden(field.NewPath("spec", "topology", "type"), fmt.Sprintf(
+			"cannot change from %s to %s", old.GetTopologyType(), in.GetTopologyType()))}
+	}
 	wasReplicated := old.GetTopologyType() == common.TopologyReplicated
 	if wasReplicated && in.GetTopologyType() != common.TopologyReplicated {
 		return field.ErrorList{field.Forbidden(field.NewPath("spec", "topology", "type"), fmt.Sprintf(
-			"cannot change from %s to %s", common.TopologyReplicated, common.TopologyStandalone))}
+			"cannot change from %s to %s", common.TopologyReplicated, in.GetTopologyType()))}
+	}
+
+	var errs field.ErrorList
+	if in.GetTopologyType() == common.TopologySharded {
+		oldShards := shardsCountFromInstance(old)
+		newShards := shardsCountFromInstance(in)
+		if newShards < oldShards {
+			errs = append(errs, field.Forbidden(field.NewPath("spec", "topology", "parameters", "shards"),
+				fmt.Sprintf("cannot be decreased from %d to %d", oldShards, newShards)))
+		}
 	}
 
 	// Sizes are compared with the deployed volumes, in ValidateReferences: a
 	// growth blocked there is stored, and must stay revertible.
 	_, class := resolveStorage(in.Spec.Components[common.ComponentEngine])
 	_, oldClass := resolveStorage(old.Spec.Components[common.ComponentEngine])
-	errs := validateStorageClassTransition(enginePath.Child("storage", "storageClass"), oldClass, class)
+	errs = append(errs, validateStorageClassTransition(enginePath.Child("storage", "storageClass"), oldClass, class)...)
 	errs = append(errs, validateVersionTransition(spec, common.ComponentEngine, in, old)...)
-	if !wasReplicated {
+	if !usesKeeperType(old.GetTopologyType()) {
 		return errs
 	}
 
@@ -371,6 +413,13 @@ func validateDeployedEngine(c *controller.Context) (field.ErrorList, error) {
 	if image, err := resolveImage(c, common.ComponentEngine, engine); err == nil {
 		errs = append(errs, validateDowngrade(imageSourcePath(c.Instance(), common.ComponentEngine), currentEngineImage(chi), image)...)
 	}
+	if isSharded(c) {
+		live := liveShardsCount(chi)
+		if shardsCount(c) < live {
+			errs = append(errs, field.Forbidden(field.NewPath("spec", "topology", "parameters", "shards"),
+				fmt.Sprintf("cannot be decreased from %d to %d", live, shardsCount(c))))
+		}
+	}
 	return errs, nil
 }
 
@@ -379,7 +428,7 @@ func validateDeployedEngine(c *controller.Context) (field.ErrorList, error) {
 // volumes keep their StorageClass, do not shrink and grow only on a
 // StorageClass that allows it, and Keeper is not downgraded.
 func validateDeployedKeeper(c *controller.Context) (field.ErrorList, error) {
-	if c.Instance().GetTopologyType() != common.TopologyReplicated {
+	if !usesKeeper(c) {
 		return nil, nil
 	}
 	chk := &chkv1.ClickHouseKeeperInstallation{}
