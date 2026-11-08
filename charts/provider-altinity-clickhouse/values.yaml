@@ -65,7 +65,7 @@ securityContext:
 service:
   # -- Service type
   type: ClusterIP
-  # -- Service port for the HTTP server (schema/validation endpoints)
+  # -- Service port for the HTTP server (health and readiness probes)
   port: 8082
 
 # -- Resource limits and requests
@@ -116,6 +116,17 @@ extraVolumeMounts: []
 
 # -- Additional volumes to add to the pod
 extraVolumes: []
+
+admission:
+  # -- PEM serving certificate for the Instance admission webhook. Left empty,
+  # the chart generates one and keeps it across upgrades.
+  certs:
+    tls.crt: ""
+    tls.key: ""
+    ca.crt: ""
+  certManager:
+    # -- Issue the serving certificate with cert-manager, which must be installed.
+    enabled: false
 
 # Before `helm upgrade` applies anything, a hook Job runs the new provider
 # image against the live Instances and aborts the upgrade if one would be

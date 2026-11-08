@@ -831,10 +831,8 @@ func replicasCount(c *controller.Context) int {
 	return common.DefaultReplicasCount
 }
 
-// resolveImage returns the container image for a component: an explicit
-// image, else the component's version, else the version the Instance's bundle
-// pins for it (the runtime only fills in versions of components present in
-// spec.components, and only after Validate), else the type's default.
+// resolveImage returns the container image for a component (see
+// componentImage).
 func resolveImage(c *controller.Context, name string, component corev1alpha1.ComponentSpec) (string, error) {
 	if component.Image != "" {
 		return component.Image, nil
@@ -843,9 +841,26 @@ func resolveImage(c *controller.Context, name string, component corev1alpha1.Com
 	if err != nil {
 		return "", fmt.Errorf("get provider spec: %w", err)
 	}
+	return componentImage(spec, c.Instance(), name, component)
+}
+
+// componentImage returns the container image for a component of instance: an
+// explicit image, else the component's version, else the version the
+// Instance's bundle pins for it (the runtime only fills in versions of
+// components present in spec.components, and only after Validate), else the
+// type's default.
+func componentImage(
+	spec *corev1alpha1.ProviderSpec,
+	instance *corev1alpha1.Instance,
+	name string,
+	component corev1alpha1.ComponentSpec,
+) (string, error) {
+	if component.Image != "" {
+		return component.Image, nil
+	}
 	version := component.Version
 	if version == "" {
-		if bundleName := controller.EffectiveVersionBundleName(spec, c.Instance()); bundleName != "" {
+		if bundleName := controller.EffectiveVersionBundleName(spec, instance); bundleName != "" {
 			if bundle, err := controller.ResolveVersionBundle(spec, bundleName); err == nil {
 				version = bundle.Components[name]
 			}

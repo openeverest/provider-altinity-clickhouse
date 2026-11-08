@@ -26,6 +26,9 @@ package provider
 // +kubebuilder:rbac:groups=core.openeverest.io,resources=instances/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core.openeverest.io,resources=providers,verbs=get;list;watch
 
+// Events the provider-runtime records on Instances, such as validation warnings
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+
 // Altinity ClickHouseInstallation
 // +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhouseinstallations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhouseinstallations/status,verbs=get

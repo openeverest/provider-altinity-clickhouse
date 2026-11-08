@@ -105,41 +105,6 @@ func TestBuildCHKStorageClass(t *testing.T) {
 	assert.Nil(t, chk.Spec.Templates.VolumeClaimTemplates[0].Spec.StorageClassName)
 }
 
-func TestValidateKeeper(t *testing.T) {
-	keeperReplicas := func(n int32) func(*corev1alpha1.ComponentSpec) {
-		return func(k *corev1alpha1.ComponentSpec) { k.Replicas = &n }
-	}
-	assert.NoError(t, validate(t, withKeeper(newReplicatedTestInstance(""), keeperReplicas(3))))
-	assert.ErrorContains(t, validate(t, withKeeper(newReplicatedTestInstance(""), keeperReplicas(5))), "cannot be changed")
-	assert.ErrorContains(t, validate(t, withKeeper(newTestInstance("db", "ns", ""), func(*corev1alpha1.ComponentSpec) {})),
-		"only used by the replicated topology")
-}
-
-func TestValidateKeeperTransitions(t *testing.T) {
-	base := newReplicatedTestInstance("")
-	keeperStorage := func(size string, storageClass *string) func(*corev1alpha1.ComponentSpec) {
-		return func(k *corev1alpha1.ComponentSpec) {
-			k.Storage = &corev1alpha1.Storage{Size: resource.MustParse(size), StorageClass: storageClass}
-		}
-	}
-	live, _ := mustBuildCHK(t, withKeeper(base, keeperStorage("20Gi", nil)))
-
-	assert.NoError(t, validate(t, withKeeper(base, keeperStorage("20Gi", nil)), live))
-	assert.NoError(t, validate(t, withKeeper(base, keeperStorage("30Gi", nil)), live))
-	assert.ErrorContains(t, validate(t, base, live), "keeper storage cannot shrink from 20Gi to 10Gi")
-
-	// An unset class keeps the deployed one, even when the engine uses another.
-	fast := "fast"
-	assert.NoError(t, validate(t, withEngine(withKeeper(base, keeperStorage("20Gi", nil)), storage("25Gi", &fast)), live))
-	assert.ErrorContains(t, validate(t, withKeeper(base, keeperStorage("20Gi", &fast)), live),
-		`keeper storageClass cannot change from the cluster default to "fast"`)
-
-	newer := withKeeper(base, func(k *corev1alpha1.ComponentSpec) { k.Image = "clickhouse/clickhouse-keeper:27.3.1" })
-	liveNewer, _ := mustBuildCHK(t, newer)
-	assert.NoError(t, validate(t, newer, liveNewer))
-	assert.ErrorContains(t, validate(t, base, liveNewer), "keeper cannot be downgraded from 27.3.1 to 26.8.31.2")
-}
-
 func TestDeprecatedBundleResolvesToFinalPatch(t *testing.T) {
 	instance := withEngine(newReplicatedTestInstance(""), image(""))
 	instance.Spec.Version = "25.3"

@@ -90,27 +90,3 @@ func TestBuildCHIHonoursRequests(t *testing.T) {
 	assert.Equal(t, "1", container.Resources.Limits.Cpu().String())
 	assert.Equal(t, "4Gi", container.Resources.Limits.Memory().String())
 }
-
-func TestValidateRejectsRequestAboveLimit(t *testing.T) {
-	instance := newTestInstance("db", "ns", "")
-	engine := instance.Spec.Components[common.ComponentEngine]
-	engine.Resources = &corev1.ResourceRequirements{Requests: list("", "8Gi"), Limits: list("", "4Gi")}
-	instance.Spec.Components[common.ComponentEngine] = engine
-	err := New().Validate(newTestContext(t, instance))
-	assert.ErrorContains(t, err, "engine memory request 8Gi exceeds its limit 4Gi")
-
-	keeper := replicatedWithKeeper(&corev1.ResourceRequirements{Requests: list("2", ""), Limits: list("1", "")})
-	err = New().Validate(newTestContext(t, keeper))
-	assert.ErrorContains(t, err, "keeper cpu request 2 exceeds its limit 1")
-}
-
-func replicatedWithKeeper(resources *corev1.ResourceRequirements) *corev1alpha1.Instance {
-	instance := newTestInstance("db", "ns", "")
-	instance.Spec.Topology = &corev1alpha1.TopologySpec{Type: common.TopologyReplicated}
-	replicas := int32(2)
-	engine := instance.Spec.Components[common.ComponentEngine]
-	engine.Replicas = &replicas
-	instance.Spec.Components[common.ComponentEngine] = engine
-	instance.Spec.Components[common.ComponentKeeper] = corev1alpha1.ComponentSpec{Type: "clickhouse-keeper", Resources: resources}
-	return instance
-}

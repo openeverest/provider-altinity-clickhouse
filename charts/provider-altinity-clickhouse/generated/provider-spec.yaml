@@ -38,27 +38,66 @@ spec:
     engine:
       parametersSchema:
         openAPIV3Schema:
+          description: |-
+            ClickHouseParameters defines custom parameters for the ClickHouse engine component.
+            Provider users specify these fields in the Instance's engine component parameters.
           properties:
             configuration:
+              description: |-
+                Configuration holds custom ClickHouse server settings as YAML.
+                Each entry maps to a server-level setting rendered into config.d,
+                e.g. `max_concurrent_queries: 200` or `logger/level: information`.
               type: string
             podMonitor:
+              description: |-
+                PodMonitor gates creation of a Prometheus PodMonitor for the ClickHouse
+                pods. The native metrics endpoint is always exposed; this only controls
+                whether the operator manages a PodMonitor. One of "enabled" or "disabled".
               type: string
             storageReclaimPolicy:
+              description: |-
+                StorageReclaimPolicy controls what happens to the data volumes (ClickHouse
+                and, in the replicated topology, Keeper) when the Instance is deleted or a
+                replica is removed. One of "Retain" (default) or "Delete". Retained volumes
+                are re-attached when an Instance with the same name is created in the same
+                namespace.
               type: string
             tls:
+              description: |-
+                TLS configures encrypted connections. When enabled, the provider uses
+                cert-manager to issue a server certificate, serves HTTPS (8443) and the
+                secure native protocol (9440), and runs distributed queries between
+                replicas over TLS. See TLSParameters.Mode for the plaintext ports.
               properties:
                 enabled:
+                  description: |-
+                    Enabled turns on TLS. One of "enabled" or "disabled" (default). Requires
+                    cert-manager to be installed in the cluster.
                   type: string
                 issuerRef:
+                  description: |-
+                    IssuerRef optionally references an existing cert-manager Issuer or
+                    ClusterIssuer to sign the server certificate. When omitted, the provider
+                    creates a self-signed CA chain scoped to this Instance.
                   properties:
                     group:
+                      description: Group is the API group of the issuer. Defaults to "cert-manager.io".
                       type: string
                     kind:
+                      description: Kind is the issuer kind, either "Issuer" or "ClusterIssuer". Defaults to "Issuer".
                       type: string
                     name:
+                      description: Name is the name of the Issuer or ClusterIssuer.
                       type: string
+                  required:
+                    - name
                   type: object
                 mode:
+                  description: |-
+                    Mode is "required" (default) or "optional". Required exposes only the
+                    secure ports to clients and restricts the plaintext ports to the
+                    operator and the Instance's own pods with a NetworkPolicy. Optional
+                    keeps the plaintext ports open alongside the secure ones.
                   type: string
               type: object
           type: object
@@ -72,11 +111,18 @@ spec:
     user:
       parametersSchema:
         openAPIV3Schema:
+          description: |-
+            UserSecretData seeds the credentials of the instance's administrative
+            ClickHouse user when the instance is created.
           properties:
             password:
+              description: Password of the administrative user, at least 12 characters.
               type: string
             username:
+              description: Username of the administrative user. Defaults to "admin".
               type: string
+          required:
+            - password
           type: object
       uiSchema:
         components:
