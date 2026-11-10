@@ -126,7 +126,7 @@ func TestBuildCHITLSModes(t *testing.T) {
 }
 
 func TestServerDNSNames(t *testing.T) {
-	names := serverDNSNames("db", "ns", 2)
+	names := serverDNSNames("db", "ns", 1, 2)
 	for _, name := range []string{
 		"clickhouse-db", "clickhouse-db.ns.svc.cluster.local",
 		"chi-db-clickhouse-0-0", "chi-db-clickhouse-0-0.ns", "chi-db-clickhouse-0-0.ns.svc",
@@ -141,7 +141,7 @@ func TestServerDNSNames(t *testing.T) {
 	// The operator cuts the CHI name to 60 characters and trims separators.
 	long := "a234567890b234567890c234567890d234567890e234567890f23456789-xyz"
 	assert.Equal(t, []string{"chi-a234567890b234567890c234567890d234567890e234567890f23456789-clickhouse-0-0"},
-		replicaServiceNames(long, 1))
+		replicaServiceNames(long, 1, 1))
 }
 
 func serverCertificate(t *testing.T, c *controller.Context) *cmapi.Certificate {

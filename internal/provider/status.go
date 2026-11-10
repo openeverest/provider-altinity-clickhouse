@@ -24,8 +24,6 @@ import (
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
-
-	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
 // Status reports the Instance phase from the operator's view of the
@@ -62,7 +60,7 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 		return controller.Provisioning(message)
 	}
 
-	if c.Instance().GetTopologyType() == common.TopologyReplicated {
+	if usesKeeper(c) {
 		chk := &chkv1.ClickHouseKeeperInstallation{}
 		found, err := getOptional(c, chk, keeperCRName(c.Name()))
 		if err != nil {

@@ -42,6 +42,14 @@ const (
 	// TopologyReplicated is the replicated topology name (requires ClickHouse Keeper).
 	TopologyReplicated = "replicated"
 
+	// TopologySharded is the sharded topology name: several shards, each with
+	// one or more replicas, coordinated by ClickHouse Keeper.
+	TopologySharded = "sharded"
+
+	// DefaultShardsCount is the shard count of the sharded topology when its
+	// shards parameter is unset.
+	DefaultShardsCount = 2
+
 	// CHIClusterName is the cluster name used inside the ClickHouseInstallation CR.
 	// Altinity uses this as part of the pod and service naming scheme.
 	CHIClusterName = "clickhouse"

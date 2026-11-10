@@ -46,8 +46,7 @@ func reconcilePlaintextPolicy(c *controller.Context, chi *chiv1.ClickHouseInstal
 	if err := reconcilePolicy(c, c.Name()+common.PlaintextPolicySuffix, required, plaintextPolicy); err != nil {
 		return err
 	}
-	replicated := c.Instance().GetTopologyType() == common.TopologyReplicated
-	return reconcilePolicy(c, c.Name()+common.KeeperPolicySuffix, required && replicated, keeperPolicy)
+	return reconcilePolicy(c, c.Name()+common.KeeperPolicySuffix, required && usesKeeper(c), keeperPolicy)
 }
 
 // reconcilePolicy applies the named NetworkPolicy when wanted, and removes

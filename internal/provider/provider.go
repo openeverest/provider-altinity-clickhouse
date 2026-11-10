@@ -187,7 +187,7 @@ func (p *Provider) sync(c *controller.Context) error {
 
 	var syncErr error
 	switch topology {
-	case common.TopologyReplicated:
+	case common.TopologyReplicated, common.TopologySharded:
 		syncErr = p.syncReplicated(c)
 	default:
 		// standalone (and any unknown topology falls through to standalone)
@@ -377,7 +377,7 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 		return err
 	}
 
-	if c.Instance().GetTopologyType() == common.TopologyReplicated {
+	if usesKeeper(c) {
 		keeperName := keeperCRName(c.Name())
 		chk := &chkv1.ClickHouseKeeperInstallation{ObjectMeta: c.ObjectMeta(keeperName)}
 		if err := c.Delete(chk); err != nil {
@@ -570,7 +570,7 @@ func buildCHIWired(c *controller.Context, replicasCount int, keeper keeperWiring
 	cluster := &chiv1.Cluster{
 		Name: common.CHIClusterName,
 		Layout: &chiv1.ChiClusterLayout{
-			ShardsCount:   1,
+			ShardsCount:   shardsCount(c),
 			ReplicasCount: replicasCount,
 		},
 		Templates: &chiv1.TemplatesList{
@@ -629,8 +629,10 @@ func buildCHIWired(c *controller.Context, replicasCount int, keeper keeperWiring
 	// Wire the root Service exposure (ClusterIP / LoadBalancer / NodePort).
 	configureExpose(&spec, engine.Service, mode)
 
-	// Wire Keeper for replicated topology (see keeperZookeeper).
-	if replicasCount > 1 {
+	// Wire Keeper for the replicated topology (see keeperZookeeper), and for
+	// the sharded one even with a single replica per shard: ON CLUSTER DDL and
+	// ReplicatedMergeTree need it.
+	if replicasCount > 1 || isSharded(c) {
 		spec.Configuration.Zookeeper = keeperZookeeper(c, keeper.port)
 	}
 
@@ -825,6 +827,12 @@ func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsMode
 // replicasCount returns the configured replica count or the default.
 func replicasCount(c *controller.Context) int {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
+	if isSharded(c) {
+		if engine.Replicas != nil && *engine.Replicas >= 1 {
+			return int(*engine.Replicas)
+		}
+		return 1
+	}
 	if engine.Replicas != nil && *engine.Replicas >= 2 {
 		return int(*engine.Replicas)
 	}
