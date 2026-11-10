@@ -31,6 +31,62 @@
     - list
     - watch
 - apiGroups:
+    - backup.openeverest.io
+  resources:
+    - backupclasses
+    - backupstorages
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - backup.openeverest.io
+  resources:
+    - backups
+    - restores
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiGroups:
+    - backup.openeverest.io
+  resources:
+    - backups/finalizers
+    - restores/finalizers
+  verbs:
+    - update
+- apiGroups:
+    - backup.openeverest.io
+  resources:
+    - backups/status
+    - restores/status
+  verbs:
+    - get
+    - patch
+    - update
+- apiGroups:
+    - batch
+  resources:
+    - cronjobs
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - batch
+  resources:
+    - jobs
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - watch
+- apiGroups:
     - cert-manager.io
   resources:
     - certificates
@@ -78,6 +134,8 @@
 - apiGroups:
     - clickhouse.altinity.com
   resources:
+    - clickhousebackups
+    - clickhousebackupschedules
     - clickhouseinstallations
   verbs:
     - create
@@ -90,15 +148,17 @@
 - apiGroups:
     - clickhouse.altinity.com
   resources:
-    - clickhouseinstallations/finalizers
-  verbs:
-    - update
-- apiGroups:
-    - clickhouse.altinity.com
-  resources:
+    - clickhousebackups/status
+    - clickhousebackupschedules/status
     - clickhouseinstallations/status
   verbs:
     - get
+- apiGroups:
+    - clickhouse.altinity.com
+  resources:
+    - clickhouseinstallations/finalizers
+  verbs:
+    - update
 - apiGroups:
     - core.openeverest.io
   resources:

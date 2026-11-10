@@ -196,8 +196,8 @@ const (
 )
 
 // inputsHash fingerprints the stored Instance fields the CRs are rendered
-// from. Maintenance approvals, backups and the deletion policy are left out:
-// changing them is not a change to the cluster.
+// from. Maintenance approvals, backup schedules and the deletion policy are
+// left out: changing them is not a change to the cluster.
 func inputsHash(c *controller.Context) (string, error) {
 	stored := &corev1alpha1.Instance{}
 	if err := c.Get(stored, c.Name()); err != nil {
@@ -213,13 +213,26 @@ func inputsHash(c *controller.Context) (string, error) {
 	} else if found {
 		credentials = userCredentialsRevision(secret)
 	}
+	var backup *backupInputs
+	if instanceBackupEnabled(spec.Backup) {
+		backup = &backupInputs{
+			Enabled: true,
+			Storage: spec.Backup.Storages[0].StorageRef.Name,
+		}
+	}
 	return hashJSON(struct {
-		Version     string `json:"version,omitempty"`
-		Topology    any    `json:"topology,omitempty"`
-		Parameters  any    `json:"parameters,omitempty"`
-		Components  any    `json:"components,omitempty"`
-		Credentials string `json:"credentials,omitempty"`
-	}{spec.Version, spec.Topology, spec.Parameters, spec.Components, credentials})
+		Version     string        `json:"version,omitempty"`
+		Topology    any           `json:"topology,omitempty"`
+		Parameters  any           `json:"parameters,omitempty"`
+		Components  any           `json:"components,omitempty"`
+		Credentials string        `json:"credentials,omitempty"`
+		Backup      *backupInputs `json:"backup,omitempty"`
+	}{spec.Version, spec.Topology, spec.Parameters, spec.Components, credentials, backup})
+}
+
+type backupInputs struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Storage string `json:"storage,omitempty"`
 }
 
 // specHash fingerprints a rendered object's spec.

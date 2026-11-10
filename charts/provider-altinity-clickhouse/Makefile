@@ -28,5 +28,4 @@ release-dev: prepare-chart
 .PHONY: deps
 deps:
 	$(HELM) version
-	$(HELM) repo add altinity https://helm.altinity.com/
 	$(HELM) dependency update .

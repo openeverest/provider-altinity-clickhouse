@@ -1,0 +1,30 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-backup
+  namespace: default
+status:
+  phase: Ready
+  conditions:
+    - type: BackupConfigured
+      status: "True"
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-backup
+  namespace: default
+status:
+  status: Completed
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+  labels:
+    clickhouse.altinity.com/chi: itest-ch-backup
+spec:
+  containers:
+    - name: clickhouse-backup
+status:
+  phase: Running

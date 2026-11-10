@@ -229,6 +229,16 @@ const (
 	// when TLS is required.
 	KeeperPolicySuffix = "-keeper-access"
 
+	// BackupAPIPolicySuffix names the NetworkPolicy limiting who reaches the
+	// clickhouse-backup sidecar REST API.
+	BackupAPIPolicySuffix = "-backup-api"
+
+	// BackupAPIPort is the HTTP port the clickhouse-backup sidecar serves its REST API on.
+	BackupAPIPort = 7171
+
+	// LabelBackupCHIName is the label the Altinity operator sets on backup and restore Jobs.
+	LabelBackupCHIName = "clickhouse.altinity.com/backup-chi"
+
 	// ConnectionKeyCACert is the connection details key holding the CA that
 	// signed the server certificate.
 	ConnectionKeyCACert = "ca.crt"

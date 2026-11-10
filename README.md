@@ -47,6 +47,7 @@ never manages pods directly — all lifecycle work is delegated to the operator.
 
 | provider-altinity-clickhouse | OpenEverest | Altinity ClickHouse operator | Kubernetes |
 |---|---|---|---|
+| `0.4.x` | `>= 2.0.0` | `0.28.0` (unreleased, pinned commit, bundled) | `1.30` – `1.34` |
 | `0.3.x` | `>= 2.0.0` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
 | `0.2.x` | `>= 2.0.0` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
 | `0.1.x` | `>= 2.0.0` | `0.27.x` (`0.27.1` bundled) | `1.30` – `1.34` |
@@ -74,8 +75,8 @@ Stateful workloads additionally report:
 |---|---|---|
 | Persistent storage | ✅ | `spec.components.engine.storage`; volumes are retained on deletion by default, see [Data retention](#data-retention) |
 | Storage expansion | ✅ | when the StorageClass allows volume expansion; growing volumes on one that does not is rejected |
-| Backups (on demand) | ❌ | planned |
-| Backups (scheduled) | ❌ | planned |
+| Backups (on demand) | ✅ | operator-native (`executionMode: ProviderManaged`) via `clickhouse-backup`; one backup storage per Instance; see [Backups](#backups) |
+| Backups (scheduled) | ✅ | `spec.backup.storages[].schedules` → `ClickHouseBackupSchedule`; count retention only; see [Backups](#backups) |
 | Point-in-time recovery | ❌ | planned |
 | Restore | ❌ | planned |
 
@@ -423,6 +424,186 @@ the provider stamps each change it applies with a `spec.taskID`
 (`openeverest-<hash>`) on the `ClickHouseInstallation` and `ClickHouseKeeperInstallation`,
 and waits until the operator lists it in `status.taskIDsCompleted`. Until then the
 operator's `Completed` still describes the previous change.
+
+## Backups
+
+Backups are operator-managed (`executionMode: ProviderManaged`) using the
+`altinity-clickhouse-backup` BackupClass. Backups run through the Altinity operator's
+`clickhouse-backup` sidecar to S3-compatible object storage.
+
+Key characteristics:
+- **One storage configuration**: The sidecar supports a single remote storage per
+  cluster (`maxStorages: 1`).
+- **No PITR**: Point-in-time recovery is not supported.
+- **Restore not supported yet**: The provider rejects `Restore` custom resources;
+  restore directly via the operator's `ClickHouseRestore` CR instead.
+
+### Setup
+
+Backups require an S3-compatible storage configuration and enabling `spec.backup`
+on the `Instance`:
+
+1. Create a `Secret` with S3 credentials (`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`):
+
+   ```yaml
+   apiVersion: v1
+   kind: Secret
+   metadata:
+     name: clickhouse-backup-credentials
+   type: Opaque
+   stringData:
+     AWS_ACCESS_KEY_ID: REPLACE_ME
+     AWS_SECRET_ACCESS_KEY: REPLACE_ME
+   ```
+
+2. Register the storage as a `BackupStorage` (`backup.openeverest.io/v1alpha1`):
+
+   ```yaml
+   apiVersion: backup.openeverest.io/v1alpha1
+   kind: BackupStorage
+   metadata:
+     name: clickhouse-backup-storage
+   spec:
+     type: s3
+     s3:
+       bucket: clickhouse-backups
+       region: us-east-1
+       endpointURL: https://s3.example.com
+       forcePathStyle: true
+       credentialsSecretRef:
+         name: clickhouse-backup-credentials
+   ```
+
+3. Enable backups on the `Instance`:
+
+   ```yaml
+   apiVersion: core.openeverest.io/v1alpha1
+   kind: Instance
+   metadata:
+     name: my-clickhouse
+   spec:
+     providerRef:
+       name: altinity-clickhouse
+     components:
+       engine:
+         type: clickhouse
+         replicas: 1
+         storage:
+           size: 10Gi
+     backup:
+       enabled: true
+       classRef:
+         name: altinity-clickhouse-backup
+       storages:
+         - storageRef:
+             name: clickhouse-backup-storage
+           schedules:
+             - name: daily
+               enabled: true
+               cron: "0 2 * * *"
+               retention:
+                 type: count
+                 count: 7
+   ```
+
+When `spec.backup` is enabled, the provider configures the underlying infrastructure:
+- **Sidecar rollout**: The operator adds a `clickhouse-backup` sidecar container to every
+  ClickHouse pod. Enabling or disabling backups triggers a one-time rolling restart of the pods.
+- **Storage configuration**: The provider translates `BackupStorage` into the sidecar's
+  configuration and writes it into Secret `<instance>-backup-storage`.
+- **Internal credentials**: The provider provisions an internal backup user `openeverest-backup`
+  (restricted to `localhost` connections only) and stores its credentials in Secret
+  `<instance>-auto-backup-secret`.
+- **Network isolation**: A NetworkPolicy `<instance>-backup-api` restricts access to the
+  sidecar REST API (port 7171) so that only pods labelled
+  `clickhouse.altinity.com/backup-chi: <instance>` (the operator's backup Jobs and the
+  provider's delete Job) can reach it. The operator itself is not allowed.
+
+### On-demand backups
+
+Trigger an on-demand backup by creating a `Backup` custom resource:
+
+```yaml
+apiVersion: backup.openeverest.io/v1alpha1
+kind: Backup
+metadata:
+  name: my-clickhouse-backup
+spec:
+  origin:
+    type: Instance
+    instanceRef:
+      name: my-clickhouse
+  classRef:
+    name: altinity-clickhouse-backup
+  storageRef:
+    name: clickhouse-backup-storage
+  deletionPolicy: Delete
+```
+
+The provider translates this into an operator `ClickHouseBackup` resource. The remote
+backup name in object storage matches the `Backup` CR's name.
+
+The `altinity-clickhouse-backup` BackupClass supports an optional parameter under
+`spec.parameters`:
+
+- `replicaSelection`:
+  - `FirstPerShard` (default): Backs up one replica per shard. This produces a complete
+    backup only if all tables in the database use replicated engines (`Replicated*`).
+  - `AllReplicas`: Backs up all replicas in each shard. Use this if the cluster contains
+    non-replicated tables (`MergeTree`, etc.) where replicas hold disjoint or uncoordinated data.
+
+### Schedules and retention
+
+Configure recurring backups under `spec.backup.storages[0].schedules[]` on the `Instance`.
+The provider creates an operator `ClickHouseBackupSchedule` named `<instance>-<schedule>`.
+
+- **Mirrored runs**: Each schedule run is discovered and mirrored as an OpenEverest `Backup`
+  resource named after its operator Job, with `spec.scheduleName` set.
+- **Count retention only**: Only count-based retention (`retention.type: count`, matching the
+  operator's `keepLast`) is supported. Time-based retention (`retention.type: time`) is
+  rejected during validation.
+- **Pruning**: The provider does not look at the storage. After each successful scheduled run
+  it deletes the oldest `Succeeded` Backup CRs of that schedule beyond `count`, after switching
+  them to `deletionPolicy: Retain` (the operator already removed their data). The two counts can
+  differ, because the operator's `keepLast` ignores runs that hold no data.
+
+### Backup deletion
+
+When an OpenEverest `Backup` CR is deleted, its `spec.deletionPolicy` determines how remote
+data is handled:
+
+- `Delete` (default): Deletion starts a one-off Job `<backup>-delete`. The Job queries the
+  `clickhouse-backup` REST API on each shard to delete the remote backup files from object
+  storage (acknowledged asynchronously by the sidecar). Once completed, the `Backup` CR is
+  finalized and removed.
+- `Retain`: Removes the `Backup` CR and operator metadata while leaving the backup files in
+  the remote object store intact.
+
+### Restore
+
+Restores are **not supported yet** through OpenEverest. Creating a `Restore` custom resource
+will immediately transition to `Failed` with the message:
+`restore is not supported yet by this provider; use a ClickHouseRestore directly`.
+
+To restore from an existing backup, apply the Altinity operator's native `ClickHouseRestore`
+custom resource directly against the target cluster.
+
+### Limitations
+
+- **Cross-shard consistency**: ClickHouse backups are performed per node and do not form a
+  globally consistent snapshot across shards. For sharded clusters, point-in-time consistency
+  across shards must be managed at the application level (e.g. pausing ingestion during backup).
+- **Operator 0.28.0 schedule bug**: The chart's default operator image is upstream
+  `altinity/clickhouse-operator:0.28.0`, which has a bug where `watch.namespaces.include: [".*"]`
+  breaks `ClickHouseBackupSchedule` reconciliation. With the upstream image, set
+  `operator.configs.files.config.yaml.watch.namespaces.include` to explicit namespace names.
+  The fix exists only in the dbaas fork of the operator (branch `release-0.28.0-dbaas`,
+  where `newCacheNamespaces` returns nil for watch-all); with the fork image the default `[".*"]` works.
+- **Pod QoS / Resource requests**: The provider sets no resources on the sidecar. A ClickHouse pod
+  with `Guaranteed` Quality of Service (QoS) may therefore downgrade to `Burstable` once the
+  sidecar is added.
+- **Single storage only**: Only one `BackupStorage` can be configured per Instance (`maxStorages: 1`).
+- **No PITR**: Point-in-time recovery and continuous WAL/binlog archiving are not supported.
 
 ## Topologies
 

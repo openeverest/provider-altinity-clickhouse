@@ -61,3 +61,23 @@ package provider
 
 // StorageClasses, to reject growing volumes that cannot expand
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
+
+// OpenEverest backup resources reconciled by the provider-runtime
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backups,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backups/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backups/finalizers,verbs=update
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backupclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backupstorages,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=restores,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=restores/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=restores/finalizers,verbs=update
+
+// Altinity ClickHouseBackup and ClickHouseBackupSchedule
+// +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhousebackups,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhousebackups/status,verbs=get
+// +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhousebackupschedules,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhousebackupschedules/status,verbs=get
+
+// Batch Jobs and CronJobs for backups
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch

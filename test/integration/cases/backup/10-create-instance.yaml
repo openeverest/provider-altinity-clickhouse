@@ -1,0 +1,27 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-backup
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: standalone
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2G
+      storage:
+        size: 10Gi
+  backup:
+    enabled: true
+    classRef:
+      name: altinity-clickhouse-backup
+    storages:
+      - storageRef:
+          name: itest-backup-storage

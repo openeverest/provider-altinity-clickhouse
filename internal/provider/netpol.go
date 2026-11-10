@@ -41,12 +41,20 @@ const serviceAccountNamespaceFile = "/var/run/secrets/kubernetes.io/serviceaccou
 //
 // It also restricts Keeper, which authenticates no one: TLS encrypts its
 // traffic, the policy limits who can reach it (see keeperPolicy).
+//
+// When backup is enabled, it also manages the NetworkPolicy restricting access
+// to the clickhouse-backup sidecar REST API.
 func reconcilePlaintextPolicy(c *controller.Context, chi *chiv1.ClickHouseInstallation) error {
 	required := appliedTLSRequired(chi)
 	if err := reconcilePolicy(c, c.Name()+common.PlaintextPolicySuffix, required, plaintextPolicy); err != nil {
 		return err
 	}
-	return reconcilePolicy(c, c.Name()+common.KeeperPolicySuffix, required && usesKeeper(c), keeperPolicy)
+	if err := reconcilePolicy(c, c.Name()+common.KeeperPolicySuffix, required && usesKeeper(c), keeperPolicy); err != nil {
+		return err
+	}
+	return reconcilePolicy(c, c.Name()+common.BackupAPIPolicySuffix, backupEnabled(c), func(c *controller.Context) (*networkingv1.NetworkPolicy, error) {
+		return backupAPIPolicy(c, required)
+	})
 }
 
 // reconcilePolicy applies the named NetworkPolicy when wanted, and removes
@@ -145,6 +153,47 @@ func keeperPolicy(c *controller.Context) (*networkingv1.NetworkPolicy, error) {
 				},
 				{From: []networkingv1.NetworkPolicyPeer{operator}},
 			},
+		},
+	}, nil
+}
+
+// backupAPIPolicy limits the clickhouse-backup sidecar REST API (port 7171) to
+// the backup and restore Jobs of this CHI. When TLS is not required, it also
+// keeps all other ClickHouse ports open from anywhere.
+func backupAPIPolicy(c *controller.Context, tlsRequired bool) (*networkingv1.NetworkPolicy, error) {
+	ingress := []networkingv1.NetworkPolicyIngressRule{
+		{
+			From: []networkingv1.NetworkPolicyPeer{
+				{
+					PodSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							common.LabelBackupCHIName: c.Name(),
+						},
+					},
+				},
+			},
+			Ports: tcpPorts(common.BackupAPIPort),
+		},
+	}
+	if !tlsRequired {
+		ingress = append(ingress, networkingv1.NetworkPolicyIngressRule{
+			Ports: tcpPorts(
+				common.HTTPPort,
+				common.HTTPSPort,
+				common.TCPPort,
+				common.TCPSecurePort,
+				common.InterserverHTTPPort,
+				common.InterserverHTTPSPort,
+				common.MetricsPort,
+			),
+		})
+	}
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: c.ObjectMeta(c.Name() + common.BackupAPIPolicySuffix),
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{common.LabelCHIName: c.Name()}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			Ingress:     ingress,
 		},
 	}, nil
 }

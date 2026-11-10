@@ -1,0 +1,7 @@
+apiVersion: backup.openeverest.io/v1alpha1
+kind: Backup
+metadata:
+  name: itest-ch-backup-ondemand
+  namespace: default
+status:
+  state: Succeeded

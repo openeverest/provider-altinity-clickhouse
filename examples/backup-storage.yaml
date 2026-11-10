@@ -1,0 +1,27 @@
+# Prerequisite BackupStorage for ClickHouse backups.
+#
+# Replace bucket, region, endpointURL, and credentials for your S3-compatible object store.
+# The BackupStorage name is referenced by the Instance under spec.backup.storages[].storageRef.name.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clickhouse-backup-credentials
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: REPLACE_ME
+  AWS_SECRET_ACCESS_KEY: REPLACE_ME
+---
+apiVersion: backup.openeverest.io/v1alpha1
+kind: BackupStorage
+metadata:
+  name: clickhouse-backup-storage
+spec:
+  type: s3
+  s3:
+    bucket: clickhouse-backups
+    region: us-east-1
+    endpointURL: https://s3.example.com
+    forcePathStyle: true
+    verifyTLS: true
+    credentialsSecretRef:
+      name: clickhouse-backup-credentials

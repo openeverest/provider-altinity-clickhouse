@@ -1,0 +1,16 @@
+# Altinity ClickHouse clickhouse-backup BackupClass definition.
+# Backups run through the Altinity operator's clickhouse-backup sidecar to S3-compatible storage.
+
+parametersSchema:
+    openAPIV3Schema: AltinityClickhouseBackupConfig
+description: ClickHouse backups via the Altinity operator's clickhouse-backup sidecar to S3-compatible storage.
+displayName: ClickHouse Backup (clickhouse-backup)
+executionMode: ProviderManaged
+providerManaged:
+    supportsPITR: false
+    # The sidecar has one storage configuration per cluster.
+    limits:
+        maxStorages: 1
+        maxPITREnabledStorages: 0
+supportedProviders:
+    - altinity-clickhouse

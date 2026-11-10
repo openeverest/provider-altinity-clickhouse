@@ -1,0 +1,15 @@
+apiVersion: backup.openeverest.io/v1alpha1
+kind: Backup
+metadata:
+  name: itest-ch-backup-ondemand
+  namespace: default
+spec:
+  origin:
+    type: Instance
+    instanceRef:
+      name: itest-ch-backup
+  classRef:
+    name: altinity-clickhouse-backup
+  storageRef:
+    name: itest-backup-storage
+  deletionPolicy: Delete

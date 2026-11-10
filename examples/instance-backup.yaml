@@ -1,0 +1,35 @@
+# Standalone ClickHouse Instance with backup enabled and a daily schedule.
+#
+# Prerequisites:
+#   1. OpenEverest CRDs and provider-altinity-clickhouse installed (BackupClass altinity-clickhouse-backup)
+#   2. examples/backup-storage.yaml applied in the same namespace
+#
+# The altinity-clickhouse provider supports one backup storage per Instance (maxStorages: 1).
+# Only count-based retention (the operator's keepLast) is supported; time-based retention is rejected.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: clickhouse-backup-example
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      storage:
+        size: 10Gi
+  backup:
+    enabled: true
+    classRef:
+      name: altinity-clickhouse-backup
+    storages:
+      - storageRef:
+          name: clickhouse-backup-storage
+        schedules:
+          - name: daily
+            enabled: true
+            cron: "0 2 * * *"
+            retention:
+              type: count
+              count: 7

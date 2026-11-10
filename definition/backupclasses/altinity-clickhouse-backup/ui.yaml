@@ -1,0 +1,18 @@
+# UI rendering hints for the altinity-clickhouse-backup BackupClass.
+
+backup:
+    label: Backup Configuration
+    components:
+        replicaSelection:
+            path: replicaSelection
+            uiType: select
+            fieldParams:
+                label: Replica selection
+                defaultValue: FirstPerShard
+                options:
+                    - label: First per shard
+                      value: FirstPerShard
+                    - label: All replicas
+                      value: AllReplicas
+    componentsOrder:
+        - replicaSelection

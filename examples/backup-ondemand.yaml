@@ -1,0 +1,26 @@
+# On-demand Backup of a ClickHouse Instance that has backup storage configured.
+#
+# Prerequisites:
+#   1. examples/backup-storage.yaml
+#   2. examples/instance-backup.yaml (Instance Ready, BackupConfigured)
+#
+# deletionPolicy: Delete removes the backup data from object storage when this CR is deleted.
+# Use Retain to drop only the Backup resource and leave objects in the store.
+apiVersion: backup.openeverest.io/v1alpha1
+kind: Backup
+metadata:
+  name: clickhouse-backup-ondemand
+spec:
+  origin:
+    type: Instance
+    instanceRef:
+      name: clickhouse-backup-example
+  classRef:
+    name: altinity-clickhouse-backup
+  storageRef:
+    name: clickhouse-backup-storage
+  deletionPolicy: Delete
+  # Optional: BackupClass parameters.
+  # replicaSelection: FirstPerShard (default; complete for Replicated* tables) or AllReplicas.
+  # parameters:
+  #   replicaSelection: FirstPerShard

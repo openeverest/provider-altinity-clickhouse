@@ -78,6 +78,9 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	errs := validateEngine(in.Instance, engine)
 	errs = append(errs, validateShards(in.Instance)...)
 	errs = append(errs, validateKeeper(in.Instance)...)
+	if err := validateBackupSchedules(in.Instance.Spec.Backup, in.Instance.Name); err != nil {
+		errs = append(errs, field.Invalid(field.NewPath("spec", "backup"), in.Instance.Spec.Backup, err.Error()))
+	}
 	errs = append(errs, validateTransitions(&in.Provider.Spec, in.Instance, in.Old)...)
 	return controller.ValidationResult{Errors: errs}
 }

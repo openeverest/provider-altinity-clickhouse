@@ -1,0 +1,108 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: backup
+spec:
+  description: |
+    Install MinIO as an S3 object store, configure a BackupStorage and a
+    standalone ClickHouse Instance with backup enabled, assert the
+    BackupConfigured condition and the clickhouse-backup sidecar container.
+    Then run an on-demand Backup, assert it succeeds, delete the Backup and
+    assert it is removed from remote storage.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,backup,backupstorage,deployment,job,pod -o wide
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: setup-minio
+      try:
+        - apply:
+            file: 00-minio.yaml
+        - script:
+            timeout: 120s
+            content: |
+              set -eu
+              kubectl wait --for=condition=Available deployment/minio -n "$NAMESPACE" --timeout=90s
+              kubectl wait --for=condition=Complete job/minio-create-bucket -n "$NAMESPACE" --timeout=90s
+    - name: create-instance
+      try:
+        - apply:
+            file: 10-create-instance.yaml
+        - assert:
+            file: 10-assert.yaml
+    - name: on-demand-backup
+      try:
+        - apply:
+            file: 20-create-backup.yaml
+        - assert:
+            file: 20-assert-backup.yaml
+    - name: delete-backup
+      try:
+        - script:
+            timeout: 300s
+            content: |
+              set -eu
+              kubectl delete backup/itest-ch-backup-ondemand -n "$NAMESPACE" --wait=false
+              kubectl wait --for=delete backup/itest-ch-backup-ondemand -n "$NAMESPACE" --timeout=180s
+              # The sidecar deletes asynchronously after acknowledging the request.
+              for i in $(seq 1 12); do
+                out=$(kubectl exec -n "$NAMESPACE" chi-itest-ch-backup-clickhouse-0-0-0 -c clickhouse-backup -- clickhouse-backup list remote)
+                if ! echo "$out" | grep -q "itest-ch-backup-ondemand"; then
+                  exit 0
+                fi
+                sleep 5
+              done
+              echo "expected backup itest-ch-backup-ondemand to be absent from remote list, but found it in:" >&2
+              echo "$out" >&2
+              exit 1
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - backups.backup.openeverest.io
+              - itest-ch-backup-ondemand
+              - -n
+              - default
+              - --ignore-not-found
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-backup
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-backup
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - backupstorages.backup.openeverest.io
+              - itest-backup-storage
+              - -n
+              - default
+              - --ignore-not-found
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - deployment,service,job,secret
+              - -l
+              - app=minio
+              - -n
+              - default
+              - --ignore-not-found
