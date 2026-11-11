@@ -49,16 +49,24 @@ const backupDeletionScript = `set -euo pipefail
 : "${API_PASSWORD:?API_PASSWORD must be set}"
 
 PORT="${API_PORT:-7171}"
+MAX_CONNECT_ATTEMPTS=24
 
 for host in ${HOSTS}; do
+  attempts=0
   while :; do
     curl_exit=0
     out=$(curl -sS -w "\n%{http_code}" -u "${API_USERNAME}:${API_PASSWORD}" --connect-timeout 10 -X POST "http://${host}:${PORT}/backup/delete/remote/${BACKUP_NAME}" 2>&1) || curl_exit=$?
     if [ "${curl_exit}" -ne 0 ]; then
+      attempts=$((attempts + 1))
       echo "Failed to connect to ${host}:${PORT} (curl exit ${curl_exit}): ${out}" >&2
+      if [ "${attempts}" -ge "${MAX_CONNECT_ATTEMPTS}" ]; then
+        echo "sidecar ${host}:${PORT} unreachable after ${attempts} attempts" >&2
+        exit 1
+      fi
       sleep 5
       continue
     fi
+    attempts=0
     http_code=$(echo "${out}" | tail -n 1)
     http_body=$(echo "${out}" | sed '$ d')
     if [[ "${http_code}" =~ ^2 ]]; then
@@ -144,7 +152,7 @@ func findClickHouseBackupImage(ctx context.Context, cl client.Client, namespace,
 
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		if pod.Status.Phase != corev1.PodRunning {
+		if pod.Status.Phase != corev1.PodRunning || !pod.DeletionTimestamp.IsZero() {
 			continue
 		}
 		for _, container := range pod.Spec.Containers {
@@ -254,9 +262,65 @@ func buildBackupDeletionJob(
 	}, nil
 }
 
+type backupDeletionTarget struct {
+	instanceName string
+	chi          *chiv1.ClickHouseInstallation
+	image        string
+}
+
+// findBackupDeletionTarget checks whether the deletion target (CHI, auto-backup Secret,
+// running ClickHouse pod with clickhouse-backup container) is present and not terminating.
+// Returns (target, nil) if present, (nil, nil) if target is gone, or (nil, err) on error.
+func findBackupDeletionTarget(c *controller.Context, backup *backupv1alpha1.Backup) (*backupDeletionTarget, error) {
+	l := log.FromContext(c.Context())
+	instanceName := backupInstanceName(c, backup)
+
+	chi := &chiv1.ClickHouseInstallation{}
+	if err := c.Get(chi, instanceName); err != nil {
+		if apierrors.IsNotFound(err) {
+			l.Info("ClickHouseInstallation is missing; skipping backup data deletion",
+				"instance", instanceName, "backup", backup.Name)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get ClickHouseInstallation %q: %w", instanceName, err)
+	}
+	if !chi.DeletionTimestamp.IsZero() {
+		l.Info("ClickHouseInstallation is terminating; skipping backup data deletion",
+			"instance", instanceName, "backup", backup.Name)
+		return nil, nil
+	}
+
+	secretName := autoBackupSecretName(instanceName)
+	secret := &corev1.Secret{}
+	if err := c.Get(secret, secretName); err != nil {
+		if apierrors.IsNotFound(err) {
+			l.Info("Auto backup secret is missing; skipping backup data deletion",
+				"secret", secretName, "backup", backup.Name)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get auto backup Secret %q: %w", secretName, err)
+	}
+
+	image, err := findClickHouseBackupImage(c.Context(), c.Client(), backup.Namespace, instanceName)
+	if err != nil {
+		return nil, fmt.Errorf("find running ClickHouse backup image: %w", err)
+	}
+	if image == "" {
+		l.Info("Running ClickHouse pod with clickhouse-backup container is missing; skipping backup data deletion",
+			"instance", instanceName, "backup", backup.Name)
+		return nil, nil
+	}
+
+	return &backupDeletionTarget{
+		instanceName: instanceName,
+		chi:          chi,
+		image:        image,
+	}, nil
+}
+
 // deleteBackupData orchestrates remote backup data deletion via a one-shot Job.
-// Returns done = true when the Job completed.
-// Returns missingInstance = true if the CHI, auto-backup Secret, or running ClickHouse pod is missing.
+// Returns done = true when the Job completed or when remote data deletion was skipped because the target is gone.
+// Returns missingInstance = true if the target (CHI, auto-backup Secret, or running ClickHouse pod) is missing or terminating.
 func (p *Provider) deleteBackupData(c *controller.Context, backup *backupv1alpha1.Backup) (done bool, missingInstance bool, err error) {
 	l := log.FromContext(c.Context())
 	jobName := backupDeletionJobName(backup.Name)
@@ -266,6 +330,21 @@ func (p *Provider) deleteBackupData(c *controller.Context, backup *backupv1alpha
 		if !metav1.IsControlledBy(job, backup) {
 			return false, false, fmt.Errorf("backup data deletion Job %q is not owned by Backup %q", jobName, backup.Name)
 		}
+		if jobComplete(job) {
+			return true, false, nil
+		}
+		target, tErr := findBackupDeletionTarget(c, backup)
+		if tErr != nil {
+			return false, false, tErr
+		}
+		if target == nil {
+			if dErr := c.Client().Delete(c.Context(), job, client.PropagationPolicy(metav1.DeletePropagationBackground)); dErr != nil && !apierrors.IsNotFound(dErr) {
+				return false, false, fmt.Errorf("delete backup data deletion Job %q: %w", jobName, dErr)
+			}
+			l.Info(fmt.Sprintf("Remote data of backup %s could not be deleted because the instance/sidecar is gone and may remain in the storage", backup.Name),
+				"backup", backup.Name, "job", jobName)
+			return true, true, nil
+		}
 		done, dErr := deletionJobDone(job)
 		return done, false, dErr
 	}
@@ -273,39 +352,15 @@ func (p *Provider) deleteBackupData(c *controller.Context, backup *backupv1alpha
 		return false, false, fmt.Errorf("get backup data deletion Job %q: %w", jobName, err)
 	}
 
-	instanceName := backupInstanceName(c, backup)
-	chi := &chiv1.ClickHouseInstallation{}
-	if err := c.Get(chi, instanceName); err != nil {
-		if apierrors.IsNotFound(err) {
-			l.Info("ClickHouseInstallation is missing; skipping backup data deletion",
-				"instance", instanceName, "backup", backup.Name)
-			return true, true, nil
-		}
-		return false, false, fmt.Errorf("get ClickHouseInstallation %q: %w", instanceName, err)
+	target, tErr := findBackupDeletionTarget(c, backup)
+	if tErr != nil {
+		return false, false, tErr
 	}
-
-	secretName := autoBackupSecretName(instanceName)
-	secret := &corev1.Secret{}
-	if err := c.Get(secret, secretName); err != nil {
-		if apierrors.IsNotFound(err) {
-			l.Info("Auto backup secret is missing; skipping backup data deletion",
-				"secret", secretName, "backup", backup.Name)
-			return true, true, nil
-		}
-		return false, false, fmt.Errorf("get auto backup Secret %q: %w", secretName, err)
-	}
-
-	image, err := findClickHouseBackupImage(c.Context(), c.Client(), backup.Namespace, instanceName)
-	if err != nil {
-		return false, false, fmt.Errorf("find running ClickHouse backup image: %w", err)
-	}
-	if image == "" {
-		l.Info("Running ClickHouse pod with clickhouse-backup container is missing; skipping backup data deletion",
-			"instance", instanceName, "backup", backup.Name)
+	if target == nil {
 		return true, true, nil
 	}
 
-	job, err = buildBackupDeletionJob(backup, instanceName, chi, image)
+	job, err = buildBackupDeletionJob(backup, target.instanceName, target.chi, target.image)
 	if err != nil {
 		return false, false, err
 	}

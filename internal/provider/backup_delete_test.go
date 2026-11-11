@@ -737,3 +737,240 @@ func TestBuildBackupDeletionJob_PodSecurityStandardRestricted(t *testing.T) {
 	assert.Equal(t, []corev1.Capability{"ALL"}, cntSec.Capabilities.Drop, "capabilities.drop must contain ALL")
 }
 
+func TestCleanupBackup_TargetGoneRecheck(t *testing.T) {
+	p := &Provider{}
+	ns := "default"
+	instName := "test-inst"
+
+	makeFixtures := func() (*corev1alpha1.Instance, *chiv1.ClickHouseInstallation, *corev1.Secret, *corev1.Pod, *backupv1alpha1.Backup) {
+		inst := testInstanceWithStorage(instName, ns, "s3-storage")
+		chi := &chiv1.ClickHouseInstallation{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      instName,
+				Namespace: ns,
+			},
+		}
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      autoBackupSecretName(instName),
+				Namespace: ns,
+			},
+		}
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "chi-test-inst-clickhouse-0-0-0",
+				Namespace: ns,
+				Labels: map[string]string{
+					common.LabelCHIName: instName,
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{
+						Name:  "clickhouse-backup",
+						Image: "altinity/clickhouse-backup:2.6.0",
+					},
+				},
+			},
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+			},
+		}
+		backup := &backupv1alpha1.Backup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-backup",
+				Namespace: ns,
+			},
+			Spec: backupv1alpha1.BackupSpec{
+				Origin: backupv1alpha1.BackupOrigin{
+					Type: backupv1alpha1.BackupOriginTypeInstance,
+					InstanceRef: &commonv1alpha1.ObjectRef{
+						Name: instName,
+					},
+				},
+				DeletionPolicy: backupv1alpha1.BackupDeletionPolicyDelete,
+			},
+			Status: backupv1alpha1.BackupStatus{
+				State: backupv1alpha1.BackupStateSucceeded,
+			},
+		}
+		return inst, chi, secret, pod, backup
+	}
+
+	makeJob := func(backup *backupv1alpha1.Backup) *batchv1.Job {
+		return &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backupDeletionJobName(backup.Name),
+				Namespace: backup.Namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(backup, backupv1alpha1.GroupVersion.WithKind("Backup")),
+				},
+			},
+		}
+	}
+
+	// (a) Job exists running + CHI gone -> Job deleted, done & missingInstance true
+	t.Run("Job exists running + CHI gone: Job deleted, done and missingInstance true", func(t *testing.T) {
+		inst, _, secret, pod, backup := makeFixtures()
+		job := makeJob(backup)
+		c := newBackupDeleteTestContext(t, inst, secret, pod, backup, job)
+
+		done, missingInstance, err := p.deleteBackupData(c, backup)
+		require.NoError(t, err)
+		assert.True(t, done, "done should be true when CHI is gone")
+		assert.True(t, missingInstance, "missingInstance should be true when CHI is gone")
+
+		jobCheck := &batchv1.Job{}
+		err = c.Get(jobCheck, job.Name)
+		assert.True(t, apierrors.IsNotFound(err), "Job must be deleted when CHI is gone")
+
+		cleanupDone, cleanupErr := p.CleanupBackup(c, backup)
+		require.NoError(t, cleanupErr)
+		assert.True(t, cleanupDone)
+	})
+
+	// (b) Job Failed + ClickHouse pod gone -> done true
+	t.Run("Job Failed + ClickHouse pod gone: done true", func(t *testing.T) {
+		inst, chi, secret, _, backup := makeFixtures()
+		job := makeJob(backup)
+		job.Status.Conditions = []batchv1.JobCondition{
+			{
+				Type:   batchv1.JobFailed,
+				Status: corev1.ConditionTrue,
+			},
+		}
+		c := newBackupDeleteTestContext(t, inst, chi, secret, backup, job)
+
+		done, missingInstance, err := p.deleteBackupData(c, backup)
+		require.NoError(t, err)
+		assert.True(t, done, "done should be true when pod is gone even if Job failed")
+		assert.True(t, missingInstance)
+
+		jobCheck := &batchv1.Job{}
+		err = c.Get(jobCheck, job.Name)
+		assert.True(t, apierrors.IsNotFound(err), "Job must be deleted")
+
+		cleanupDone, cleanupErr := p.CleanupBackup(c, backup)
+		require.NoError(t, cleanupErr)
+		assert.True(t, cleanupDone)
+	})
+
+	// (c) Job Failed + target present -> error as before
+	t.Run("Job Failed + target present: error as before", func(t *testing.T) {
+		inst, chi, secret, pod, backup := makeFixtures()
+		job := makeJob(backup)
+		job.Status.Conditions = []batchv1.JobCondition{
+			{
+				Type:   batchv1.JobFailed,
+				Status: corev1.ConditionTrue,
+			},
+		}
+		c := newBackupDeleteTestContext(t, inst, chi, secret, pod, backup, job)
+
+		done, missingInstance, err := p.deleteBackupData(c, backup)
+		assert.False(t, done)
+		assert.False(t, missingInstance)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), job.Name)
+		assert.Contains(t, err.Error(), "failed; inspect its logs, then delete the Job to retry")
+
+		jobCheck := &batchv1.Job{}
+		errCheck := c.Get(jobCheck, job.Name)
+		require.NoError(t, errCheck, "Job must not be deleted when target is still present")
+
+		cleanupDone, cleanupErr := p.CleanupBackup(c, backup)
+		assert.False(t, cleanupDone)
+		require.Error(t, cleanupErr)
+		assert.Contains(t, cleanupErr.Error(), job.Name)
+	})
+
+	// (d1) Instance has a deletionTimestamp but CHI, Secret and a running pod exist -> a running Job is kept (done=false, no error, Job not deleted)
+	t.Run("Instance has deletionTimestamp but target present: running Job is kept", func(t *testing.T) {
+		inst, chi, secret, pod, backup := makeFixtures()
+		now := metav1.Now()
+		inst.Finalizers = []string{"test-finalizer"}
+		inst.DeletionTimestamp = &now
+		job := makeJob(backup)
+		c := newBackupDeleteTestContext(t, inst, chi, secret, pod, backup, job)
+
+		done, missingInstance, err := p.deleteBackupData(c, backup)
+		require.NoError(t, err)
+		assert.False(t, done, "done should be false when target is present even if Instance has deletionTimestamp")
+		assert.False(t, missingInstance)
+
+		jobCheck := &batchv1.Job{}
+		errCheck := c.Get(jobCheck, job.Name)
+		require.NoError(t, errCheck, "Job must not be deleted when target is still present")
+
+		cleanupDone, cleanupErr := p.CleanupBackup(c, backup)
+		require.NoError(t, cleanupErr)
+		assert.False(t, cleanupDone, "CleanupBackup should return false while Job runs")
+	})
+
+	// (d2) Instance has a deletionTimestamp and the CHI is gone -> Job deleted, done=true, missingInstance=true
+	t.Run("Instance has deletionTimestamp and CHI gone: Job deleted, done and missingInstance true", func(t *testing.T) {
+		inst, _, secret, pod, backup := makeFixtures()
+		now := metav1.Now()
+		inst.Finalizers = []string{"test-finalizer"}
+		inst.DeletionTimestamp = &now
+		job := makeJob(backup)
+		c := newBackupDeleteTestContext(t, inst, secret, pod, backup, job)
+
+		done, missingInstance, err := p.deleteBackupData(c, backup)
+		require.NoError(t, err)
+		assert.True(t, done, "done should be true when CHI is gone")
+		assert.True(t, missingInstance)
+
+		jobCheck := &batchv1.Job{}
+		err = c.Get(jobCheck, job.Name)
+		assert.True(t, apierrors.IsNotFound(err), "Job must be deleted when CHI is gone")
+
+		cleanupDone, cleanupErr := p.CleanupBackup(c, backup)
+		require.NoError(t, cleanupErr)
+		assert.True(t, cleanupDone)
+	})
+
+	// CHI has deletionTimestamp -> done true
+	t.Run("Job running + CHI has deletionTimestamp: done true", func(t *testing.T) {
+		inst, chi, secret, pod, backup := makeFixtures()
+		now := metav1.Now()
+		chi.Finalizers = []string{"test-finalizer"}
+		chi.DeletionTimestamp = &now
+		job := makeJob(backup)
+		c := newBackupDeleteTestContext(t, inst, chi, secret, pod, backup, job)
+
+		done, missingInstance, err := p.deleteBackupData(c, backup)
+		require.NoError(t, err)
+		assert.True(t, done, "done should be true when CHI has deletionTimestamp")
+		assert.True(t, missingInstance)
+
+		jobCheck := &batchv1.Job{}
+		err = c.Get(jobCheck, job.Name)
+		assert.True(t, apierrors.IsNotFound(err), "Job must be deleted")
+	})
+
+	// Auto-backup secret missing -> done true
+	t.Run("Job running + auto-backup secret missing: done true", func(t *testing.T) {
+		inst, chi, _, pod, backup := makeFixtures()
+		job := makeJob(backup)
+		c := newBackupDeleteTestContext(t, inst, chi, pod, backup, job)
+
+		done, missingInstance, err := p.deleteBackupData(c, backup)
+		require.NoError(t, err)
+		assert.True(t, done, "done should be true when auto-backup secret is missing")
+		assert.True(t, missingInstance)
+
+		jobCheck := &batchv1.Job{}
+		err = c.Get(jobCheck, job.Name)
+		assert.True(t, apierrors.IsNotFound(err), "Job must be deleted")
+	})
+}
+
+// (e) script contains the bounded-retry logic (string assertion on the max-attempts counter is enough)
+func TestBackupDeletionScript_BoundedRetries(t *testing.T) {
+	assert.Contains(t, backupDeletionScript, "MAX_CONNECT_ATTEMPTS=24", "script must define bounded max attempts of 24")
+	assert.Contains(t, backupDeletionScript, "unreachable after", "script must log clear message when unreachable")
+	assert.Contains(t, backupDeletionScript, "exit 1", "script must exit 1 after reaching max attempts")
+}
+
+
