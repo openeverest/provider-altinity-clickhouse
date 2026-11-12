@@ -96,7 +96,9 @@ ui:
                 modes:
                   edit:
                     celExpressions:
-                      - celExpr: "spec.components.engine.storage.size >= original.spec.components.engine.storage.size"
+                      # double(): a dialog for another section passes this field as
+                      # the raw string ("10"), and "10" >= 10 is a CEL error.
+                      - celExpr: "double(spec.components.engine.storage.size) >= double(original.spec.components.engine.storage.size)"
                         message: "Disk size cannot be decreased"
           componentsOrder:
             - cpu
@@ -151,7 +153,9 @@ ui:
                 modes:
                   edit:
                     celExpressions:
-                      - celExpr: "spec.components.keeper.storage.size >= original.spec.components.keeper.storage.size"
+                      # double(): a dialog for another section passes this field as
+                      # the raw string ("10"), and "10" >= 10 is a CEL error.
+                      - celExpr: "double(spec.components.keeper.storage.size) >= double(original.spec.components.keeper.storage.size)"
                         message: "Disk size cannot be decreased"
           componentsOrder:
             - cpu
