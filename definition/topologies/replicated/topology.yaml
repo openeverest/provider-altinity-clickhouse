@@ -44,6 +44,9 @@ ui:
           fieldParams:
             label: "Shards"
             defaultValue: 1
+            # An instance created before sharding has no numShards, and the
+            # edit form only shows stored values: the placeholder shows its 1.
+            placeholder: "1"
             step: 1
             helperText: "Spread the data over the shards with a Distributed table."
           validation:
@@ -53,7 +56,10 @@ ui:
             modes:
               edit:
                 celExpressions:
-                  - celExpr: "spec.topology.parameters.numShards >= original.spec.topology.parameters.numShards"
+                  # An instance created before sharding has no numShards: it
+                  # is a single shard, and any value is an increase. double():
+                  # a dialog for another section passes the raw string.
+                  - celExpr: "!has(original.spec.topology.parameters) || !has(original.spec.topology.parameters.numShards) || double(spec.topology.parameters.numShards) >= double(original.spec.topology.parameters.numShards)"
                     message: "Shards cannot be removed"
         replicas:
           uiType: number
@@ -71,7 +77,7 @@ ui:
             int: true
             min: 1
             celExpressions:
-              - celExpr: "spec.components.engine.replicas >= 2 || spec.topology.parameters.numShards >= 2"
+              - celExpr: "double(spec.components.engine.replicas) >= 2.0 || double(spec.topology.parameters.numShards) >= 2.0"
                 message: "A single shard needs at least 2 replicas"
       componentsOrder:
         - shards

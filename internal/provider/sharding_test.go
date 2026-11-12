@@ -15,8 +15,10 @@
 package provider
 
 import (
+	"encoding/json"
 	"testing"
 
+	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -133,4 +135,111 @@ func TestRolloutAppliesAddedShards(t *testing.T) {
 	kinds, c := syncReplicated(t, shardedInstance(3, 1), state, completedCHK(), completedCHI())
 	assert.Contains(t, kinds, "ClickHouseInstallation")
 	assert.Empty(t, c.GetPendingMaintenance())
+}
+
+// scalingRule returns a CEL rule of the replicated Scaling section.
+func scalingRule(t *testing.T, field string, edit bool) string {
+	t.Helper()
+	var ui struct {
+		Replicated struct {
+			Sections map[string]struct {
+				Components map[string]struct {
+					Validation struct {
+						CelExpressions []struct {
+							CelExpr string `json:"celExpr"`
+						} `json:"celExpressions"`
+						Modes struct {
+							Edit struct {
+								CelExpressions []struct {
+									CelExpr string `json:"celExpr"`
+								} `json:"celExpressions"`
+							} `json:"edit"`
+						} `json:"modes"`
+					} `json:"validation"`
+				} `json:"components"`
+			} `json:"sections"`
+		} `json:"replicated"`
+	}
+	require.NoError(t, json.Unmarshal(testProvider(t).Spec.UISchema.Raw, &ui))
+	v := ui.Replicated.Sections["scaling"].Components[field].Validation
+	rules := v.CelExpressions
+	if edit {
+		rules = v.Modes.Edit.CelExpressions
+	}
+	require.Len(t, rules, 1)
+	return rules[0].CelExpr
+}
+
+func evalUIRule(t *testing.T, expr string, vars map[string]any) (bool, error) {
+	t.Helper()
+	env, err := cel.NewEnv(cel.Variable("spec", cel.DynType), cel.Variable("original", cel.DynType))
+	require.NoError(t, err)
+	ast, iss := env.Compile(expr)
+	require.NoError(t, iss.Err())
+	prg, err := env.Program(ast)
+	require.NoError(t, err)
+	out, _, err := prg.Eval(vars)
+	if err != nil {
+		return false, err
+	}
+	return out.Value().(bool), nil
+}
+
+func topologySpec(parameters map[string]any) map[string]any {
+	topology := map[string]any{"type": "replicated"}
+	if parameters != nil {
+		topology["parameters"] = parameters
+	}
+	return map[string]any{"topology": topology}
+}
+
+// On OpenEverest 2.0.0-dev.4 `original` is the stored Instance: one created
+// before sharding has no numShards, and a rule that errors on it would keep
+// every edit dialog of that instance from saving.
+func TestUIShardsRuleOnlyRejectsRemovingShards(t *testing.T) {
+	expr := scalingRule(t, "shards", true)
+	for _, tc := range []struct {
+		name     string
+		form     any
+		original map[string]any
+		want     bool
+	}{
+		{"created before sharding", 1, nil, true},
+		{"created before sharding, adding shards", 3, nil, true},
+		{"empty parameters", 2, map[string]any{}, true},
+		{"unchanged", 2, map[string]any{"numShards": 2}, true},
+		{"raw string from another dialog", "2", map[string]any{"numShards": 2}, true},
+		{"adding", 3, map[string]any{"numShards": 2}, true},
+		{"removing", 1, map[string]any{"numShards": 2}, false},
+		{"removing, as a string", "1", map[string]any{"numShards": 2}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := evalUIRule(t, expr, map[string]any{
+				"spec":     topologySpec(map[string]any{"numShards": tc.form}),
+				"original": map[string]any{"spec": topologySpec(tc.original)},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestUIReplicasRuleNeedsTwoForASingleShard(t *testing.T) {
+	expr := scalingRule(t, "replicas", false)
+	for _, tc := range []struct {
+		replicas, shards any
+		want             bool
+	}{
+		{1, 1, false},
+		{2, 1, true},
+		{1, 2, true},
+		{"1", "2", true},
+		{"1", "1", false},
+	} {
+		spec := topologySpec(map[string]any{"numShards": tc.shards})
+		spec["components"] = map[string]any{"engine": map[string]any{"replicas": tc.replicas}}
+		got, err := evalUIRule(t, expr, map[string]any{"spec": spec, "original": map[string]any{}})
+		require.NoError(t, err, "%v replicas, %v shards", tc.replicas, tc.shards)
+		assert.Equal(t, tc.want, got, "%v replicas, %v shards", tc.replicas, tc.shards)
+	}
 }
