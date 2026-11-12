@@ -15,6 +15,8 @@
 package provider
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -89,4 +91,55 @@ func TestBuildCHIHonoursRequests(t *testing.T) {
 	assert.Equal(t, "2G", container.Resources.Requests.Memory().String())
 	assert.Equal(t, "1", container.Resources.Limits.Cpu().String())
 	assert.Equal(t, "4Gi", container.Resources.Limits.Memory().String())
+}
+
+// The API validates a CPU quantity as a whole number or a string, so a number
+// field may only write whole cores: 0.5 is rejected with a 400 (a Keeper CPU of
+// 0.5 used to block creating replicated instances from the UI).
+func TestUICPUFieldsWriteValidQuantities(t *testing.T) {
+	spec := testProvider(t).Spec
+	require.NotNil(t, spec.UISchema)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(spec.UISchema.Raw, &schema))
+
+	var cpu []map[string]any
+	var walk func(any)
+	walk = func(node any) {
+		switch n := node.(type) {
+		case map[string]any:
+			if path, _ := n["path"].(string); strings.HasSuffix(path, ".cpu") {
+				cpu = append(cpu, n)
+			}
+			for _, v := range n {
+				walk(v)
+			}
+		case []any:
+			for _, v := range n {
+				walk(v)
+			}
+		}
+	}
+	walk(schema)
+	require.NotEmpty(t, cpu)
+
+	for _, field := range cpu {
+		path := field["path"]
+		require.Equal(t, "number", field["uiType"], path)
+		params, _ := field["fieldParams"].(map[string]any)
+		if params["badgeToApi"] == true {
+			continue
+		}
+		validation, _ := field["validation"].(map[string]any)
+		assert.Equal(t, true, validation["int"], "%s must only accept whole cores", path)
+		for _, key := range []string{"defaultValue", "step", "min"} {
+			v, ok := params[key]
+			if !ok {
+				v, ok = validation[key]
+			}
+			if ok {
+				n, _ := v.(float64)
+				assert.Equal(t, float64(int64(n)), n, "%s %s", path, key)
+			}
+		}
+	}
 }

@@ -63,8 +63,11 @@ ui:
                 label: "CPU"
                 defaultValue: 2
                 step: 1
+              # Whole cores: the API takes a CPU quantity as a whole number or
+              # a string, so a fractional number is rejected.
               validation:
                 required: true
+                int: true
                 min: 1
             memory:
               uiType: number
@@ -113,11 +116,14 @@ ui:
               path: spec.components.keeper.resources.limits.cpu
               fieldParams:
                 label: "CPU"
-                defaultValue: 0.5
-                step: 0.5
+                defaultValue: 1
+                step: 1
+              # Whole cores: the API takes a CPU quantity as a whole number or
+              # a string, so a fractional number (0.5) is rejected.
               validation:
                 required: true
-                min: 0.5
+                int: true
+                min: 1
             memory:
               uiType: number
               path: spec.components.keeper.resources.limits.memory

@@ -40,8 +40,11 @@ ui:
                 label: "CPU"
                 defaultValue: 1
                 step: 1
+              # Whole cores: the API takes a CPU quantity as a whole number or
+              # a string, so a fractional number is rejected.
               validation:
                 required: true
+                int: true
                 min: 1
             memory:
               uiType: number

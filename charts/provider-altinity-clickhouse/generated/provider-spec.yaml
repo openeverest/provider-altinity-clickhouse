@@ -259,13 +259,14 @@ spec:
               components:
                 cpu:
                   fieldParams:
-                    defaultValue: 0.5
+                    defaultValue: 1
                     label: CPU
-                    step: 0.5
+                    step: 1
                   path: spec.components.keeper.resources.limits.cpu
                   uiType: number
                   validation:
-                    min: 0.5
+                    int: true
+                    min: 1
                     required: true
                 disk:
                   fieldParams:
@@ -331,6 +332,7 @@ spec:
                   path: spec.components.engine.resources.limits.cpu
                   uiType: number
                   validation:
+                    int: true
                     min: 1
                     required: true
                 disk:
@@ -522,6 +524,7 @@ spec:
                   path: spec.components.engine.resources.limits.cpu
                   uiType: number
                   validation:
+                    int: true
                     min: 1
                     required: true
                 disk:
