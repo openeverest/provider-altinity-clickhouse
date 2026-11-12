@@ -15,6 +15,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -220,4 +221,52 @@ func persisted(t *testing.T, c *controller.Context, name string) *corev1.Secret 
 	written := &corev1.Secret{}
 	require.NoError(t, c.Get(written, name))
 	return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: written.Name, Namespace: written.Namespace}, Data: written.Data}
+}
+
+// The UI saves each create-form field under its path as a key of the
+// Secret's data; a field without one is saved under a generated key the
+// provider never reads (#84). Every field must write a key of the secret's
+// schema, and the form must ask for what the provider accepts.
+func TestUserSecretCreateFormWritesTheKeysTheProviderReads(t *testing.T) {
+	user := testProvider(t).Spec.Secrets["user"]
+	require.NotNil(t, user.UISchema)
+	var form struct {
+		Components map[string]struct {
+			Path       string `json:"path"`
+			Validation struct {
+				Required bool `json:"required"`
+				Min      *int `json:"min"`
+				Regex    *struct {
+					Pattern string `json:"pattern"`
+				} `json:"regex"`
+			} `json:"validation"`
+		} `json:"components"`
+	}
+	require.NoError(t, json.Unmarshal(user.UISchema.Raw, &form))
+	var schema struct {
+		OpenAPIV3Schema struct {
+			Properties map[string]any `json:"properties"`
+		} `json:"openAPIV3Schema"`
+	}
+	raw, err := json.Marshal(user.ParametersSchema)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &schema))
+
+	written := map[string]bool{}
+	for name, field := range form.Components {
+		require.NotEmpty(t, field.Path, "field %s has no path", name)
+		assert.Contains(t, schema.OpenAPIV3Schema.Properties, field.Path, "field %s", name)
+		written[field.Path] = true
+	}
+	assert.True(t, written[common.CredentialsKeyUsername])
+	assert.True(t, written[common.CredentialsKeyPassword])
+
+	password := form.Components["password"].Validation
+	assert.True(t, password.Required)
+	require.NotNil(t, password.Min)
+	assert.Equal(t, common.MinPasswordLength, *password.Min)
+
+	username := form.Components["username"].Validation
+	require.NotNil(t, username.Regex)
+	assert.Equal(t, usernamePattern.String(), username.Regex.Pattern)
 }
