@@ -1,0 +1,26 @@
+# Two shards of one replica, coordinated by Keeper: ON CLUSTER DDL and
+# replicated tables need it also without a second replica.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-sharding
+  namespace: default
+spec:
+  configuration:
+    clusters:
+      - layout:
+          shardsCount: 2
+          replicasCount: 1
+    zookeeper:
+      keeper:
+        name: itest-ch-sharding-keeper
+status:
+  status: Completed
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-sharding
+  namespace: default
+status:
+  phase: Ready

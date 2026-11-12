@@ -190,16 +190,12 @@ func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta
 }
 
 // ensureServerCertificate creates the leaf server Certificate signed by the
-// resolved issuer. It covers the client Service, every replica's Service (the
-// replicas' hostnames in remote_servers) and the LoadBalancer address, if any.
+// resolved issuer. It covers the client Service, every host's Service (the
+// hosts' names in remote_servers) and the LoadBalancer address, if any.
 func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerReference) error {
-	replicas := 1
-	replicated := c.Instance().GetTopologyType() == common.TopologyReplicated
-	if replicated {
-		replicas = replicasCount(c)
-	}
-	dnsNames := serverDNSNames(c.Name(), c.Namespace(), replicas)
-	if replicated {
+	l := layout(c)
+	dnsNames := serverDNSNames(c.Name(), c.Namespace(), l)
+	if l.keeper {
 		dnsNames = append(dnsNames, keeperDNSNames(c.Name(), c.Namespace())...)
 	}
 	externalNames, externalIPs, err := externalAddresses(c)
@@ -223,10 +219,10 @@ func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerRefer
 }
 
 // serverDNSNames returns the DNS names the server certificate must cover: the
-// client Service and each replica's Service, in every in-cluster form, and
-// each replica's pod names, which replicas fetch parts from each other by.
-func serverDNSNames(instanceName, namespace string, replicas int) []string {
-	replicaServices := replicaServiceNames(instanceName, replicas)
+// client Service and each host's Service, in every in-cluster form, and each
+// host's pod names, which replicas fetch parts from each other by.
+func serverDNSNames(instanceName, namespace string, l clusterLayout) []string {
+	replicaServices := hostServiceNames(instanceName, l)
 	names := serviceDNSNames(append([]string{clientServiceName(instanceName)}, replicaServices...), namespace)
 	for _, svc := range replicaServices {
 		names = append(names, fmt.Sprintf("*.%s.%s.svc.cluster.local", svc, namespace))
@@ -260,15 +256,17 @@ func clientServiceName(instanceName string) string {
 	return "clickhouse-" + instanceName
 }
 
-// replicaServiceNames returns the operator's per-replica Service names,
-// chi-{chi}-{cluster}-{shard}-{replica}, which are also the replicas'
-// hostnames in remote_servers. The operator cuts the CHI name to 60
-// characters and trims separators from the ends.
-func replicaServiceNames(instanceName string, replicas int) []string {
+// hostServiceNames returns the operator's per-host Service names,
+// chi-{chi}-{cluster}-{shard}-{replica}, which are also the hosts' names in
+// remote_servers. The operator cuts the CHI name to 60 characters and trims
+// separators from the ends.
+func hostServiceNames(instanceName string, l clusterLayout) []string {
 	chiName := trimCRName(instanceName)
-	names := make([]string, 0, replicas)
-	for i := 0; i < replicas; i++ {
-		names = append(names, fmt.Sprintf("chi-%s-%s-0-%d", chiName, common.CHIClusterName, i))
+	names := make([]string, 0, l.hosts())
+	for shard := 0; shard < l.shards; shard++ {
+		for replica := 0; replica < l.replicas; replica++ {
+			names = append(names, fmt.Sprintf("chi-%s-%s-%d-%d", chiName, common.CHIClusterName, shard, replica))
+		}
 	}
 	return names
 }

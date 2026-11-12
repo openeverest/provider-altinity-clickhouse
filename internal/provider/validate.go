@@ -44,6 +44,7 @@ var (
 	componentsPath = field.NewPath("spec", "components")
 	enginePath     = componentsPath.Key(common.ComponentEngine)
 	keeperPath     = componentsPath.Key(common.ComponentKeeper)
+	numShardsPath  = field.NewPath("spec", "topology", "parameters", "numShards")
 )
 
 // minEngineLimits are the smallest CPU and memory limits ClickHouse runs with.
@@ -115,10 +116,14 @@ func validateEngine(instance *corev1alpha1.Instance, engine corev1alpha1.Compone
 	errs = append(errs, validateRequestsWithinLimits(enginePath, resolveResources(engine))...)
 
 	replicasPath := enginePath.Child("replicas")
+	shards := numShards(instance)
 	switch replicated := instance.GetTopologyType() == common.TopologyReplicated; {
 	case engine.Replicas == nil:
-	case replicated && *engine.Replicas < 2:
-		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas, "must be at least 2 in the replicated topology"))
+	case replicated && shards < 2 && *engine.Replicas < 2:
+		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas,
+			"must be at least 2 in the replicated topology with a single shard"))
+	case replicated && *engine.Replicas < 1:
+		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas, "must be at least 1"))
 	case !replicated && *engine.Replicas > 1:
 		errs = append(errs, field.Invalid(replicasPath, *engine.Replicas,
 			"the standalone topology runs a single replica; use the replicated topology for more"))
@@ -234,6 +239,9 @@ func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.
 		return field.ErrorList{field.Forbidden(field.NewPath("spec", "topology", "type"), fmt.Sprintf(
 			"cannot change from %s to %s", common.TopologyReplicated, common.TopologyStandalone))}
 	}
+	if errs := validateShardsTransition(numShards(old), numShards(in)); errs != nil {
+		return errs
+	}
 
 	// Sizes are compared with the deployed volumes, in ValidateReferences: a
 	// growth blocked there is stored, and must stay revertible.
@@ -252,6 +260,16 @@ func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.
 	}
 	errs = append(errs, validateStorageClassTransition(keeperPath.Child("storage", "storageClass"), oldClass, class)...)
 	return append(errs, validateVersionTransition(spec, common.ComponentKeeper, in, old)...)
+}
+
+// validateShardsTransition rejects removing shards: a removed shard's data
+// would be lost, as ClickHouse does not move it onto the remaining ones.
+func validateShardsTransition(from, to int) field.ErrorList {
+	if to >= from {
+		return nil
+	}
+	return field.ErrorList{field.Forbidden(numShardsPath, fmt.Sprintf(
+		"cannot shrink from %d to %d shards: a removed shard's data would be lost", from, to))}
 }
 
 // keeperStorageClass returns the StorageClass a new Keeper gets: its own,
@@ -358,14 +376,17 @@ func validateDeployedEngine(c *controller.Context) (field.ErrorList, error) {
 	}
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 
-	var errs field.ErrorList
+	// Also against the running cluster: the previous Instance is not
+	// always at hand, e.g. when the change was stored without admission.
+	errs := validateShardsTransition(deployedShards(chi), layout(c).shards)
 	if current := dataVolumeClaimTemplate(chi); current != nil {
 		size, _ := resolveStorage(engine)
-		errs, err = validateResize(c, enginePath.Child("storage", "size"), current, size,
+		resizeErrs, err := validateResize(c, enginePath.Child("storage", "size"), current, size,
 			client.MatchingLabels{common.LabelCHIName: c.Name()})
 		if err != nil {
 			return nil, err
 		}
+		errs = append(errs, resizeErrs...)
 	}
 	// A version that does not resolve is reported by Sync.
 	if image, err := resolveImage(c, common.ComponentEngine, engine); err == nil {
@@ -458,6 +479,15 @@ func validateResize(
 		}
 	}
 	return nil, nil
+}
+
+// deployedShards returns the number of shards a ClickHouseInstallation runs.
+func deployedShards(chi *chiv1.ClickHouseInstallation) int {
+	if chi.Spec.Configuration == nil || len(chi.Spec.Configuration.Clusters) == 0 ||
+		chi.Spec.Configuration.Clusters[0].Layout == nil {
+		return 1
+	}
+	return max(chi.Spec.Configuration.Clusters[0].Layout.ShardsCount, 1)
 }
 
 func dataVolumeClaimTemplate(chi *chiv1.ClickHouseInstallation) *chiv1.VolumeClaimTemplate {

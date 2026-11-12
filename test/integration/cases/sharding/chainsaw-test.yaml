@@ -1,0 +1,59 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: sharding
+spec:
+  description: |
+    Provision a replicated Instance with two shards of one replica, spread
+    rows over the shards through a Distributed table, add a third shard (it
+    gets the tables, existing rows stay, new rows reach it), and check that
+    removing a shard is rejected at admission while the cluster keeps its
+    shards.
+  timeouts:
+    exec: 30m
+    cleanup: 5m
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk,pods,pvc -o wide
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: sharding
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: sh ./sharding.sh
+        # Removing a shard would lose its data: rejected at admission.
+        - script:
+            content: |
+              kubectl -n default patch instances.core.openeverest.io itest-ch-sharding \
+                --type=merge -p '{"spec":{"topology":{"parameters":{"numShards":2}}}}'
+            check:
+              ($error != null): true
+              (contains($stderr, 'cannot shrink from 3 to 2 shards')): true
+        - assert:
+            resource:
+              apiVersion: clickhouse.altinity.com/v1
+              kind: ClickHouseInstallation
+              metadata:
+                name: itest-ch-sharding
+                namespace: default
+              spec:
+                configuration:
+                  clusters:
+                    - layout:
+                        shardsCount: 3
+      finally:
+        - command:
+            entrypoint: kubectl
+            args: [delete, instances.core.openeverest.io, itest-ch-sharding, -n, default, --ignore-not-found, --wait=false]
+        # Volumes are retained by default; drop them so re-runs start empty.
+        - command:
+            entrypoint: kubectl
+            args: [delete, pvc, -n, default, -l, clickhouse.altinity.com/chi=itest-ch-sharding, --ignore-not-found, --wait=false]
+        - command:
+            entrypoint: kubectl
+            args: [delete, pvc, -n, default, -l, clickhouse-keeper.altinity.com/chk=itest-ch-sharding-keeper, --ignore-not-found, --wait=false]

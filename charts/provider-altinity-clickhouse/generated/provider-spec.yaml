@@ -148,6 +148,22 @@ spec:
       components:
         engine: {}
         keeper: {}
+      parametersSchema:
+        openAPIV3Schema:
+          description: |-
+            ReplicatedTopologyParameters defines the parameters of the replicated
+            topology.
+          properties:
+            numShards:
+              default: 1
+              description: |-
+                NumShards is the number of shards. Each shard holds part of the data
+                and runs the engine's replicas. Shards can be added, not removed, and
+                existing data is not moved onto new shards. Defaults to 1.
+              format: int32
+              minimum: 1
+              type: integer
+          type: object
     standalone:
       components:
         engine: {}
@@ -375,7 +391,8 @@ spec:
             replicas:
               fieldParams:
                 defaultValue: 2
-                label: Replicas
+                helperText: At least 2 with a single shard. With 1 replica per shard, a lost node makes its shard's data unavailable.
+                label: Replicas per shard
                 modes:
                   edit:
                     disabled: true
@@ -383,9 +400,33 @@ spec:
               path: spec.components.engine.replicas
               uiType: number
               validation:
-                min: 2
+                celExpressions:
+                  - celExpr: spec.components.engine.replicas >= 2 || spec.topology.parameters.numShards >= 2
+                    message: A single shard needs at least 2 replicas
+                int: true
+                min: 1
                 required: true
-          description: Number of ClickHouse replicas. Minimum 2 for HA.
+            shards:
+              fieldParams:
+                defaultValue: 1
+                helperText: Spread the data over the shards with a Distributed table.
+                label: Shards
+                step: 1
+              path: spec.topology.parameters.numShards
+              uiType: number
+              validation:
+                int: true
+                min: 1
+                modes:
+                  edit:
+                    celExpressions:
+                      - celExpr: spec.topology.parameters.numShards >= original.spec.topology.parameters.numShards
+                        message: Shards cannot be removed
+                required: true
+          componentsOrder:
+            - shards
+            - replicas
+          description: Shards split the data; each shard runs the same number of replicas, which copy its data. Shards can be added later, not removed, and existing data is not moved onto new shards.
           label: Scaling
       sectionsOrder:
         - databaseVersion

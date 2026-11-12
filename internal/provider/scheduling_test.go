@@ -30,7 +30,7 @@ import (
 func TestBuildCHIWithoutSchedulingPolicyPrefersSpreadingReplicas(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", ""))
 
-	chi, err := buildCHI(c, 2)
+	chi, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
 
 	template := chi.Spec.Templates.PodTemplates[0]
@@ -48,7 +48,7 @@ func TestBuildCHIEmptyAffinityDisablesDefault(t *testing.T) {
 	instance.Spec.Components[common.ComponentEngine] = engine
 	c := newTestContext(t, instance)
 
-	chi, err := buildCHI(c, 2)
+	chi, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
 
 	assert.Equal(t, &corev1.Affinity{}, chi.Spec.Templates.PodTemplates[0].Spec.Affinity)
@@ -146,7 +146,7 @@ func TestBuildCHIAppliesSchedulingPolicy(t *testing.T) {
 	instance.Spec.Components[common.ComponentEngine] = engine
 	c := newTestContext(t, instance)
 
-	chi, err := buildCHI(c, 2)
+	chi, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
 
 	template := chi.Spec.Templates.PodTemplates[0]

@@ -204,7 +204,7 @@ func (p *Provider) sync(c *controller.Context) error {
 
 // syncStandalone applies and waits on the CHI for a single-node deployment.
 func (p *Provider) syncStandalone(c *controller.Context) error {
-	chi, err := buildCHI(c, 1)
+	chi, err := buildCHI(c, layout(c))
 	if err != nil {
 		return fmt.Errorf("build ClickHouseInstallation: %w", err)
 	}
@@ -228,7 +228,7 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 	if err != nil {
 		return fmt.Errorf("build ClickHouseKeeperInstallation: %w", err)
 	}
-	desiredCHI, err := buildCHIWired(c, replicasCount(c), step)
+	desiredCHI, err := buildCHIWired(c, layout(c), step)
 	if err != nil {
 		return fmt.Errorf("build ClickHouseInstallation: %w", err)
 	}
@@ -236,7 +236,7 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 	if err != nil {
 		return fmt.Errorf("build ClickHouseKeeperInstallation: %w", err)
 	}
-	targetCHI, err := buildCHIWired(c, replicasCount(c), target)
+	targetCHI, err := buildCHIWired(c, layout(c), target)
 	if err != nil {
 		return fmt.Errorf("build ClickHouseInstallation: %w", err)
 	}
@@ -524,18 +524,18 @@ func deletePVCs(c *controller.Context) error {
 // Builders
 // =============================================================================
 
-// buildCHI constructs a ClickHouseInstallation for the given replica count,
-// wired to Keeper as the current step of the Keeper TLS switch calls for.
-func buildCHI(c *controller.Context, replicasCount int) (*chiv1.ClickHouseInstallation, error) {
+// buildCHI constructs a ClickHouseInstallation with the given layout, wired
+// to Keeper as the current step of the Keeper TLS switch calls for.
+func buildCHI(c *controller.Context, l clusterLayout) (*chiv1.ClickHouseInstallation, error) {
 	step, _, err := planKeeperWiring(c)
 	if err != nil {
 		return nil, err
 	}
-	return buildCHIWired(c, replicasCount, step)
+	return buildCHIWired(c, l, step)
 }
 
 // buildCHIWired constructs a ClickHouseInstallation wired to Keeper as given.
-func buildCHIWired(c *controller.Context, replicasCount int, keeper keeperWiring) (*chiv1.ClickHouseInstallation, error) {
+func buildCHIWired(c *controller.Context, l clusterLayout, keeper keeperWiring) (*chiv1.ClickHouseInstallation, error) {
 	engine := c.Instance().Spec.Components[common.ComponentEngine]
 	image, err := resolveImage(c, common.ComponentEngine, engine)
 	if err != nil {
@@ -569,9 +569,12 @@ func buildCHIWired(c *controller.Context, replicasCount int, keeper keeperWiring
 
 	cluster := &chiv1.Cluster{
 		Name: common.CHIClusterName,
+		// The operator copies the replicated and Distributed tables onto
+		// added hosts, also those of added shards, and enables
+		// internal_replication on shards with more than one replica.
 		Layout: &chiv1.ChiClusterLayout{
-			ShardsCount:   1,
-			ReplicasCount: replicasCount,
+			ShardsCount:   l.shards,
+			ReplicasCount: l.replicas,
 		},
 		Templates: &chiv1.TemplatesList{
 			PodTemplate:             common.PodTemplateName,
@@ -630,7 +633,7 @@ func buildCHIWired(c *controller.Context, replicasCount int, keeper keeperWiring
 	configureExpose(&spec, engine.Service, mode)
 
 	// Wire Keeper for replicated topology (see keeperZookeeper).
-	if replicasCount > 1 {
+	if l.keeper {
 		spec.Configuration.Zookeeper = keeperZookeeper(c, keeper.port)
 	}
 
@@ -820,15 +823,6 @@ func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsMode
 		spec.Defaults.Templates = &chiv1.TemplatesList{}
 	}
 	spec.Defaults.Templates.ServiceTemplate = common.ServiceTemplateName
-}
-
-// replicasCount returns the configured replica count or the default.
-func replicasCount(c *controller.Context) int {
-	engine := c.Instance().Spec.Components[common.ComponentEngine]
-	if engine.Replicas != nil && *engine.Replicas >= 2 {
-		return int(*engine.Replicas)
-	}
-	return common.DefaultReplicasCount
 }
 
 // resolveImage returns the container image for a component (see

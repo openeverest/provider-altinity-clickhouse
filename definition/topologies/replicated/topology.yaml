@@ -1,12 +1,16 @@
-# Replicated topology: multi-replica ClickHouse with ClickHouse Keeper.
-# ClickHouse Keeper (3 nodes, Raft quorum) replaces ZooKeeper — no external dependency.
-# Suitable for production workloads requiring high availability.
+# Replicated topology: ClickHouse shards, each with one or more replicas,
+# coordinated by ClickHouse Keeper (3 nodes, Raft quorum), so no ZooKeeper.
+# Suitable for production workloads requiring high availability or scale-out.
 #
 # Resources:
-#   engine   - ClickHouse replicas (configurable count, default 2)
+#   engine   - ClickHouse replicas per shard (default 2; at least 2 with a single shard)
 #   keeper   - 3 Keeper nodes, always provisioned; resources and storage configurable
+#
+# Parameters:
+#   numShards - number of shards (default 1); can grow, never shrink
 
 config:
+  parametersSchema: ReplicatedTopologyParameters
   components:
     engine: {}
     keeper: {}
@@ -32,21 +36,46 @@ ui:
 
     scaling:
       label: "Scaling"
-      description: "Number of ClickHouse replicas. Minimum 2 for HA."
+      description: "Shards split the data; each shard runs the same number of replicas, which copy its data. Shards can be added later, not removed, and existing data is not moved onto new shards."
       components:
+        shards:
+          uiType: number
+          path: spec.topology.parameters.numShards
+          fieldParams:
+            label: "Shards"
+            defaultValue: 1
+            step: 1
+            helperText: "Spread the data over the shards with a Distributed table."
+          validation:
+            required: true
+            int: true
+            min: 1
+            modes:
+              edit:
+                celExpressions:
+                  - celExpr: "spec.topology.parameters.numShards >= original.spec.topology.parameters.numShards"
+                    message: "Shards cannot be removed"
         replicas:
           uiType: number
           path: spec.components.engine.replicas
           fieldParams:
-            label: "Replicas"
+            label: "Replicas per shard"
             defaultValue: 2
             step: 1
+            helperText: "At least 2 with a single shard. With 1 replica per shard, a lost node makes its shard's data unavailable."
             modes:
               edit:
                 disabled: true
           validation:
             required: true
-            min: 2
+            int: true
+            min: 1
+            celExpressions:
+              - celExpr: "spec.components.engine.replicas >= 2 || spec.topology.parameters.numShards >= 2"
+                message: "A single shard needs at least 2 replicas"
+      componentsOrder:
+        - shards
+        - replicas
 
     resources:
       label: "Resources"
