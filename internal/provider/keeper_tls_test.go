@@ -292,3 +292,47 @@ func TestSyncRequeuesUntilKeeperSwitchDone(t *testing.T) {
 	require.True(t, controller.IsWaitError(err), "got %v", err)
 	assert.Contains(t, err.Error(), "switching ClickHouse and Keeper")
 }
+
+// Creating a replicated Instance with TLS, or switching a standalone one to
+// it, renders Keeper TLS-only from the start: Keeper never served plaintext,
+// so nothing can use it, and reopening it while ClickHouse rolls out would
+// restart Keeper twice for nothing.
+func TestKeeperWiringStaysTLSOnlyWhileCreating(t *testing.T) {
+	for name, s := range map[string]keeperState{
+		"new instance":             {chiPort: -1},
+		"standalone to replicated": {chiExists: true, chiRolledOut: true, chiPort: -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, _ := nextKeeperWiring(true, s)
+			for i := 0; i < 6; i++ {
+				step, _ := nextKeeperWiring(true, s)
+				require.Equal(t, first.secure, step.secure, "step %d", i)
+				require.Equal(t, first.plaintext, step.plaintext, "step %d: Keeper re-rendered", i)
+				require.False(t, step.plaintext, "step %d", i)
+				// The operator rolls Keeper, then ClickHouse onto the step's port,
+				// one reconcile at a time.
+				switch {
+				case !s.chkExists || !s.chkRolledOut:
+					s.chkExists, s.chkRolledOut, s.chkSecure, s.chkPlaintext = true, s.chkExists, step.secure, step.plaintext
+				case s.chiPort != step.port:
+					s.chiExists, s.chiRolledOut, s.chiPort = true, false, step.port
+				default:
+					s.chiRolledOut = true
+				}
+			}
+			assert.Equal(t, common.KeeperSecurePort, s.chiPort)
+			assert.True(t, s.chiRolledOut)
+		})
+	}
+}
+
+// Any ClickHouse change on a running TLS cluster (a setting, a new replica
+// or shard) rolls the ClickHouseInstallation out on the secure port; Keeper,
+// TLS-only, stays as it is.
+func TestKeeperWiringIgnoresClickHouseRollouts(t *testing.T) {
+	rolling := keeperState{chkExists: true, chkRolledOut: true, chkSecure: true,
+		chiExists: true, chiRolledOut: false, chiPort: common.KeeperSecurePort}
+	step, target := nextKeeperWiring(true, rolling)
+	assert.Equal(t, target, step)
+	assert.Equal(t, keeperWiring{secure: true, port: common.KeeperSecurePort}, step)
+}
