@@ -17,12 +17,16 @@ package provider
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
 // uiFields returns every component of the generated UI schema that writes a
@@ -58,38 +62,57 @@ func uiFields(t *testing.T) []map[string]any {
 	return fields
 }
 
-// The API validates a CPU quantity as a whole number or a string, so a number
-// field may only write whole cores: 0.5 is rejected with a 400 (a Keeper CPU of
-// 0.5 used to block creating replicated instances from the UI).
-func TestUICPUFieldsWriteValidQuantities(t *testing.T) {
-	var cpu []map[string]any
-	for _, field := range uiFields(t) {
-		if strings.HasSuffix(field["path"].(string), ".cpu") {
-			cpu = append(cpu, field)
-		}
-	}
-	require.NotEmpty(t, cpu)
+// resourceField matches the paths of CPU, memory and disk quantities.
+var resourceField = regexp.MustCompile(`^spec\.components\.(\w+)\.(?:resources\.(?:limits|requests)\.(cpu|memory)|storage\.(size))$`)
 
-	for _, field := range cpu {
-		path := field["path"]
-		require.Equal(t, "number", field["uiType"], path)
-		params, _ := field["fieldParams"].(map[string]any)
-		if params["badgeToApi"] == true {
+// Resource fields are quantity fields: the form holds a number in the field's
+// unit and writes a quantity string, so fractional CPU ("0.5") reaches the
+// API as a string it accepts. CPU is in cores (no unit), memory and disk in
+// Gi. The smallest value a field offers must be a quantity the provider
+// accepts.
+func TestUIResourceFieldsAreQuantities(t *testing.T) {
+	minEngine := map[string]resource.Quantity{}
+	for _, m := range minEngineLimits {
+		minEngine[string(m.name)] = m.min
+	}
+
+	var checked int
+	for _, field := range uiFields(t) {
+		path := field["path"].(string)
+		m := resourceField.FindStringSubmatch(path)
+		if m == nil {
 			continue
 		}
+		checked++
+		component, kind := m[1], m[2]+m[3]
+
+		require.Equal(t, "quantity", field["uiType"], path)
+		params, _ := field["fieldParams"].(map[string]any)
 		validation, _ := field["validation"].(map[string]any)
-		assert.Equal(t, true, validation["int"], "%s must only accept whole cores", path)
-		for _, key := range []string{"defaultValue", "step", "min"} {
-			v, ok := params[key]
-			if !ok {
-				v, ok = validation[key]
-			}
-			if ok {
-				n, _ := v.(float64)
-				assert.Equal(t, float64(int64(n)), n, "%s %s", path, key)
-			}
+		assert.NotContains(t, params, "badge", path)
+		assert.NotContains(t, params, "badgeToApi", path)
+
+		unit, _ := params["unit"].(string)
+		if kind == "cpu" {
+			assert.Empty(t, unit, "%s is in cores", path)
+			assert.Equal(t, "CPU", params["unitLabel"], path)
+		} else {
+			assert.Equal(t, "Gi", unit, path)
+		}
+
+		for _, v := range []any{params["defaultValue"], validation["min"]} {
+			n, ok := v.(float64)
+			require.True(t, ok, "%s needs a numeric defaultValue and min", path)
+			_, err := resource.ParseQuantity(strconv.FormatFloat(n, 'f', -1, 64) + unit)
+			assert.NoError(t, err, "%s writes %v%s", path, n, unit)
+		}
+
+		if floor, ok := minEngine[kind]; ok && component == common.ComponentEngine {
+			uiMin := resource.MustParse(strconv.FormatFloat(validation["min"].(float64), 'f', -1, 64) + unit)
+			assert.GreaterOrEqual(t, uiMin.Cmp(floor), 0, "%s min %s is below the provider's %s", path, uiMin.String(), floor.String())
 		}
 	}
+	require.Positive(t, checked)
 }
 
 var celPath = regexp.MustCompile(`(?:original\.)?(spec(?:\.\w+)+)`)
@@ -109,9 +132,10 @@ func setPath(obj map[string]any, path string, value any) {
 }
 
 // An edit dialog evaluates the CEL rules of every section, but only parses the
-// fields of its own section: the others reach CEL as the raw strings the form
-// read ("10" for "10Gi"), while `original` holds numbers. A rule comparing them
-// without double() fails with "no such overload" and keeps Save disabled.
+// fields of its own section. With quantity fields both sides are numbers in the
+// field's unit; a value that reaches CEL as a string ("10", as number fields
+// with a badge were read) must not fail with "no such overload" either, which
+// would keep Save disabled.
 func TestUIEditRulesAcceptStringAndNumberValues(t *testing.T) {
 	env, err := cel.NewEnv(
 		cel.Variable("spec", cel.DynType),

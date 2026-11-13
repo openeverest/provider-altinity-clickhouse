@@ -203,7 +203,10 @@ Each component's `resources` take CPU and memory limits and requests. An unset l
 falls back to the default (engine: 1 CPU / 4Gi; Keeper: 500m / 1Gi), or to the request
 when that is higher; an unset request equals the limit. Setting only limits, as the UI
 does, therefore gives the pods the Guaranteed QoS class. The engine needs a limit of
-at least 1 CPU and 1Gi, and a request above its limit is rejected.
+at least 1 CPU and 1Gi, and a request above its limit is rejected. The UI takes CPU in
+cores, fractions included (`1.5`, Keeper from `0.5`), and memory and disk in Gi, and
+writes them as quantity strings; a value it did not change keeps its stored form (for
+example `8192Mi`).
 
 Watch it come up, then read the connection details from the Secret named by
 `.status.connectionSecretRef` (`<instance-name>-conn`, see [Connecting](#connecting)):
