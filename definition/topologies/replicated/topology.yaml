@@ -92,38 +92,32 @@ ui:
           groupType: line
           components:
             cpu:
-              uiType: number
+              uiType: quantity
               path: spec.components.engine.resources.limits.cpu
               fieldParams:
                 label: "CPU"
+                unitLabel: "CPU"
                 defaultValue: 2
-                step: 1
-              # Whole cores: the API takes a CPU quantity as a whole number or
-              # a string, so a fractional number is rejected.
               validation:
                 required: true
-                int: true
                 min: 1
             memory:
-              uiType: number
+              uiType: quantity
               path: spec.components.engine.resources.limits.memory
               fieldParams:
                 label: "Memory"
                 defaultValue: 8
-                step: 1
-                badge: "Gi"
-                badgeToApi: true
+                unit: "Gi"
               validation:
                 required: true
                 min: 2
             disk:
-              uiType: number
+              uiType: quantity
               path: spec.components.engine.storage.size
               fieldParams:
                 label: "Disk"
                 defaultValue: 50
-                badge: "Gi"
-                badgeToApi: true
+                unit: "Gi"
               validation:
                 required: true
                 int: true
@@ -131,8 +125,8 @@ ui:
                 modes:
                   edit:
                     celExpressions:
-                      # double(): a dialog for another section passes this field as
-                      # the raw string ("10"), and "10" >= 10 is a CEL error.
+                      # double(): the rule holds whether the value reaches CEL as a
+                      # number or as a string ("10").
                       - celExpr: "double(spec.components.engine.storage.size) >= double(original.spec.components.engine.storage.size)"
                         message: "Disk size cannot be decreased"
           componentsOrder:
@@ -149,38 +143,32 @@ ui:
           groupType: line
           components:
             cpu:
-              uiType: number
+              uiType: quantity
               path: spec.components.keeper.resources.limits.cpu
               fieldParams:
                 label: "CPU"
+                unitLabel: "CPU"
                 defaultValue: 1
-                step: 1
-              # Whole cores: the API takes a CPU quantity as a whole number or
-              # a string, so a fractional number (0.5) is rejected.
               validation:
                 required: true
-                int: true
-                min: 1
+                min: 0.5
             memory:
-              uiType: number
+              uiType: quantity
               path: spec.components.keeper.resources.limits.memory
               fieldParams:
                 label: "Memory"
                 defaultValue: 1
-                step: 1
-                badge: "Gi"
-                badgeToApi: true
+                unit: "Gi"
               validation:
                 required: true
                 min: 1
             disk:
-              uiType: number
+              uiType: quantity
               path: spec.components.keeper.storage.size
               fieldParams:
                 label: "Disk"
                 defaultValue: 10
-                badge: "Gi"
-                badgeToApi: true
+                unit: "Gi"
               validation:
                 required: true
                 int: true
@@ -188,8 +176,8 @@ ui:
                 modes:
                   edit:
                     celExpressions:
-                      # double(): a dialog for another section passes this field as
-                      # the raw string ("10"), and "10" >= 10 is a CEL error.
+                      # double(): the rule holds whether the value reaches CEL as a
+                      # number or as a string ("10").
                       - celExpr: "double(spec.components.keeper.storage.size) >= double(original.spec.components.keeper.storage.size)"
                         message: "Disk size cannot be decreased"
           componentsOrder:
