@@ -105,6 +105,60 @@ provider:
   # Must match the Go constant ProviderName in internal/common/spec.go
   # so the controller's predicate filter and Provider CR lookup agree.
   name: altinity-clickhouse
+  # -- Short provider identifier, used as the prefix of preset names
+  # (e.g. 'clickhouse-standalone').
+  shortName: clickhouse
+
+# -- ClusterInstancePresets installed with the provider: well-known starting
+# points users pick when they create an Instance in any namespace. Each entry
+# has a 'name' (prefixed with provider.shortName), 'enabled', and a 'spec' (an
+# Instance spec; providerRef is set by the chart). Presets are cluster-scoped,
+# so a spec must not reference namespaced objects such as Secrets. version is
+# the provider's default version bundle; keep it in step with
+# definition/versions.yaml (a unit test checks it).
+presets:
+  - name: standalone
+    enabled: true
+    spec:
+      version: "26.8"
+      topology:
+        type: standalone
+      components:
+        engine:
+          type: clickhouse
+          replicas: 1
+          resources:
+            limits:
+              cpu: "1"
+              memory: 4Gi
+          storage:
+            size: 25Gi
+  - name: replicated
+    enabled: true
+    spec:
+      version: "26.8"
+      topology:
+        type: replicated
+        parameters:
+          numShards: 1
+      components:
+        engine:
+          type: clickhouse
+          replicas: 2
+          resources:
+            limits:
+              cpu: "2"
+              memory: 8Gi
+          storage:
+            size: 50Gi
+        keeper:
+          type: clickhouse-keeper
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          storage:
+            size: 10Gi
 
 # -- Additional environment variables to set on the provider container
 extraEnv: []
