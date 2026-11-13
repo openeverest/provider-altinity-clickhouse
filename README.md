@@ -125,6 +125,13 @@ helm install provider-altinity-clickhouse \
   it: `kubectl` prints a warning, and the `Instance` reports it once created. Changes checked
   against the running cluster, such as volume sizes, are also admitted with a warning, and
   block the `Instance` until they are reverted.
+- The chart installs a `ClusterInstancePreset` per topology, the starting points the UI
+  offers when you create an Instance in any namespace: `clickhouse-standalone` (1 CPU, 4Gi,
+  25Gi) and `clickhouse-replicated` (one shard of 2 replicas with 2 CPU, 8Gi, 50Gi each, and
+  3 Keeper nodes with 1 CPU, 1Gi, 10Gi). Change or disable them, or add your own, under
+  `presets` in the chart values; `provider.shortName` prefixes their names. Presets pin
+  the provider's default [version](#versions) bundle, which a provider upgrade moves with
+  the catalog, and reference no namespaced objects.
 
 Upgrade and uninstall:
 
