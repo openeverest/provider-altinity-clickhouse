@@ -15,7 +15,9 @@ spec:
     the connection details. Clients connect verifying the certificate, and a
     renewed certificate is served by ClickHouse and Keeper without a restart.
     Switching to optional mode restores the plaintext ports and lifts the
-    NetworkPolicies. Requires cert-manager in the cluster
+    NetworkPolicies. Turning TLS off moves ClickHouse and Keeper back to the
+    plaintext ports, removes the certificates and issuers, and points the
+    connection details at plain HTTP. Requires cert-manager in the cluster
     (installed by the dev stack). The CI cluster does not enforce
     NetworkPolicies, so only the policy itself is asserted.
   timeouts:
@@ -60,6 +62,19 @@ spec:
               metadata:
                 name: itest-ch-tls-keeper-access
                 namespace: default
+        # Turning TLS off restarts the pods on plaintext and removes the
+        # certificates once nothing mounts them.
+        - patch:
+            file: 30-disable.yaml
+        - assert:
+            timeout: 15m
+            file: 30-assert.yaml
+        - error:
+            timeout: 3m
+            file: 30-errors.yaml
+        - script:
+            timeout: 12m
+            content: sh ./plaintext-check.sh
       finally:
         - command:
             entrypoint: kubectl
