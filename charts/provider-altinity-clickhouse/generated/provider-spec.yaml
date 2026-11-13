@@ -259,13 +259,14 @@ spec:
               components:
                 cpu:
                   fieldParams:
-                    defaultValue: 0.5
+                    defaultValue: 1
                     label: CPU
-                    step: 0.5
+                    step: 1
                   path: spec.components.keeper.resources.limits.cpu
                   uiType: number
                   validation:
-                    min: 0.5
+                    int: true
+                    min: 1
                     required: true
                 disk:
                   fieldParams:
@@ -281,7 +282,7 @@ spec:
                     modes:
                       edit:
                         celExpressions:
-                          - celExpr: spec.components.keeper.storage.size >= original.spec.components.keeper.storage.size
+                          - celExpr: double(spec.components.keeper.storage.size) >= double(original.spec.components.keeper.storage.size)
                             message: Disk size cannot be decreased
                     required: true
                 memory:
@@ -331,6 +332,7 @@ spec:
                   path: spec.components.engine.resources.limits.cpu
                   uiType: number
                   validation:
+                    int: true
                     min: 1
                     required: true
                 disk:
@@ -347,7 +349,7 @@ spec:
                     modes:
                       edit:
                         celExpressions:
-                          - celExpr: spec.components.engine.storage.size >= original.spec.components.engine.storage.size
+                          - celExpr: double(spec.components.engine.storage.size) >= double(original.spec.components.engine.storage.size)
                             message: Disk size cannot be decreased
                     required: true
                 memory:
@@ -522,6 +524,7 @@ spec:
                   path: spec.components.engine.resources.limits.cpu
                   uiType: number
                   validation:
+                    int: true
                     min: 1
                     required: true
                 disk:
@@ -538,7 +541,7 @@ spec:
                     modes:
                       edit:
                         celExpressions:
-                          - celExpr: spec.components.engine.storage.size >= original.spec.components.engine.storage.size
+                          - celExpr: double(spec.components.engine.storage.size) >= double(original.spec.components.engine.storage.size)
                             message: Disk size cannot be decreased
                     required: true
                 memory:

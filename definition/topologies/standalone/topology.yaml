@@ -40,8 +40,11 @@ ui:
                 label: "CPU"
                 defaultValue: 1
                 step: 1
+              # Whole cores: the API takes a CPU quantity as a whole number or
+              # a string, so a fractional number is rejected.
               validation:
                 required: true
+                int: true
                 min: 1
             memory:
               uiType: number
@@ -70,7 +73,9 @@ ui:
                 modes:
                   edit:
                     celExpressions:
-                      - celExpr: "spec.components.engine.storage.size >= original.spec.components.engine.storage.size"
+                      # double(): a dialog for another section passes this field as
+                      # the raw string ("10"), and "10" >= 10 is a CEL error.
+                      - celExpr: "double(spec.components.engine.storage.size) >= double(original.spec.components.engine.storage.size)"
                         message: "Disk size cannot be decreased"
           componentsOrder:
             - cpu

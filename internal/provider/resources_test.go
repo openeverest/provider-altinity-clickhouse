@@ -90,3 +90,4 @@ func TestBuildCHIHonoursRequests(t *testing.T) {
 	assert.Equal(t, "1", container.Resources.Limits.Cpu().String())
 	assert.Equal(t, "4Gi", container.Resources.Limits.Memory().String())
 }
+
