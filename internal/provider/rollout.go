@@ -213,13 +213,16 @@ func inputsHash(c *controller.Context) (string, error) {
 	} else if found {
 		credentials = userCredentialsRevision(secret)
 	}
+	// Suspending and resuming are the user's changes too; omitted while not
+	// suspended, so the inputs of running Instances keep their recorded hash.
 	return hashJSON(struct {
 		Version     string `json:"version,omitempty"`
 		Topology    any    `json:"topology,omitempty"`
 		Parameters  any    `json:"parameters,omitempty"`
 		Components  any    `json:"components,omitempty"`
 		Credentials string `json:"credentials,omitempty"`
-	}{spec.Version, spec.Topology, spec.Parameters, spec.Components, credentials})
+		Suspended   bool   `json:"suspended,omitempty"`
+	}{spec.Version, spec.Topology, spec.Parameters, spec.Components, credentials, stored.SuspendRequested()})
 }
 
 // specHash fingerprints a rendered object's spec.

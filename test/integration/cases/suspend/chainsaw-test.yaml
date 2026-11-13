@@ -1,0 +1,113 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: suspend
+spec:
+  description: |
+    Suspend a replicated Instance with rows: ClickHouse and Keeper are stopped
+    (no pods, no client Service) and the Instance reports Suspended, while the
+    volumes stay. Spec changes are rejected while it is suspended. Resuming
+    brings both back with the rows, and replication works.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk,pod,pvc -o yaml
+    - script:
+        content: kubectl logs -A -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=150
+  steps:
+    - name: create
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-suspend
+              . ../../lib/clickhouse.sh
+              wait_until "both replicas registered" equals 2 replicas_in_cluster
+              q 0 "CREATE TABLE IF NOT EXISTS default.suspend_probe ON CLUSTER '{cluster}' (id UInt64)
+                   ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/suspend_probe', '{replica}') ORDER BY id"
+              q 0 "INSERT INTO default.suspend_probe SELECT number FROM numbers(1000)"
+              wait_until "rows replicated" equals 1000 q 1 "SELECT count() FROM default.suspend_probe"
+      # Always, also when a later step fails: re-runs on the same cluster
+      # must not find this Instance's volumes.
+      cleanup:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-suspend
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-suspend
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse-keeper.altinity.com/chk=itest-ch-suspend-keeper
+              - --ignore-not-found
+              - --wait=false
+
+    - name: suspend
+      try:
+        - patch:
+            file: 20-suspend.yaml
+        - assert:
+            timeout: 10m
+            file: 20-assert.yaml
+        - error:
+            timeout: 3m
+            file: 20-errors.yaml
+        # The volumes stay: 2 ClickHouse and 3 Keeper claims, still bound.
+        - script:
+            content: |
+              set -eu
+              n=$(kubectl get pvc -n default -l clickhouse.altinity.com/chi=itest-ch-suspend --no-headers | grep -c Bound)
+              k=$(kubectl get pvc -n default -l clickhouse-keeper.altinity.com/chk=itest-ch-suspend-keeper --no-headers | grep -c Bound)
+              [ "$n" = 2 ] && [ "$k" = 3 ] || { echo "expected 2 + 3 bound volumes, got $n + $k"; exit 1; }
+        # Spec changes wait until the Instance is resumed.
+        - script:
+            content: |
+              kubectl -n default patch instances.core.openeverest.io itest-ch-suspend --type=merge \
+                -p '{"spec":{"components":{"engine":{"resources":{"limits":{"memory":"2Gi"}}}}}}'
+            check:
+              ($error != null): true
+              (contains($stderr, 'suspended')): true
+
+    - name: resume
+      try:
+        - patch:
+            file: 30-resume.yaml
+        - assert:
+            timeout: 15m
+            file: 30-assert.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-suspend
+              . ../../lib/clickhouse.sh
+              wait_until "both replicas registered" equals 2 replicas_in_cluster
+              wait_until "rows intact on replica 0" equals 1000 q 0 "SELECT count() FROM default.suspend_probe"
+              wait_until "rows intact on replica 1" equals 1000 q 1 "SELECT count() FROM default.suspend_probe"
+              q 0 "INSERT INTO default.suspend_probe VALUES (1000000)"
+              wait_until "new row replicated" equals 1001 q 1 "SELECT count() FROM default.suspend_probe"

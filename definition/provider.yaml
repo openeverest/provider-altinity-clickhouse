@@ -10,3 +10,8 @@ components:
     parametersSchema: ClickHouseParameters
   keeper:
     type: clickhouse-keeper
+
+# Instances can be suspended (spec.suspend.suspended): the provider stops
+# ClickHouse and Keeper and keeps their volumes. Published as
+# Provider.spec.suspend.
+suspend: {}

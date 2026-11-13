@@ -1,0 +1,28 @@
+# Both installations are stopped and the Instance reports Suspended.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-suspend
+  namespace: default
+status:
+  phase: Suspended
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-suspend
+  namespace: default
+spec:
+  stop: "True"
+status:
+  status: Completed
+---
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-suspend-keeper
+  namespace: default
+spec:
+  stop: "True"
+status:
+  status: Completed

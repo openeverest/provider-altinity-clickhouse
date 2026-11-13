@@ -244,6 +244,9 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 	if err != nil {
 		return err
 	}
+	if suspended(c) {
+		return suspendReplicated(c, gate, desiredCHI, desiredCHK)
+	}
 
 	if _, err := gate.apply(c, desiredCHK, "chk"); err != nil {
 		return fmt.Errorf("apply ClickHouseKeeperInstallation: %w", err)
@@ -637,6 +640,8 @@ func buildCHIWired(c *controller.Context, l clusterLayout, keeper keeperWiring) 
 		spec.Configuration.Zookeeper = keeperZookeeper(c, keeper.port)
 	}
 
+	spec.Stop = stopSwitch(c)
+
 	return &chiv1.ClickHouseInstallation{
 		ObjectMeta: c.ObjectMeta(c.Name()),
 		Spec:       spec,
@@ -690,6 +695,7 @@ func buildCHKWired(c *controller.Context, wiring keeperWiring) (*chkv1.ClickHous
 	chk := &chkv1.ClickHouseKeeperInstallation{
 		ObjectMeta: c.ObjectMeta(keeperCRName(c.Name())),
 		Spec: chkv1.ChkSpec{
+			Stop: stopSwitch(c),
 			Configuration: &chkv1.Configuration{
 				Clusters: []*chkv1.Cluster{
 					{
