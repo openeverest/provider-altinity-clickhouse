@@ -178,7 +178,7 @@ func TestBuildCHIHardensAuthentication(t *testing.T) {
 	})
 	c := newTestContext(t, newTestInstance("db", "ns", ""), creds)
 
-	chi, err := buildCHI(c, 2)
+	chi, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
 
 	users := chi.Spec.Configuration.Users

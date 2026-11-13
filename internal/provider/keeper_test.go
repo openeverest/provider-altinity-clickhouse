@@ -112,7 +112,7 @@ func TestDeprecatedBundleResolvesToFinalPatch(t *testing.T) {
 	chk, c := mustBuildCHK(t, instance)
 	assert.Equal(t, "clickhouse/clickhouse-keeper:25.3.14.14", keeperContainer(chk).Image)
 
-	chi, err := buildCHI(c, 2)
+	chi, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
 	assert.Equal(t, "clickhouse/clickhouse-server:25.3.14.14", chi.Spec.Templates.PodTemplates[0].Spec.Containers[0].Image)
 }

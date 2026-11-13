@@ -191,6 +191,18 @@ for two replicas:
 
 The case scales the provider down, so it does not run alongside the others.
 
+### `sharding`
+
+Provisions a replicated Instance with `numShards: 2` and one replica per shard:
+
+1. The CHI has 2 shards of 1 replica and is wired to Keeper.
+2. Rows inserted through a `Distributed` table over a `ReplicatedMergeTree`
+   table spread over both shards.
+3. Raising `numShards` to 3: the new shard gets both tables, keeps no
+   existing rows, reads every row through the `Distributed` table, and new
+   rows reach it.
+4. Lowering `numShards` is rejected at admission, and the CHI keeps 3 shards.
+
 The day-2 cases share helpers in [`lib/clickhouse.sh`](lib/clickhouse.sh).
 
 Each case cleans up its Instance in a `finally` block (the provider's own

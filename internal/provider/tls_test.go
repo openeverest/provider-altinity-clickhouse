@@ -104,7 +104,7 @@ func TestConfigureExposePorts(t *testing.T) {
 }
 
 func TestBuildCHITLSModes(t *testing.T) {
-	required, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", tlsRequiredParams)), 2)
+	required, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", tlsRequiredParams)), replicasLayout(2))
 	require.NoError(t, err)
 	assert.True(t, appliedTLSRequired(required))
 	assert.Empty(t, required.Annotations, "the operator copies them onto the pods, restarting them")
@@ -113,12 +113,12 @@ func TestBuildCHITLSModes(t *testing.T) {
 	assert.Contains(t, openssl, "<client>")
 	assert.Contains(t, openssl, "<caConfig>/etc/clickhouse-server/secrets.d/ca.crt/db-server-tls/ca.crt</caConfig>")
 
-	optional, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", tlsOptionalParams)), 2)
+	optional, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", tlsOptionalParams)), replicasLayout(2))
 	require.NoError(t, err)
 	assert.False(t, appliedTLSRequired(optional))
 	assert.True(t, optional.Spec.Configuration.Clusters[0].Secure.Value())
 
-	plain, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", "")), 2)
+	plain, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", "")), replicasLayout(2))
 	require.NoError(t, err)
 	assert.False(t, appliedTLSRequired(plain))
 	assert.Nil(t, plain.Spec.Configuration.Clusters[0].Secure)
@@ -126,7 +126,7 @@ func TestBuildCHITLSModes(t *testing.T) {
 }
 
 func TestServerDNSNames(t *testing.T) {
-	names := serverDNSNames("db", "ns", 2)
+	names := serverDNSNames("db", "ns", replicasLayout(2))
 	for _, name := range []string{
 		"clickhouse-db", "clickhouse-db.ns.svc.cluster.local",
 		"chi-db-clickhouse-0-0", "chi-db-clickhouse-0-0.ns", "chi-db-clickhouse-0-0.ns.svc",
@@ -141,7 +141,7 @@ func TestServerDNSNames(t *testing.T) {
 	// The operator cuts the CHI name to 60 characters and trims separators.
 	long := "a234567890b234567890c234567890d234567890e234567890f23456789-xyz"
 	assert.Equal(t, []string{"chi-a234567890b234567890c234567890d234567890e234567890f23456789-clickhouse-0-0"},
-		replicaServiceNames(long, 1))
+		hostServiceNames(long, replicasLayout(1)))
 }
 
 func serverCertificate(t *testing.T, c *controller.Context) *cmapi.Certificate {

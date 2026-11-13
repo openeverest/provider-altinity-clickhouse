@@ -16,6 +16,7 @@ package provider
 
 import (
 	"cmp"
+	"fmt"
 	"testing"
 
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
@@ -45,7 +46,7 @@ const (
 // standing in for the live object the reference rules compare against.
 func deployedCHI(t *testing.T, instance *corev1alpha1.Instance, replicas int) *chiv1.ClickHouseInstallation {
 	t.Helper()
-	chi, err := buildCHI(newTestContext(t, instance.DeepCopy()), replicas)
+	chi, err := buildCHI(newTestContext(t, instance.DeepCopy()), replicasLayout(replicas))
 	require.NoError(t, err)
 	return chi
 }
@@ -87,6 +88,22 @@ func engineParameters(raw string) func(*corev1alpha1.Instance) {
 
 func replicas(n int32) func(*corev1alpha1.ComponentSpec) {
 	return func(c *corev1alpha1.ComponentSpec) { c.Replicas = &n }
+}
+
+// shards sets the replicated topology's numShards.
+func shards(n int) func(*corev1alpha1.Instance) {
+	return func(in *corev1alpha1.Instance) {
+		in.Spec.Topology.Parameters = &runtime.RawExtension{Raw: []byte(fmt.Sprintf(`{"numShards":%d}`, n))}
+	}
+}
+
+// both applies the mutations in order.
+func both(mutations ...func(*corev1alpha1.Instance)) func(*corev1alpha1.Instance) {
+	return func(in *corev1alpha1.Instance) {
+		for _, m := range mutations {
+			m(in)
+		}
+	}
 }
 
 func addKeeper(in *corev1alpha1.Instance) {
@@ -156,6 +173,28 @@ func TestValidate(t *testing.T) {
 			name:    "three replicas in the replicated topology",
 			fixture: replicatedFixture,
 			mutate:  component(common.ComponentEngine, replicas(3)),
+		},
+		{
+			name:    "three shards of two replicas",
+			fixture: replicatedFixture,
+			mutate:  shards(3),
+		},
+		{
+			name:    "one replica per shard with several shards",
+			fixture: replicatedFixture,
+			mutate:  both(shards(2), component(common.ComponentEngine, replicas(1))),
+		},
+		{
+			name:    "one replica in a single explicit shard",
+			fixture: replicatedFixture,
+			mutate:  both(shards(1), component(common.ComponentEngine, replicas(1))),
+			want:    []string{"spec.components[engine].replicas"},
+		},
+		{
+			name:    "no shards",
+			fixture: replicatedFixture,
+			mutate:  shards(0),
+			want:    []string{"spec.topology.parameters.numShards"},
 		},
 		{
 			name:    "three replicas in the standalone topology",
@@ -421,6 +460,40 @@ func TestValidateTransitions(t *testing.T) {
 				addKeeper(in)
 				component(common.ComponentEngine, replicas(2))(in)
 			},
+		},
+		{
+			name:    "standalone to sharded: the data stays on the first shard",
+			fixture: standaloneFixture,
+			after: func(in *corev1alpha1.Instance) {
+				in.Spec.Topology.Type = common.TopologyReplicated
+				addKeeper(in)
+				shards(3)(in)
+			},
+		},
+		{
+			name:    "shards added",
+			fixture: replicatedFixture,
+			before:  shards(2),
+			after:   shards(4),
+		},
+		{
+			name:    "shards added to a cluster without the parameter",
+			fixture: replicatedFixture,
+			after:   shards(2),
+		},
+		{
+			name:    "shards removed",
+			fixture: replicatedFixture,
+			before:  shards(3),
+			after:   shards(2),
+			want:    []string{"spec.topology.parameters.numShards"},
+		},
+		{
+			name:    "shards parameter dropped from a sharded cluster",
+			fixture: replicatedFixture,
+			before:  shards(2),
+			after:   func(in *corev1alpha1.Instance) { in.Spec.Topology.Parameters = nil },
+			want:    []string{"spec.topology.parameters.numShards"},
 		},
 		{
 			name:    "ClickHouse upgraded",

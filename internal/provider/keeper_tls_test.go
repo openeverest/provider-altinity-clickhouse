@@ -142,7 +142,7 @@ func TestKeeperWiringRendering(t *testing.T) {
 	assert.Nil(t, chk.Spec.Configuration.Clusters[0].Insecure, "unset as before TLS existed")
 	assert.Nil(t, chk.Spec.Configuration.Files)
 
-	chi, err := buildCHIWired(c, 2, keeperWiring{secure: true, port: common.KeeperSecurePort})
+	chi, err := buildCHIWired(c, replicasLayout(2), keeperWiring{secure: true, port: common.KeeperSecurePort})
 	require.NoError(t, err)
 	zk := chi.Spec.Configuration.Zookeeper
 	assert.Nil(t, zk.Keeper)
@@ -156,7 +156,7 @@ func TestKeeperWiringRendering(t *testing.T) {
 	assert.Equal(t, "9010", settings.Get("interserver_https_port").ScalarString())
 	assert.Equal(t, "_removed_", settings.Get("interserver_http_port").ScalarString())
 
-	chi, err = buildCHIWired(c, 2, keeperWiring{plaintext: true})
+	chi, err = buildCHIWired(c, replicasLayout(2), keeperWiring{plaintext: true})
 	require.NoError(t, err)
 	require.NotNil(t, chi.Spec.Configuration.Zookeeper.Keeper, "the operator's Keeper reference")
 	assert.Equal(t, "db-keeper", chi.Spec.Configuration.Zookeeper.Keeper.Name)
@@ -166,13 +166,13 @@ func TestKeeperWiringRendering(t *testing.T) {
 // later step; until then it still verifies Keeper with the CA.
 func TestCHIKeepsKeeperCAWhileOnSecurePort(t *testing.T) {
 	c := newTestContext(t, newReplicatedTestInstance(""))
-	chi, err := buildCHIWired(c, 2, keeperWiring{secure: true, plaintext: true, port: common.KeeperSecurePort})
+	chi, err := buildCHIWired(c, replicasLayout(2), keeperWiring{secure: true, plaintext: true, port: common.KeeperSecurePort})
 	require.NoError(t, err)
 	require.NotNil(t, chi.Spec.Configuration.Files)
 	assert.True(t, chi.Spec.Configuration.Files.Has("openssl.xml"))
 	assert.Nil(t, chi.Spec.Configuration.Settings.Get("https_port"), "the client ports are off")
 
-	chi, err = buildCHIWired(c, 2, keeperWiring{plaintext: true, port: common.KeeperPort})
+	chi, err = buildCHIWired(c, replicasLayout(2), keeperWiring{plaintext: true, port: common.KeeperPort})
 	require.NoError(t, err)
 	assert.Nil(t, chi.Spec.Configuration.Files)
 }

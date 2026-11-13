@@ -59,7 +59,8 @@ provider itself is covered under [Upgrading the provider](#upgrading-the-provide
 | Capability | Status | Notes |
 |---|---|---|
 | Provisioning | ✅ | |
-| Horizontal scaling | ⚠️ | `spec.components.engine.replicas` through the API (minimum 2 in the `replicated` topology; `standalone` runs one). The UI fixes the replica count at creation |
+| Horizontal scaling | ⚠️ | `spec.components.engine.replicas` through the API (replicas per shard in the `replicated` topology; `standalone` runs one). The UI fixes the replica count at creation |
+| Sharding | ✅ | `spec.topology.parameters.numShards` in the `replicated` topology; shards can be added, also in the UI, not removed; see [Sharding](#sharding) |
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` limits and requests; see [Resources](#resources) |
 | Version upgrades | ✅ | change `spec.version` to a newer bundle; downgrades are rejected; see [Upgrading ClickHouse](#upgrading-clickhouse) |
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
@@ -398,6 +399,8 @@ error names the Instance field at fault, such as
 - growing `storage.size` when the volumes' StorageClass does not allow volume
   expansion (the operator could not resize them);
 - changing the topology from `replicated` to `standalone`;
+- removing shards (`numShards` below the running cluster's): their data would be lost;
+- fewer than 2 replicas in a `replicated` Instance with a single shard;
 - downgrading ClickHouse below the running version (images whose tags are not
   versions, such as `latest`, are not compared);
 - more than one replica in the `standalone` topology;
@@ -430,7 +433,7 @@ operator's `Completed` still describes the previous change.
 | Topology | Default | Description |
 |---|---|---|
 | `standalone` | ✅ | Single ClickHouse node, no coordination dependency |
-| `replicated` | | Multi-replica ClickHouse (minimum 2) with an automatically provisioned ClickHouse Keeper quorum |
+| `replicated` | | ClickHouse shards (1 by default) of replicas, with an automatically provisioned ClickHouse Keeper quorum |
 <!-- END GENERATED: topologies -->
 
 The `replicated` topology provisions a `ClickHouseKeeperInstallation` first and waits for the
@@ -447,6 +450,48 @@ replicas. Existing tables are not converted: a `MergeTree` table keeps its rows 
 first replica, and the new replicas get its schema with no rows. To replicate the data,
 create a `ReplicatedMergeTree` table `ON CLUSTER '{cluster}'` and
 `INSERT INTO … SELECT` from the old one. Switching back to `standalone` is rejected.
+
+### Sharding
+
+The `replicated` topology splits the data into `numShards` shards (default 1). Each shard
+runs `spec.components.engine.replicas` replicas, which copy its data:
+
+```yaml
+spec:
+  topology:
+    type: replicated
+    parameters:
+      numShards: 3
+  components:
+    engine:
+      type: clickhouse
+      replicas: 2        # per shard: 3 × 2 = 6 ClickHouse pods
+```
+
+- A single shard needs at least 2 replicas. With 2 or more shards, 1 replica per shard is
+  accepted: the cluster scales out, but a lost node makes its shard's data unavailable
+  until it is back.
+- ClickHouse does not spread rows by itself: write and read through a `Distributed` table
+  over a replicated table, both created `ON CLUSTER '{cluster}'`:
+
+  ```sql
+  CREATE TABLE events_local ON CLUSTER '{cluster}' (id UInt64, ts DateTime)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/events_local', '{replica}')
+    ORDER BY id;
+  CREATE TABLE events ON CLUSTER '{cluster}' AS events_local
+    ENGINE = Distributed('{cluster}', default, events_local, cityHash64(id));
+  ```
+
+  The cluster is named `clickhouse`; `{cluster}`, `{shard}` and `{replica}` are macros
+  every host defines.
+- **Adding shards** (raise `numShards`, also in the UI's Scaling section) adds hosts and
+  rolls the running ones, one at a time, onto the new cluster definition. The operator
+  creates the replicated and `Distributed` tables on the new shards. Existing rows stay where they are, and are not
+  moved onto the new shards. New rows written through a `Distributed` table spread over
+  all shards. Tables of other engines are not copied onto new shards.
+- **Removing shards** is rejected: their data would be lost.
+- A `standalone` Instance can switch to `replicated` with several shards at once
+  (see above); its data stays on the first shard.
 
 ### ClickHouse Keeper
 

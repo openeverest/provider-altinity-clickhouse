@@ -82,7 +82,7 @@ func TestBuildCHIHonoursRequests(t *testing.T) {
 	engine.Resources = &corev1.ResourceRequirements{Requests: list("500m", "2G")}
 	instance.Spec.Components[common.ComponentEngine] = engine
 
-	chi, err := buildCHI(newTestContext(t, instance), 1)
+	chi, err := buildCHI(newTestContext(t, instance), replicasLayout(1))
 	require.NoError(t, err)
 	container := chi.Spec.Templates.PodTemplates[0].Spec.Containers[0]
 	assert.Equal(t, "500m", container.Resources.Requests.Cpu().String())

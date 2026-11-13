@@ -207,7 +207,7 @@ func TestSyncLabelsEnginePods(t *testing.T) {
 func TestBuildCHIProvisionsAdminUser(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", ""))
 
-	chi, err := buildCHI(c, 1)
+	chi, err := buildCHI(c, replicasLayout(1))
 	require.NoError(t, err)
 
 	users := chi.Spec.Configuration.Users
@@ -239,7 +239,7 @@ func TestStorageReclaimPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newTestContext(t, newTestInstance("db", "ns", tc.params))
 
-			chi, err := buildCHI(c, 2)
+			chi, err := buildCHI(c, replicasLayout(2))
 			require.NoError(t, err)
 			require.Len(t, chi.Spec.Templates.VolumeClaimTemplates, 1)
 			assert.Equal(t, tc.want, chi.Spec.Templates.VolumeClaimTemplates[0].PVCReclaimPolicy)
@@ -255,7 +255,7 @@ func TestStorageReclaimPolicy(t *testing.T) {
 func TestBuildCHIWithTLS(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`))
 
-	chi, err := buildCHI(c, 2)
+	chi, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
 
 	files := chi.Spec.Configuration.Files
@@ -338,7 +338,7 @@ func TestEnsureIssuerSelfSigned(t *testing.T) {
 func TestBuildCHIReferencesKeeper(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", ""))
 
-	replicated, err := buildCHI(c, 2)
+	replicated, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
 	zk := replicated.Spec.Configuration.Zookeeper
 	require.NotNil(t, zk)
@@ -347,9 +347,15 @@ func TestBuildCHIReferencesKeeper(t *testing.T) {
 	assert.Equal(t, &chiv1.KeeperRef{Name: "db-keeper"}, zk.Keeper)
 	assert.Empty(t, zk.Nodes)
 
-	standalone, err := buildCHI(c, 1)
+	standalone, err := buildCHI(c, replicasLayout(1))
 	require.NoError(t, err)
 	assert.Nil(t, standalone.Spec.Configuration.Zookeeper)
+}
+
+// replicasLayout is a single shard of n replicas, wired to Keeper when there
+// are several, as the layout of a standalone (1) or replicated Instance.
+func replicasLayout(n int) clusterLayout {
+	return clusterLayout{shards: 1, replicas: n, keeper: n > 1}
 }
 
 func newReplicatedTestInstance(params string) *corev1alpha1.Instance {

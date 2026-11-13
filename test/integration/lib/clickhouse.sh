@@ -6,14 +6,18 @@
 
 NS=${NS:-default}
 
-# pod <replica index>: the ClickHouse pod of a replica (single shard).
-pod() { echo "chi-$NAME-clickhouse-0-$1-0"; }
+# pod <replica index> [shard index]: the ClickHouse pod of a replica, in
+# the first shard unless given.
+pod() { echo "chi-$NAME-clickhouse-${2:-0}-$1-0"; }
 
-# q <replica index> <sql>: runs a query as the admin user.
-q() {
-  kubectl exec -n "$NS" "$(pod "$1")" -c clickhouse -- clickhouse-client \
+# q <replica index> <sql>: runs a query as the admin user, in the first shard.
+q() { qs 0 "$1" "$2"; }
+
+# qs <shard index> <replica index> <sql>: runs a query as the admin user.
+qs() {
+  kubectl exec -n "$NS" "$(pod "$2" "$1")" -c clickhouse -- clickhouse-client \
     --user admin --password "$(kubectl get secret "$NAME-credentials" -n "$NS" -o jsonpath='{.data.password}' | base64 -d)" \
-    -q "$2"
+    -q "$3"
 }
 
 # wait_until <description> <command...>: retries for up to 10 minutes.
