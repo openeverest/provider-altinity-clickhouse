@@ -1,0 +1,15 @@
+# Native metrics stay published without a destination.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-monitoring
+  namespace: default
+status:
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
+  monitoring:
+    (destinations == null): true
+    sources:
+      metrics:
+        - component: engine
+          port: metrics

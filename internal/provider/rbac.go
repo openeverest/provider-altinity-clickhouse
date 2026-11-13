@@ -39,8 +39,15 @@ package provider
 // +kubebuilder:rbac:groups=clickhouse-keeper.altinity.com,resources=clickhousekeeperinstallations/status,verbs=get
 // +kubebuilder:rbac:groups=clickhouse-keeper.altinity.com,resources=clickhousekeeperinstallations/finalizers,verbs=update
 
-// Prometheus operator PodMonitor for exposing ClickHouse metrics
-// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
+// Monitoring contract: the runtime watches the Instances' bindings and the
+// destinations and classes they reference, and reads the kube-system
+// namespace UID that identifies the cluster in the published sources.
+// +kubebuilder:rbac:groups=monitoring.openeverest.io,resources=monitoringclasses;monitoringdestinations;monitoringbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=monitoring.openeverest.io,resources=monitoringbindings/status,verbs=patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get
+
+// The PodMonitor earlier releases created, deleted on upgrade
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=delete
 
 // cert-manager resources for provisioning TLS certificates
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete

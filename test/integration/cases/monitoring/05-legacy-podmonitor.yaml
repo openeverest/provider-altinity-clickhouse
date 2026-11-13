@@ -1,0 +1,18 @@
+# The PodMonitor a release before the monitoring contract created for
+# podMonitor: enabled. The provider deletes it.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: itest-ch-monitoring-metrics
+  namespace: default
+  labels:
+    app.kubernetes.io/managed-by: everest
+    app.kubernetes.io/instance: itest-ch-monitoring
+    core.openeverest.io/provider: altinity-clickhouse
+spec:
+  selector:
+    matchLabels:
+      clickhouse.altinity.com/chi: itest-ch-monitoring
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics

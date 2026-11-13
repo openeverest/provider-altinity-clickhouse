@@ -25,7 +25,6 @@ import (
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -65,7 +64,6 @@ func New() *Provider {
 			SchemeFuncs: []func(*runtime.Scheme) error{
 				chiv1.AddToScheme,
 				chkv1.AddToScheme,
-				monitoringv1.AddToScheme,
 				cmapi.AddToScheme,
 				networkingv1.AddToScheme,
 				storagev1.AddToScheme,
@@ -138,9 +136,9 @@ func (p *Provider) Sync(c *controller.Context) error {
 		syncErr = p.syncStandalone(c)
 	}
 
-	// The PodMonitor is independent of CHI readiness, so reconcile it even while
-	// the CHI is still provisioning (syncErr may be a WaitError).
-	if err := reconcilePodMonitor(c); err != nil {
+	// Releases before the monitoring contract created a PodMonitor; remove it
+	// even while the CHI is still provisioning (syncErr may be a WaitError).
+	if err := deleteLegacyPodMonitor(c); err != nil {
 		return err
 	}
 	return syncErr
@@ -257,7 +255,7 @@ func (p *Provider) Cleanup(c *controller.Context) error {
 		return fmt.Errorf("delete ClickHouseInstallation: %w", err)
 	}
 
-	if err := deletePodMonitor(c); err != nil {
+	if err := deleteLegacyPodMonitor(c); err != nil {
 		return err
 	}
 
@@ -456,7 +454,7 @@ func buildCHIWired(c *controller.Context, l clusterLayout, keeper keeperWiring) 
 	container := corev1.Container{
 		Name:  common.ContainerClickHouse,
 		Image: image,
-		// Named port for the native Prometheus endpoint, targeted by the PodMonitor.
+		// Named port of the native Prometheus endpoint, published as a monitoring source.
 		Ports: []corev1.ContainerPort{
 			{Name: common.MetricsPortName, ContainerPort: common.MetricsPort, Protocol: corev1.ProtocolTCP},
 		},
