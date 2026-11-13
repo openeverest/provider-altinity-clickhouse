@@ -41,6 +41,54 @@ spec:
               wait_until "the writer is inserting" sh -c \
                 "kubectl logs -n $NS itest-ch-upgrade-repl-writer | grep -q '^ok '"
 
+      # Always, also when a later step fails: re-runs on the same cluster
+      # must not find this Instance's volumes.
+      cleanup:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pod
+              - itest-ch-upgrade-repl-writer
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-upgrade-repl
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-upgrade-repl
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse-keeper.altinity.com/chk=itest-ch-upgrade-repl-keeper
+              - --ignore-not-found
+              - --wait=false
+
     - name: upgrade-to-26.8-under-writes
       try:
         - patch:
@@ -87,48 +135,3 @@ spec:
               [ "$r0" = "$r1" ] || fail "replicas diverged"
               # A timed-out insert may still have committed, so rows >= successes.
               [ "$r0" -ge "$ok" ] || fail "rows the writer saw committed are missing"
-      finally:
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - pod
-              - itest-ch-upgrade-repl-writer
-              - -n
-              - default
-              - --ignore-not-found
-              - --wait=false
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - instances.core.openeverest.io
-              - itest-ch-upgrade-repl
-              - -n
-              - default
-              - --ignore-not-found
-              - --wait=false
-        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
-        # them so re-runs on the same cluster start from empty storage.
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - pvc
-              - -n
-              - default
-              - -l
-              - clickhouse.altinity.com/chi=itest-ch-upgrade-repl
-              - --ignore-not-found
-              - --wait=false
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - pvc
-              - -n
-              - default
-              - -l
-              - clickhouse-keeper.altinity.com/chk=itest-ch-upgrade-repl-keeper
-              - --ignore-not-found
-              - --wait=false

@@ -35,7 +35,9 @@ spec:
               # This build's values (its image included), for the upgrade back.
               helm get values "$1" -n "$2" -o yaml > "$STATE/values.yaml"
               provider_image > "$STATE/image"
-              published=$(helm show chart "$CHART_OCI" | sed -n 's/^version: //p')
+              # PUBLISHED_VERSION picks an older release, e.g. to exercise the
+              # maintenance approval path; the default is the latest one.
+              published=${PUBLISHED_VERSION:-$(helm show chart "$CHART_OCI" | sed -n 's/^version: //p')}
               echo "$published" > "$STATE/published"
               echo "moving $1 in $2 from $(cat "$STATE/image") to the published chart $published"
               helm upgrade "$1" "$CHART_OCI" --version "$published" -n "$2" --reset-values \
@@ -72,8 +74,51 @@ spec:
                    ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/upgrade_probe', '{replica}') ORDER BY id"
               q 0 "INSERT INTO default.upgrade_probe SELECT number FROM numbers(1000)"
               wait_until "rows replicated" equals 1000 q 1 "SELECT count() FROM default.upgrade_probe"
-              pod_uids | sort > "$STATE/pods"
+              i=0
+              until pod_uids > "$STATE/pods" && [ "$(wc -l < "$STATE/pods")" -eq 5 ]; do
+                i=$((i + 1))
+                [ "$i" -lt 24 ] || fail "could not list the 2 ClickHouse and 3 Keeper pods"
+                sleep 5
+              done
               cat "$STATE/pods"
+
+      # Always, also when a later step fails: re-runs on the same cluster
+      # must not find this Instance's volumes.
+      cleanup:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-provider-upgrade
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-provider-upgrade
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse-keeper.altinity.com/chk=itest-ch-provider-upgrade-keeper
+              - --ignore-not-found
+              - --wait=false
 
     - name: upgrade-to-this-build
       try:
@@ -97,17 +142,22 @@ spec:
               NAME=itest-ch-provider-upgrade
               . ../../lib/clickhouse.sh
               . ./provider.sh
-              i=0
-              while [ "$i" -lt 24 ]; do
-                [ "$(phase)" = Ready ] || fail "Instance is $(phase) after the provider upgrade"
-                [ "$(pod_uids | sort)" = "$(cat "$STATE/pods")" ] || {
-                  pod_uids | sort
-                  fail "pods were replaced without maintenance approval"
-                }
-                i=$((i + 1))
+              # Reads that fail (a flaky API server) are skipped, not compared.
+              checks=0
+              end=$(($(date +%s) + 120))
+              while [ "$(date +%s)" -lt "$end" ]; do
+                if p=$(phase) && [ -n "$p" ] && now=$(pod_uids); then
+                  [ "$p" = Ready ] || fail "Instance is $p after the provider upgrade"
+                  [ "$now" = "$(cat "$STATE/pods")" ] || {
+                    echo "$now"
+                    fail "pods were replaced without maintenance approval"
+                  }
+                  checks=$((checks + 1))
+                fi
                 sleep 5
               done
-              echo "no pod restarted in the 2 minutes after the upgrade"
+              [ "$checks" -ge 6 ] || fail "only $checks of the checks could read the API"
+              echo "no pod restarted in the 2 minutes after the upgrade ($checks checks)"
               kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.pendingMaintenance}' > "$STATE/pending"
               echo "pending maintenance: $(cat "$STATE/pending")"
 
@@ -143,38 +193,3 @@ spec:
               wait_until "rows intact on replica 0" equals 1000 q 0 "SELECT count() FROM default.upgrade_probe"
               q 0 "INSERT INTO default.upgrade_probe VALUES (1000000)"
               wait_until "new row replicated" equals 1001 q 1 "SELECT count() FROM default.upgrade_probe"
-      finally:
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - instances.core.openeverest.io
-              - itest-ch-provider-upgrade
-              - -n
-              - default
-              - --ignore-not-found
-              - --wait=false
-        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
-        # them so re-runs on the same cluster start from empty storage.
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - pvc
-              - -n
-              - default
-              - -l
-              - clickhouse.altinity.com/chi=itest-ch-provider-upgrade
-              - --ignore-not-found
-              - --wait=false
-        - command:
-            entrypoint: kubectl
-            args:
-              - delete
-              - pvc
-              - -n
-              - default
-              - -l
-              - clickhouse-keeper.altinity.com/chk=itest-ch-provider-upgrade-keeper
-              - --ignore-not-found
-              - --wait=false

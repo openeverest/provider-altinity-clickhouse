@@ -33,8 +33,13 @@ wait_provider() {
   kubectl rollout status deploy -n "$1" "$2" --timeout=5m
 }
 
-# pod_uids: the ClickHouse and Keeper pods of the Instance, as "name=uid" lines.
+# pod_uids: the ClickHouse and Keeper pods of the Instance, as sorted
+# "name=uid" lines. Fails, printing nothing, when the API cannot be read, so
+# a transient API error is never mistaken for replaced pods.
 pod_uids() {
-  kubectl get pods -n "$NS" -l "clickhouse.altinity.com/chi=$NAME" -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.uid}{"\n"}{end}'
-  kubectl get pods -n "$NS" -l "clickhouse-keeper.altinity.com/chk=$NAME-keeper" -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.uid}{"\n"}{end}'
+  chi_pods=$(kubectl get pods -n "$NS" -l "clickhouse.altinity.com/chi=$NAME" \
+    -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.uid}{"\n"}{end}') || return 1
+  chk_pods=$(kubectl get pods -n "$NS" -l "clickhouse-keeper.altinity.com/chk=$NAME-keeper" \
+    -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.uid}{"\n"}{end}') || return 1
+  printf '%s\n%s\n' "$chi_pods" "$chk_pods" | sed '/^$/d' | sort
 }

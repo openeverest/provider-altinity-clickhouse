@@ -166,7 +166,8 @@ Upgrades the provider chart from the last published release to this checkout,
 the way users do:
 
 1. Moves the provider's Helm release to the published chart and image (the
-   latest version in `oci://ghcr.io/openeverest/charts`).
+   latest version in `oci://ghcr.io/openeverest/charts`; set `PUBLISHED_VERSION`
+   to start from an older one).
 2. Creates a replicated Instance and writes rows.
 3. Runs `helm upgrade` back to this checkout's chart and image, with the
    preflight hook on.
