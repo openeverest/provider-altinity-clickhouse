@@ -49,6 +49,22 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 		clickhouse = chiInstallation(chi)
 	}
 
+	if suspended(c) {
+		if !found {
+			return controller.Suspending("Creating ClickHouse"), nil
+		}
+		var chk *chkv1.ClickHouseKeeperInstallation
+		if c.Instance().GetTopologyType() == common.TopologyReplicated {
+			chk = &chkv1.ClickHouseKeeperInstallation{}
+			if found, err := getOptional(c, chk, keeperCRName(c.Name())); err != nil {
+				return controller.Status{}, err
+			} else if !found {
+				chk = nil
+			}
+		}
+		return suspendStatus(c, chi, chk)
+	}
+
 	// A cluster the operator has finished reconciling once is serving; every
 	// later change is an update of it, Keeper and TLS changes included.
 	var conn controller.ConnectionDetails

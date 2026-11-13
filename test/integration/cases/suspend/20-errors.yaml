@@ -1,0 +1,20 @@
+# No ClickHouse or Keeper pod runs, and the client Service is gone.
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+  labels:
+    clickhouse.altinity.com/chi: itest-ch-suspend
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+  labels:
+    clickhouse-keeper.altinity.com/chk: itest-ch-suspend-keeper
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-itest-ch-suspend
+  namespace: default

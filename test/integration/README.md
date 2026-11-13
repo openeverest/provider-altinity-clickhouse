@@ -143,6 +143,19 @@ default) and asserts (needs cert-manager, installed by the dev stack):
 The CI cluster does not enforce NetworkPolicies, so blocking the plaintext
 ports is only asserted through the policies themselves.
 
+### `suspend`
+
+Suspends a replicated Instance with rows and asserts:
+
+1. The Instance reports `Suspended`, the CHI and CHK carry `stop: "True"` and are
+   `Completed`, no ClickHouse or Keeper pod runs and the client Service is gone, while the
+   2 ClickHouse and 3 Keeper volumes stay bound.
+2. A spec change is rejected while it is suspended.
+3. Resuming drops the stop switch, the Instance is `Ready` again with the rows on both
+   replicas, and replication works.
+
+Needs OpenEverest with `spec.suspend` (openeverest/openeverest#3591).
+
 ### `scale`
 
 Scales a replicated Instance from 2 to 3 replicas, back to 2 and to 3 again:

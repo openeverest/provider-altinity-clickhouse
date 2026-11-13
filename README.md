@@ -68,6 +68,7 @@ provider itself is covered under [Upgrading the provider](#upgrading-the-provide
 | Authentication | ✅ | an administrative user, seeded from `spec.userSecretRef` or generated, with password rotation; `default` user and replica-to-replica traffic authenticated (see [Connecting](#connecting)) |
 | TLS | ✅ | opt-in per Instance via the engine component's `tls` parameters; client connections over TLS only by default, distributed queries between replicas over TLS; requires [cert-manager](#prerequisites) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; see [Pod placement](#pod-placement) |
+| Suspend / resume | ✅ | `spec.suspend.suspended` stops ClickHouse and Keeper and keeps the volumes; see [Suspending](#suspending) |
 
 Stateful workloads additionally report:
 
@@ -387,6 +388,26 @@ spec:
 
 In the `replicated` topology Keeper and ClickHouse changes form one action. Any edit to the
 `Instance` applies a held change along with it.
+
+### Suspending
+
+Suspend an Instance to stop its compute and keep its data, and resume it later:
+
+```yaml
+spec:
+  suspend:
+    suspended: true   # false resumes it
+```
+
+The provider sets the operator's `spec.stop` on the `ClickHouseInstallation` and, in the
+`replicated` topology, the `ClickHouseKeeperInstallation`. The operator scales them to zero
+and removes the client Service; the volumes stay. ClickHouse stops before Keeper, since its
+replicated tables need Keeper while it runs, and on resume Keeper starts first. The
+Instance reports `Suspending`, then `Suspended`, and `Resuming` until it is `Ready` again.
+
+While the Instance is suspended, OpenEverest rejects other changes to its spec (resume it
+first, or change it in a later update), holds maintenance, and holds backups and restores
+until it resumes. Deleting a suspended Instance works as usual.
 
 ### Rejected changes
 
