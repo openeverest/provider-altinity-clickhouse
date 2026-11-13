@@ -4,6 +4,7 @@ spec:
   componentTypes:
     clickhouse:
       defaultVersion: 26.8.31.2
+      kind: clickhouse
       versions:
         - image: clickhouse/clickhouse-server:26.8.31.2
           version: 26.8.31.2
@@ -50,9 +51,10 @@ spec:
               type: string
             podMonitor:
               description: |-
-                PodMonitor gates creation of a Prometheus PodMonitor for the ClickHouse
-                pods. The native metrics endpoint is always exposed; this only controls
-                whether the operator manages a PodMonitor. One of "enabled" or "disabled".
+                Deprecated: PodMonitor has no effect. Monitoring is configured with
+                spec.monitoring.destinations, and a monitoring extension creates the
+                scrape objects. It is still accepted because Instances created by
+                earlier releases carry it.
               type: string
             storageReclaimPolicy:
               description: |-
@@ -105,6 +107,10 @@ spec:
     keeper:
       type: clickhouse-keeper
   defaultVersion: "26.8"
+  monitoring:
+    componentTypes:
+      clickhouse:
+        metrics: Native
   release:
     version: 0.1.0
   secrets:
@@ -325,21 +331,6 @@ spec:
               uiType: group
           description: Resources and storage per Keeper node. The replicated topology always runs 3 Keeper nodes.
           label: ClickHouse Keeper
-        monitoring:
-          components:
-            podMonitor:
-              fieldParams:
-                defaultValue: disabled
-                label: Prometheus PodMonitor
-                options:
-                  - label: Disabled
-                    value: disabled
-                  - label: Enabled
-                    value: enabled
-              path: spec.components.engine.parameters.podMonitor
-              uiType: select
-          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
-          label: Monitoring
         resources:
           components:
             compute:
@@ -436,7 +427,6 @@ spec:
         - scaling
         - resources
         - keeper
-        - monitoring
         - advanced
     standalone:
       sections:
@@ -539,21 +529,6 @@ spec:
                 required: true
           description: Select the ClickHouse version to deploy.
           label: Database Version
-        monitoring:
-          components:
-            podMonitor:
-              fieldParams:
-                defaultValue: disabled
-                label: Prometheus PodMonitor
-                options:
-                  - label: Disabled
-                    value: disabled
-                  - label: Enabled
-                    value: enabled
-              path: spec.components.engine.parameters.podMonitor
-              uiType: select
-          description: Create a Prometheus PodMonitor to scrape ClickHouse metrics. The metrics endpoint is always exposed, so other tools can scrape it even when disabled.
-          label: Monitoring
         resources:
           components:
             compute:
@@ -605,7 +580,6 @@ spec:
       sectionsOrder:
         - databaseVersion
         - resources
-        - monitoring
         - advanced
   versions:
     - components:

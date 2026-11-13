@@ -25,7 +25,6 @@ import (
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
-	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -65,7 +64,6 @@ func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *
 	require.NoError(t, chiv1.AddToScheme(scheme))
 	require.NoError(t, chkv1.AddToScheme(scheme))
 	require.NoError(t, cmapi.AddToScheme(scheme))
-	require.NoError(t, monitoringv1.AddToScheme(scheme))
 
 	all := append([]client.Object{instance, testProvider(t)}, objs...)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(all...).WithStatusSubresource(&corev1alpha1.Instance{}).WithInterceptorFuncs(funcs).

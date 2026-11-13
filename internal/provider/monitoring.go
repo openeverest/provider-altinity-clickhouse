@@ -16,80 +16,70 @@ package provider
 
 import (
 	"fmt"
-	"strings"
 
-	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 
+	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/openeverest/provider-altinity-clickhouse/definition/components"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
-// reconcilePodMonitor creates or removes the Prometheus PodMonitor for the
-// instance based on the engine's podMonitor parameter. The native metrics
-// endpoint is always exposed by the CHI; this only manages the PodMonitor.
-// When the prometheus-operator CRDs are absent, PodMonitor operations are
-// silently skipped so clusters without them still reconcile.
-func reconcilePodMonitor(c *controller.Context) error {
-	l := log.FromContext(c.Context())
-
-	if podMonitorEnabled(c) {
-		if err := c.Apply(buildPodMonitor(c)); err != nil {
-			if meta.IsNoMatchError(err) {
-				l.Info("prometheus-operator CRDs not installed, skipping PodMonitor", "name", c.Name())
-				return nil
-			}
-			return fmt.Errorf("apply PodMonitor: %w", err)
-		}
-		return nil
+// MonitoringSources implements controller.MonitoringSourcesProvider.
+// ClickHouse serves OpenMetrics itself (metrics: Native in
+// definition/monitoring.yaml), so every engine pod always exposes the
+// endpoint and no exporter is switched on or off for a bound class. It is
+// published once the operator has finished reconciling the cluster at least
+// once, and stays published while later changes roll the pods, like the
+// connection details. Monitoring extensions turn it into scrape objects.
+func (p *Provider) MonitoringSources(c *controller.Context) (*corev1alpha1.MonitoringSources, error) {
+	chi := &chiv1.ClickHouseInstallation{}
+	found, err := getOptional(c, chi, c.Name())
+	if err != nil {
+		return nil, err
 	}
-
-	return deletePodMonitor(c)
+	sources := &corev1alpha1.MonitoringSources{}
+	if !found || !chiInstallation(chi).completedBefore {
+		return sources, nil
+	}
+	sources.Metrics = []corev1alpha1.MetricsEndpoint{{
+		Component: common.ComponentEngine,
+		PodSelector: map[string]string{
+			controller.InstanceLabel:  c.Name(),
+			controller.ComponentLabel: common.ComponentEngine,
+		},
+		Port:   intstr.FromString(common.MetricsPortName),
+		Path:   common.MetricsPath,
+		Scheme: "http",
+	}}
+	return sources, nil
 }
 
-// deletePodMonitor removes the instance's PodMonitor, ignoring a missing CRD.
-func deletePodMonitor(c *controller.Context) error {
-	pm := &monitoringv1.PodMonitor{ObjectMeta: c.ObjectMeta(podMonitorName(c.Name()))}
+var _ controller.MonitoringSourcesProvider = (*Provider)(nil)
+
+// podMonitorGVK is the Prometheus Operator PodMonitor, deleted only as
+// metadata so the provider needs neither its types nor its CRD.
+var podMonitorGVK = schema.GroupVersionKind{Group: "monitoring.coreos.com", Version: "v1", Kind: "PodMonitor"}
+
+// deleteLegacyPodMonitor removes the PodMonitor that releases before the
+// monitoring contract created for the engine's podMonitor parameter; a
+// monitoring extension now creates the scrape objects from the published
+// sources. Clusters without the Prometheus Operator CRDs are skipped.
+// TODO: drop once no supported release created PodMonitors.
+func deleteLegacyPodMonitor(c *controller.Context) error {
+	pm := &metav1.PartialObjectMetadata{ObjectMeta: c.ObjectMeta(legacyPodMonitorName(c.Name()))}
+	pm.SetGroupVersionKind(podMonitorGVK)
 	if err := c.Delete(pm); err != nil && !meta.IsNoMatchError(err) {
-		return fmt.Errorf("delete PodMonitor: %w", err)
+		return fmt.Errorf("delete legacy PodMonitor: %w", err)
 	}
 	return nil
 }
 
-// podMonitorEnabled reports whether the engine's podMonitor parameter is enabled.
-func podMonitorEnabled(c *controller.Context) bool {
-	engine := c.Instance().Spec.Components[common.ComponentEngine]
-	var params components.ClickHouseParameters
-	_ = c.TryDecodeComponentParameters(engine, &params)
-	return strings.EqualFold(params.PodMonitor, common.PodMonitorEnabled)
-}
-
-// buildPodMonitor constructs a PodMonitor selecting the instance's ClickHouse
-// pods and scraping the native Prometheus metrics port.
-func buildPodMonitor(c *controller.Context) *monitoringv1.PodMonitor {
-	port := common.MetricsPortName
-	return &monitoringv1.PodMonitor{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: monitoringv1.SchemeGroupVersion.String(),
-			Kind:       monitoringv1.PodMonitorsKind,
-		},
-		ObjectMeta: c.ObjectMeta(podMonitorName(c.Name())),
-		Spec: monitoringv1.PodMonitorSpec{
-			Selector: metav1.LabelSelector{
-				MatchLabels: map[string]string{common.LabelCHIName: c.Name()},
-			},
-			PodMetricsEndpoints: []monitoringv1.PodMetricsEndpoint{
-				{Port: &port, Path: common.MetricsPath},
-			},
-		},
-	}
-}
-
-// podMonitorName returns the PodMonitor resource name for an instance.
-func podMonitorName(instanceName string) string {
+// legacyPodMonitorName is the name of the PodMonitor earlier releases created.
+func legacyPodMonitorName(instanceName string) string {
 	return instanceName + "-metrics"
 }

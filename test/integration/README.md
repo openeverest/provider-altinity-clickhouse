@@ -103,13 +103,19 @@ replicated preset is only dry-run: its resources do not fit a CI runner.
 
 ### `monitoring`
 
-Installs a minimal `PodMonitor` CRD, provisions a standalone Instance with
-`podMonitor: enabled`, and asserts:
+Claims a test `MonitoringClass` that requires metrics by hand (no extension runs),
+seeds the `PodMonitor` earlier releases created, provisions a standalone Instance
+listing a destination of the class (with the deprecated `podMonitor: enabled`), and
+asserts:
 
-1. The CHI bakes the native Prometheus endpoint into `spec.configuration.settings`.
-2. The provider creates a `PodMonitor` selecting the instance's ClickHouse pods
-   on the `metrics` port.
-3. Setting `podMonitor: disabled` removes the `PodMonitor`.
+1. Core reports the class compatible with the provider: `ExtensionManaged`, no
+   disruption, since ClickHouse serves metrics natively.
+2. Core creates the `MonitoringBinding`, and the provider publishes the engine's
+   endpoint (`metrics` port, `/metrics`, kind `clickhouse`) in
+   `status.monitoring.sources`.
+3. The endpoint serves ClickHouse metrics (scraped through the API server's pod proxy).
+4. The legacy `PodMonitor` is deleted and none is created.
+5. Dropping the entry deletes the binding and keeps the published endpoint.
 
 ### `user`
 

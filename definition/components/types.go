@@ -30,9 +30,10 @@ type ClickHouseParameters struct {
 	// e.g. `max_concurrent_queries: 200` or `logger/level: information`.
 	Configuration string `json:"configuration,omitempty"`
 
-	// PodMonitor gates creation of a Prometheus PodMonitor for the ClickHouse
-	// pods. The native metrics endpoint is always exposed; this only controls
-	// whether the operator manages a PodMonitor. One of "enabled" or "disabled".
+	// Deprecated: PodMonitor has no effect. Monitoring is configured with
+	// spec.monitoring.destinations, and a monitoring extension creates the
+	// scrape objects. It is still accepted because Instances created by
+	// earlier releases carry it.
 	PodMonitor string `json:"podMonitor,omitempty"`
 
 	// TLS configures encrypted connections. When enabled, the provider uses

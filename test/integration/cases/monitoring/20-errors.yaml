@@ -1,0 +1,8 @@
+# Dropping the entry deletes its binding.
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringBinding
+metadata:
+  namespace: default
+  labels:
+    core.openeverest.io/instance: itest-ch-monitoring
+    monitoring.openeverest.io/entry: metrics

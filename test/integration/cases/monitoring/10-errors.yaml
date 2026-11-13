@@ -1,4 +1,4 @@
-# Disabling monitoring removes the PodMonitor (the metrics endpoint stays).
+# The PodMonitor earlier releases created is gone, and the provider creates none.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

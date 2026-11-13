@@ -1,0 +1,22 @@
+# A minimal metrics class, under a test-local name: it stands in for a
+# monitoring extension such as monitoring-prometheus.
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringClass
+metadata:
+  name: metrics-it
+spec:
+  controllerName: test.openeverest.io/provider-altinity-clickhouse-it
+  extensionManaged:
+    requires:
+      metrics: true
+  authModes:
+    - name: Anonymous
+---
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringDestination
+metadata:
+  name: metrics-it
+  namespace: default
+spec:
+  classRef:
+    name: metrics-it
