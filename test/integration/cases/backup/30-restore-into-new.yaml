@@ -22,7 +22,7 @@ spec:
       storage:
         size: 5Gi
   backup:
-    enabled: false
+    enabled: true
     classRef:
       name: altinity-clickhouse-backup
     storages:

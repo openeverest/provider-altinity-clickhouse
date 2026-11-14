@@ -460,8 +460,8 @@ spec:
 - Schedules become `ClickHouseBackupSchedule`s. Count retention keeps that many of the
   schedule's backups; the operator has no time-based retention, so a time retention keeps every
   backup. Scheduled runs are not listed as `Backup` resources yet.
-- A new Instance with a `Backup` as `spec.dataSource` (and the same storage) is restored from it
-  once it is up, and reports `Restoring` meanwhile. A `Restore` into a running Instance refuses to
+- A new Instance with a `Backup` as `spec.dataSource` is restored from it once it is up, and
+  reports `Restoring` meanwhile. It needs `spec.backup.enabled: true` with the backup's storage. A `Restore` into a running Instance refuses to
   replace existing tables unless `parameters.overwrite: true`.
 - Deleting a `Backup` keeps the backup in the storage, whatever its `deletionPolicy`.
 - Point-in-time recovery is not supported.
