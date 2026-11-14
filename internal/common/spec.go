@@ -83,7 +83,7 @@ const (
 	MetricsPath = "/metrics"
 
 	// LabelCHIName is the label the Altinity operator sets on ClickHouse pods,
-	// keyed by CHI (Instance) name. Used to select pods for the PodMonitor.
+	// keyed by CHI (Instance) name.
 	LabelCHIName = "clickhouse.altinity.com/chi"
 
 	// LabelCHKName is the label the Altinity operator sets on Keeper pods, keyed
@@ -109,12 +109,6 @@ const (
 	// where nodes carry zone labels, across zones.
 	AntiAffinityHostnameWeight = 100
 	AntiAffinityZoneWeight     = 50
-
-	// PodMonitorEnabled is the parameter value that turns PodMonitor creation on.
-	PodMonitorEnabled = "enabled"
-
-	// PodMonitorDisabled is the parameter value (default) that keeps PodMonitor off.
-	PodMonitorDisabled = "disabled"
 
 	// TLSEnabled is the parameter value that turns on TLS.
 	TLSEnabled = "enabled"

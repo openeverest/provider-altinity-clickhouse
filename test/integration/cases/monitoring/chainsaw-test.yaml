@@ -4,31 +4,76 @@ metadata:
   name: monitoring
 spec:
   description: |
-    Provision a standalone ClickHouse Instance with the PodMonitor enabled and
-    assert the provider bakes the native Prometheus endpoint into the CHI and
-    creates a PodMonitor. Then disable it and assert the PodMonitor is removed.
+    Monitoring through Instance.spec.monitoring.destinations[]: core matches a
+    metrics class to the provider (native metrics, no disruption) and binds a
+    standalone Instance listing a destination of it. The provider publishes
+    the engine's native endpoint in Instance.status.monitoring.sources, which
+    serves OpenMetrics, deletes the PodMonitor earlier releases created and
+    creates none; dropping the entry deletes the binding and keeps the
+    endpoint. No extension controller runs here, so the class is claimed by
+    hand and the binding is never Configured; what the provider owns is
+    asserted.
   catch:
     - script:
-        content: kubectl -n $NAMESPACE get instance,chi,podmonitor -o yaml
+        content: kubectl -n $NAMESPACE get instance,chi,monitoringdestination,monitoringbinding,podmonitor -o yaml
     - script:
-        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+        content: kubectl get monitoringclass metrics-it -o yaml
+    - script:
+        content: kubectl logs -A -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
   steps:
-    - name: install-podmonitor-crd
+    - name: setup
       try:
+        # A minimal PodMonitor CRD, only where the Prometheus Operator's is
+        # absent, to prove the provider deletes the legacy PodMonitor.
+        - script:
+            content: |
+              kubectl get crd podmonitors.monitoring.coreos.com >/dev/null 2>&1 || {
+                kubectl apply -f 00-podmonitor-crd.yaml &&
+                kubectl wait --for=condition=Established --timeout=60s crd/podmonitors.monitoring.coreos.com
+              }
         - apply:
-            file: 00-podmonitor-crd.yaml
-    - name: enable-and-assert
+            file: 00-install.yaml
+        # Stand in for the extension controller: a class is usable only once
+        # its controller has claimed it at its current generation.
+        - script:
+            content: |
+              gen=$(kubectl get monitoringclass/metrics-it -o jsonpath='{.metadata.generation}')
+              kubectl patch monitoringclass/metrics-it --subresource status --type merge \
+                -p '{"status":{"conditions":[{"type":"Accepted","status":"True","reason":"Accepted","message":"claimed by the test","observedGeneration":'"$gen"',"lastTransitionTime":"2026-01-01T00:00:00Z"}]}}'
+        - assert:
+            file: 00-assert.yaml
+        - apply:
+            file: 05-legacy-podmonitor.yaml
+
+    - name: create-cluster-with-destination
       try:
         - apply:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
-    - name: disable-and-assert-removed
-      try:
-        - apply:
-            file: 20-disable-monitoring.yaml
         - error:
-            file: 20-assert-no-podmonitor.yaml
+            file: 10-errors.yaml
+        # The published endpoint serves OpenMetrics: scrape it through the
+        # API server's pod proxy.
+        - script:
+            content: |
+              set -eu
+              pod=$(kubectl get pods -n default \
+                -l core.openeverest.io/instance=itest-ch-monitoring,core.openeverest.io/component=engine \
+                -o jsonpath='{.items[0].metadata.name}')
+              kubectl get --raw "/api/v1/namespaces/default/pods/$pod:9363/proxy/metrics" > /tmp/itest-ch-metrics
+              grep -q '^ClickHouseMetrics_' /tmp/itest-ch-metrics
+              grep -q '^ClickHouseAsyncMetrics_' /tmp/itest-ch-metrics
+              echo "scraped $(wc -l < /tmp/itest-ch-metrics) lines from $pod"
+
+    - name: drop-destination
+      try:
+        - patch:
+            file: 20-drop-destination.yaml
+        - assert:
+            file: 20-assert.yaml
+        - error:
+            file: 20-errors.yaml
       finally:
         - command:
             entrypoint: kubectl

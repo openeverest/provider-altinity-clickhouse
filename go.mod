@@ -8,7 +8,6 @@ require (
 	github.com/google/cel-go v0.29.2
 	github.com/hashicorp/go-version v1.9.0
 	github.com/openeverest/openeverest/v2 v2.0.0-dev.2.0.20261112191540-4e359ad6400c
-	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.93.1
 	github.com/stretchr/testify v1.12.1
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1

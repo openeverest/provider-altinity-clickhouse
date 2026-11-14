@@ -12,17 +12,41 @@ spec:
 status:
   status: Completed
 ---
-# The provider creates a PodMonitor selecting the instance's ClickHouse pods and
-# scraping the native metrics port.
-apiVersion: monitoring.coreos.com/v1
-kind: PodMonitor
+# Core creates the binding; no extension runs here, so it stays unconfigured.
+apiVersion: monitoring.openeverest.io/v1alpha1
+kind: MonitoringBinding
 metadata:
-  name: itest-ch-monitoring-metrics
   namespace: default
+  labels:
+    core.openeverest.io/instance: itest-ch-monitoring
+    monitoring.openeverest.io/entry: metrics
 spec:
-  selector:
-    matchLabels:
-      clickhouse.altinity.com/chi: itest-ch-monitoring
-  podMetricsEndpoints:
-    - port: metrics
-      path: /metrics
+  destinationRef:
+    name: metrics-it
+  classRef:
+    name: metrics-it
+  executionMode: ExtensionManaged
+status:
+  (conditions[?type == 'Accepted'].status | [0]): "True"
+---
+# The provider publishes the engine's native endpoint for the extension.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-monitoring
+  namespace: default
+status:
+  phase: Ready
+  monitoring:
+    (destinations[?name == 'metrics'] | [0]):
+      mode: ExtensionManaged
+    sources:
+      metrics:
+        - component: engine
+          kind: clickhouse
+          podSelector:
+            core.openeverest.io/instance: itest-ch-monitoring
+            core.openeverest.io/component: engine
+          port: metrics
+          path: /metrics
+          scheme: http

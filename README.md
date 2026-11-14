@@ -64,7 +64,7 @@ provider itself is covered under [Upgrading the provider](#upgrading-the-provide
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` limits and requests; see [Resources](#resources) |
 | Version upgrades | ✅ | change `spec.version` to a newer bundle; downgrades are rejected; see [Upgrading ClickHouse](#upgrading-clickhouse) |
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
-| Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
+| Monitoring | ✅ | native OpenMetrics endpoint on every engine pod, published for monitoring extensions; send it to a destination through `spec.monitoring.destinations`, see [Monitoring](#monitoring) |
 | Authentication | ✅ | an administrative user, seeded from `spec.userSecretRef` or generated, with password rotation; `default` user and replica-to-replica traffic authenticated (see [Connecting](#connecting)) |
 | TLS | ✅ | opt-in per Instance via the engine component's `tls` parameters; client connections over TLS only by default, distributed queries between replicas over TLS; requires [cert-manager](#prerequisites) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; see [Pod placement](#pod-placement) |
@@ -437,6 +437,39 @@ the provider stamps each change it applies with a `spec.taskID`
 and waits until the operator lists it in `status.taskIDsCompleted`. Until then the
 operator's `Completed` still describes the previous change.
 
+### Monitoring
+
+Every ClickHouse pod serves its metrics in the OpenMetrics format on port `9363`
+(`/metrics`, named port `metrics`), plain HTTP even with TLS on. The provider declares
+this on the `Provider` (`spec.componentTypes.clickhouse.kind: clickhouse`,
+`spec.monitoring.componentTypes.clickhouse.metrics: Native`) and, once the cluster has
+come up, publishes the endpoint in the Instance's `status.monitoring.sources`. Keeper
+publishes no metrics yet.
+
+The provider creates no scrape objects itself. Install a monitoring extension, such as
+[monitoring-prometheus](https://github.com/openeverest/monitoring-prometheus), create a
+`MonitoringDestination` of its class in the Instance's namespace, and list it on the
+Instance; the extension then creates the scrape objects (for Prometheus, a `PodMonitor`)
+from the published endpoint:
+
+```yaml
+spec:
+  monitoring:
+    destinations:
+      - name: prometheus
+        destinationRef:
+          name: my-prometheus   # a MonitoringDestination in this namespace
+```
+
+Since ClickHouse serves the metrics itself, adding or removing a destination restarts
+nothing. `status.monitoring.destinations` and the `MonitoringConfigured` and
+`MonitoringReady` conditions report each entry.
+
+Releases before the monitoring contract created a `PodMonitor` named
+`<instance>-metrics` for the engine's `podMonitor` parameter. On upgrade the provider
+deletes it; list a destination to keep the metrics flowing. The parameter is still
+accepted, since Instances created from the UI carry it, but has no effect.
+
 ## Topologies
 
 <!-- BEGIN GENERATED: topologies -->
@@ -571,7 +604,7 @@ Besides the shared component fields (`replicas`, `resources`, `storage`, `servic
 | Parameter | Values | See |
 |---|---|---|
 | `configuration` | ClickHouse server settings, one `path: value` per line | [Rejected changes](#rejected-changes) for the settings the provider manages |
-| `podMonitor` | `enabled`, `disabled` (default) | [Capabilities](#capabilities) |
+| `podMonitor` | deprecated, ignored | [Monitoring](#monitoring) |
 | `tls.enabled`, `tls.mode`, `tls.issuerRef` | `enabled` / `disabled` (default); `required` (default) / `optional`; an Issuer or ClusterIssuer | [TLS](#tls) |
 | `storageReclaimPolicy` | `Retain` (default), `Delete` | [Data retention](#data-retention) |
 
