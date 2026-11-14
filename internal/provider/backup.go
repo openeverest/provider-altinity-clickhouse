@@ -133,7 +133,7 @@ func reconcileBackupConfig(c *controller.Context) error {
 	if err := c.Apply(secret); err != nil {
 		return fmt.Errorf("apply backup storage Secret: %w", err)
 	}
-	return nil
+	return ensureBackupUser(c)
 }
 
 // autoBackupSecretName is the Secret the operator creates for the sidecars of
@@ -145,30 +145,40 @@ func autoBackupSecretName(instanceName string) string {
 
 // ensureBackupUser gives the sidecars a ClickHouse user of their own: the
 // provider password-protects the default user they would connect as
-// otherwise. With both credentials in the operator's Secret, the operator
-// adds the user to the CHI, limited to localhost (the sidecar's pod), and
-// configures the sidecars with it. Only those two keys are applied, under
-// the provider's field manager, and only once the operator has created the
-// Secret: it recreates one that lacks its REST API keys. The password lives
-// there alone; if the operator recreates the Secret, a new one is set.
+// otherwise. With CLICKHOUSE_USERNAME and CLICKHOUSE_PASSWORD in the
+// operator's Secret of the sidecars, the operator adds the user to the CHI,
+// limited to localhost (the sidecar's pod), and configures the sidecars with
+// it. The provider creates the Secret before the CHI first runs the sidecar,
+// with the REST API credentials the operator would generate, so the operator
+// sets the user up in that same reconcile; the operator only replaces a
+// Secret that is missing or lacks the REST API keys. To a Secret the operator
+// created earlier only the user's keys are added, under the provider's field
+// manager. The password lives there alone; if the Secret is ever recreated
+// without it, a new one is set.
 func ensureBackupUser(c *controller.Context) error {
 	name := autoBackupSecretName(c.Name())
 	live := &corev1.Secret{}
 	found, err := getOptional(c, live, name)
-	if err != nil || !found {
+	if err != nil {
 		return err
 	}
-	if string(live.Data[common.BackupUserKeyUsername]) == common.BackupUserName && len(live.Data[common.BackupUserKeyPassword]) > 0 {
+	if found && string(live.Data[common.BackupUserKeyUsername]) == common.BackupUserName && len(live.Data[common.BackupUserKeyPassword]) > 0 {
 		return nil
 	}
-	password, err := generatePassword(common.AppUserPasswordBytes)
-	if err != nil {
-		return fmt.Errorf("generate the backup user's password: %w", err)
+	data := map[string][]byte{common.BackupUserKeyUsername: []byte(common.BackupUserName)}
+	keys := []string{common.BackupUserKeyPassword}
+	if !found {
+		data[common.BackupAPIKeyUsername] = []byte(common.BackupAPIUserName)
+		keys = append(keys, common.BackupAPIKeyPassword)
 	}
-	apply := corev1ac.Secret(name, c.Namespace()).WithData(map[string][]byte{
-		common.BackupUserKeyUsername: []byte(common.BackupUserName),
-		common.BackupUserKeyPassword: []byte(password),
-	})
+	for _, key := range keys {
+		password, err := generatePassword(common.AppUserPasswordBytes)
+		if err != nil {
+			return fmt.Errorf("generate %s: %w", key, err)
+		}
+		data[key] = []byte(password)
+	}
+	apply := corev1ac.Secret(name, c.Namespace()).WithType(corev1.SecretTypeOpaque).WithData(data)
 	if err := c.Client().Apply(c.Context(), apply, client.FieldOwner(common.BackupUserFieldOwner), client.ForceOwnership); err != nil {
 		return fmt.Errorf("set the backup user in %s: %w", name, err)
 	}
@@ -465,11 +475,6 @@ func reconcileBackupSchedules(c *controller.Context) error {
 // syncBackups runs once the cluster is up: the schedules, and the restore of
 // the Instance's data source, which the runtime drives through a Restore.
 func syncBackups(c *controller.Context) error {
-	if backupStorageName(c.Instance()) != "" {
-		if err := ensureBackupUser(c); err != nil {
-			return err
-		}
-	}
 	if err := reconcileBackupSchedules(c); err != nil {
 		return err
 	}

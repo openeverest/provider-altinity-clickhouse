@@ -153,6 +153,13 @@ const (
 	BackupUserKeyPassword = "CLICKHOUSE_PASSWORD"
 	BackupUserFieldOwner  = "provider-altinity-clickhouse-backup"
 
+	// BackupAPIKeyUsername and BackupAPIKeyPassword are the REST API
+	// credentials of the sidecars in that Secret, set by the provider when
+	// it creates the Secret.
+	BackupAPIUserName    = "backup"
+	BackupAPIKeyUsername = "API_USERNAME"
+	BackupAPIKeyPassword = "API_PASSWORD"
+
 	// RolloutStateSuffix is appended to the Instance name to form the Secret
 	// recording what the provider last applied (see rolloutGate).
 	RolloutStateSuffix = "-provider-state"

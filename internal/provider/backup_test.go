@@ -178,14 +178,18 @@ func backupReady() []client.Object {
 func TestEnsureBackupUser(t *testing.T) {
 	instance := withBackups(newTestInstance("db", "ns", ""))
 
-	// Not before the operator has created its Secret.
+	// Created with the REST API credentials before the sidecar first runs,
+	// so the operator sets the user up in the same reconcile.
 	c := newTestContext(t, instance)
 	require.NoError(t, ensureBackupUser(c))
-	found, err := getOptional(c, &corev1.Secret{}, "db-auto-backup-secret")
-	require.NoError(t, err)
-	assert.False(t, found)
+	created := &corev1.Secret{}
+	require.NoError(t, c.Get(created, "db-auto-backup-secret"))
+	assert.Equal(t, common.BackupUserName, string(created.Data[common.BackupUserKeyUsername]))
+	assert.NotEmpty(t, created.Data[common.BackupUserKeyPassword])
+	assert.Equal(t, common.BackupAPIUserName, string(created.Data[common.BackupAPIKeyUsername]))
+	assert.NotEmpty(t, created.Data[common.BackupAPIKeyPassword])
 
-	// Added next to the operator's REST API credentials.
+	// Added next to the REST API credentials the operator generated.
 	c = newTestContext(t, instance, autoBackupSecret(false))
 	require.NoError(t, ensureBackupUser(c))
 	secret := &corev1.Secret{}

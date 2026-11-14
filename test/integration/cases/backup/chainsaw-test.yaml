@@ -48,11 +48,22 @@ spec:
             file: 10-create-cluster.yaml
         - assert:
             file: 10-assert.yaml
+        # The sidecars log in as a ClickHouse user of their own.
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: itest-ch-backup-auto-backup-secret
+                namespace: default
+              data:
+                CLICKHOUSE_USERNAME: Y2xpY2tob3VzZV9iYWNrdXA=
         - script:
             content: |
               set -eu
               NAME=itest-ch-backup
               . ../../lib/clickhouse.sh
+              wait_until "ClickHouse answers" equals 1 q 0 "SELECT 1"
               q 0 "CREATE TABLE IF NOT EXISTS default.backup_probe (id UInt64) ENGINE = MergeTree ORDER BY id"
               q 0 "INSERT INTO default.backup_probe SELECT number FROM numbers(1000)"
       # Always, also when a later step fails: re-runs on the same cluster
