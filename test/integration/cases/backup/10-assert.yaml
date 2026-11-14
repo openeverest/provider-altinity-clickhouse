@@ -1,0 +1,39 @@
+# The CHI runs the backup sidecar, configured by the storage Secret.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-backup
+  namespace: default
+spec:
+  backup:
+    enabled: "True"
+    configSecretRef:
+      name: itest-ch-backup-backup-storage
+status:
+  status: Completed
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-backup-backup-storage
+  namespace: default
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-backup
+  namespace: default
+status:
+  phase: Ready
+---
+# The schedule runs with the retention of its count.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseBackupSchedule
+metadata:
+  name: itest-ch-backup-minutely
+  namespace: default
+spec:
+  clickHouseInstallation: itest-ch-backup
+  schedule: "* * * * *"
+  retention:
+    keepLast: 2

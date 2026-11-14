@@ -16,7 +16,10 @@ maintainers:
 # The provider owns the operator lifecycle: the Altinity ClickHouse operator
 # ships as a bundled subchart so the provider installs out of the box.
 dependencies:
+  # 0.28.0 is unreleased: vendored from its branch for operator-managed
+  # backups, see charts/vendor/README.md. Back to https://helm.altinity.com/
+  # once published.
   - name: altinity-clickhouse-operator
     alias: operator
-    version: "0.27.4"
-    repository: https://helm.altinity.com/
+    version: "0.28.0"
+    repository: file://../vendor/altinity-clickhouse-operator

@@ -143,6 +143,21 @@ default) and asserts (needs cert-manager, installed by the dev stack):
 The CI cluster does not enforce NetworkPolicies, so blocking the plaintext
 ports is only asserted through the policies themselves.
 
+### `backup`
+
+Runs an in-cluster SeaweedFS (S3) with a cert-manager certificate and a `BackupStorage` for
+it, and asserts:
+
+1. A standalone Instance with the storage runs the clickhouse-backup sidecar
+   (`spec.backup` on the CHI, configured by the `<instance>-backup-storage` Secret) and a
+   minutely `ClickHouseBackupSchedule` with `keepLast: 2`.
+2. An on-demand `Backup` becomes a `ClickHouseBackup` it owns and succeeds.
+3. The schedule completes a run.
+4. A new Instance with the `Backup` as its data source is restored by a `ClickHouseRestore` of
+   the other Instance's backup, and holds its rows.
+
+Needs the Altinity operator 0.28.0+ and cert-manager.
+
 ### `scale`
 
 Scales a replicated Instance from 2 to 3 replicas, back to 2 and to 3 again:

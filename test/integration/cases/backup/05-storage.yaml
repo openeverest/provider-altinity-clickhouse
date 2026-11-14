@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-seaweedfs-credentials
+  namespace: default
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: seaweedfsadmin
+  AWS_SECRET_ACCESS_KEY: seaweedfsadmin
+---
+apiVersion: backup.openeverest.io/v1alpha1
+kind: BackupStorage
+metadata:
+  name: itest-seaweedfs
+  namespace: default
+spec:
+  type: s3
+  s3:
+    bucket: clickhouse-backups
+    region: us-east-1
+    endpointURL: https://seaweedfs.seaweedfs.svc
+    forcePathStyle: true
+    verifyTLS: false
+    credentialsSecretRef:
+      name: itest-seaweedfs-credentials

@@ -1,0 +1,26 @@
+apiVersion: backup.openeverest.io/v1alpha1
+kind: Restore
+metadata:
+  name: itest-ch-restored-datasource
+  namespace: default
+status:
+  state: Succeeded
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseRestore
+metadata:
+  name: itest-ch-restored-datasource
+  namespace: default
+spec:
+  clickHouseInstallation: itest-ch-restored
+  sourceInstallation: itest-ch-backup
+status:
+  phase: Completed
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-restored
+  namespace: default
+status:
+  phase: Ready

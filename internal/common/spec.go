@@ -135,6 +135,14 @@ const (
 	// Altinity operator does not create a usable external user, so we create one.
 	AppUserName = "admin"
 
+	// BackupConfigSecretSuffix names the Secret holding the clickhouse-backup
+	// configuration of an Instance's backup sidecar.
+	BackupConfigSecretSuffix = "-backup-storage"
+
+	// BackupConfigKey is the key of that configuration in the Secret, as the
+	// Altinity operator reads it.
+	BackupConfigKey = "config.yml"
+
 	// RolloutStateSuffix is appended to the Instance name to form the Secret
 	// recording what the provider last applied (see rolloutGate).
 	RolloutStateSuffix = "-provider-state"

@@ -1,0 +1,98 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: backup
+spec:
+  description: |
+    Back up and restore through the Altinity operator's clickhouse-backup
+    sidecar into an in-cluster SeaweedFS (S3). A standalone Instance with a
+    BackupStorage runs the sidecar and a minutely ClickHouseBackupSchedule; an
+    on-demand Backup becomes a ClickHouseBackup and succeeds; a new Instance
+    with the Backup as its data source is restored from it, rows included.
+    Needs the Altinity operator 0.28.0+ (its backup CRDs) and cert-manager.
+  timeouts:
+    assert: 15m
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,backup,restore,clickhousebackup,clickhouserestore,clickhousebackupschedule,job,pod -o yaml
+    - script:
+        content: kubectl logs -A -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=150
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n default -l clickhouse.altinity.com/chi -o name); do
+            echo "===== $pod clickhouse-backup"; kubectl logs -n default "$pod" -c clickhouse-backup --tail=60 || true
+          done
+          for job in $(kubectl get jobs -n default -o name); do
+            echo "===== $job"; kubectl logs -n default "$job" --tail=60 || true
+          done
+  steps:
+    - name: storage
+      try:
+        - apply:
+            file: 00-seaweedfs.yaml
+        - assert:
+            resource:
+              apiVersion: apps/v1
+              kind: Deployment
+              metadata:
+                name: seaweedfs
+                namespace: seaweedfs
+              status:
+                readyReplicas: 1
+        - apply:
+            file: 05-storage.yaml
+
+    - name: instance-with-backups
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-backup
+              . ../../lib/clickhouse.sh
+              q 0 "CREATE TABLE IF NOT EXISTS default.backup_probe (id UInt64) ENGINE = MergeTree ORDER BY id"
+              q 0 "INSERT INTO default.backup_probe SELECT number FROM numbers(1000)"
+      # Always, also when a later step fails: re-runs on the same cluster
+      # must not find these Instances' volumes.
+      cleanup:
+        - script:
+            content: |
+              for name in itest-ch-backup itest-ch-restored; do
+                kubectl delete instances.core.openeverest.io "$name" -n default --ignore-not-found --wait=false
+                kubectl delete pvc -n default -l "clickhouse.altinity.com/chi=$name" --ignore-not-found --wait=false
+              done
+
+    - name: on-demand-backup
+      try:
+        - apply:
+            file: 20-backup.yaml
+        - assert:
+            file: 20-assert.yaml
+
+    - name: scheduled-backup
+      try:
+        - assert:
+            resource:
+              apiVersion: clickhouse.altinity.com/v1
+              kind: ClickHouseBackupSchedule
+              metadata:
+                name: itest-ch-backup-minutely
+                namespace: default
+              status:
+                (lastSuccessfulTime != null): true
+
+    - name: restore-into-new-instance
+      try:
+        - apply:
+            file: 30-restore-into-new.yaml
+        - assert:
+            file: 30-assert.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-restored
+              . ../../lib/clickhouse.sh
+              wait_until "the rows are restored" equals 1000 q 0 "SELECT count() FROM default.backup_probe"

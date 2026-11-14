@@ -1,0 +1,35 @@
+# A new Instance seeded from the backup: the runtime creates the
+# "<instance>-datasource" Restore, which the provider runs as a
+# ClickHouseRestore of the other Instance's backup.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-restored
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: standalone
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2Gi
+      storage:
+        size: 5Gi
+  backup:
+    enabled: false
+    classRef:
+      name: altinity-clickhouse-backup
+    storages:
+      - storageRef:
+          name: itest-seaweedfs
+  dataSource:
+    type: Backup
+    backup:
+      backupRef:
+        name: itest-ch-backup-once

@@ -31,6 +31,37 @@
     - list
     - watch
 - apiGroups:
+    - backup.openeverest.io
+  resources:
+    - backupclasses
+    - backupstorages
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - backup.openeverest.io
+  resources:
+    - backups
+    - restores
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiGroups:
+    - backup.openeverest.io
+  resources:
+    - backups/status
+    - restores/status
+  verbs:
+    - get
+    - patch
+    - update
+- apiGroups:
     - cert-manager.io
   resources:
     - certificates
@@ -78,7 +109,10 @@
 - apiGroups:
     - clickhouse.altinity.com
   resources:
+    - clickhousebackups
+    - clickhousebackupschedules
     - clickhouseinstallations
+    - clickhouserestores
   verbs:
     - create
     - delete
