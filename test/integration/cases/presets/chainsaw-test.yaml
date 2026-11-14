@@ -1,0 +1,80 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: presets
+spec:
+  description: |
+    The chart installs a ClusterInstancePreset per topology. Every preset is
+    admitted as an Instance spec (server-side dry run, so the provider's
+    admission webhook checks it), and an Instance created from the standalone
+    preset becomes Ready. The replicated preset is only dry-run: its 2 x 2 CPU
+    engine and 3 Keeper nodes do not fit a CI runner.
+  catch:
+    - script:
+        content: kubectl get clusterinstancepresets -o yaml; kubectl -n $NAMESPACE get instance,chi -o yaml
+    - script:
+        content: kubectl logs -A -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: presets-installed
+      try:
+        - assert:
+            file: 00-assert.yaml
+    - name: presets-admitted
+      try:
+        # chainsaw runs scripts with /bin/sh: POSIX sh only.
+        - script:
+            content: |
+              set -eu
+              for preset in clickhouse-standalone clickhouse-replicated; do
+                kubectl get clusterinstancepreset "$preset" -o json \
+                  | jq --arg p "$preset" '{
+                      apiVersion: "core.openeverest.io/v1alpha1",
+                      kind: "Instance",
+                      metadata: {name: ("itest-" + $p), namespace: "default"},
+                      spec: .spec
+                    }' \
+                  | kubectl apply --dry-run=server -f -
+              done
+    - name: create-from-preset
+      try:
+        - script:
+            content: |
+              set -eu
+              kubectl get clusterinstancepreset clickhouse-standalone -o json \
+                | jq '{
+                    apiVersion: "core.openeverest.io/v1alpha1",
+                    kind: "Instance",
+                    metadata: {
+                      name: "itest-ch-preset",
+                      namespace: "default",
+                      annotations: {"openeverest.io/cluster-instance-preset": "clickhouse-standalone"}
+                    },
+                    spec: .spec
+                  }' \
+                | kubectl apply -f -
+        - assert:
+            file: 10-assert.yaml
+      finally:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-preset
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-preset
+              - --ignore-not-found
+              - --wait=false

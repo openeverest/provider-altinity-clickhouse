@@ -93,6 +93,14 @@ the node selector, tolerations, affinity and topology spread constraints land
 on the CHI pod template and the running pod. The spread constraint is declared
 without a selector, so the provider scopes it to the engine pods' labels.
 
+### `presets`
+
+Asserts the chart installs the `clickhouse-standalone` and
+`clickhouse-replicated` `ClusterInstancePreset`s, that both are admitted as
+Instance specs (server-side dry run through the provider's admission webhook),
+and that an Instance created from the standalone preset becomes `Ready`. The
+replicated preset is only dry-run: its resources do not fit a CI runner.
+
 ### `monitoring`
 
 Installs a minimal `PodMonitor` CRD, provisions a standalone Instance with
