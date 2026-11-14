@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/yaml"
@@ -135,15 +136,62 @@ func reconcileBackupConfig(c *controller.Context) error {
 	return nil
 }
 
+// autoBackupSecretName is the Secret the operator creates for the sidecars of
+// a CHI, holding their REST API credentials and, when set, the ClickHouse
+// user they log in as.
+func autoBackupSecretName(instanceName string) string {
+	return instanceName + "-auto-backup-secret"
+}
+
+// ensureBackupUser gives the sidecars a ClickHouse user of their own: the
+// provider password-protects the default user they would connect as
+// otherwise. With both credentials in the operator's Secret, the operator
+// adds the user to the CHI, limited to localhost (the sidecar's pod), and
+// configures the sidecars with it. Only those two keys are applied, under
+// the provider's field manager, and only once the operator has created the
+// Secret: it recreates one that lacks its REST API keys. The password lives
+// there alone; if the operator recreates the Secret, a new one is set.
+func ensureBackupUser(c *controller.Context) error {
+	name := autoBackupSecretName(c.Name())
+	live := &corev1.Secret{}
+	found, err := getOptional(c, live, name)
+	if err != nil || !found {
+		return err
+	}
+	if string(live.Data[common.BackupUserKeyUsername]) == common.BackupUserName && len(live.Data[common.BackupUserKeyPassword]) > 0 {
+		return nil
+	}
+	password, err := generatePassword(common.AppUserPasswordBytes)
+	if err != nil {
+		return fmt.Errorf("generate the backup user's password: %w", err)
+	}
+	apply := corev1ac.Secret(name, c.Namespace()).WithData(map[string][]byte{
+		common.BackupUserKeyUsername: []byte(common.BackupUserName),
+		common.BackupUserKeyPassword: []byte(password),
+	})
+	if err := c.Client().Apply(c.Context(), apply, client.FieldOwner(common.BackupUserFieldOwner), client.ForceOwnership); err != nil {
+		return fmt.Errorf("set the backup user in %s: %w", name, err)
+	}
+	return nil
+}
+
 // backupSidecarReady reports whether the operator has rolled the sidecar out
-// to the ClickHouse pods, so backups and restores can run.
+// to the ClickHouse pods with its ClickHouse user, so backups and restores
+// can run.
 func backupSidecarReady(c *controller.Context) (bool, error) {
 	chi := &chiv1.ClickHouseInstallation{}
 	found, err := getOptional(c, chi, c.Name())
 	if err != nil || !found {
 		return false, err
 	}
-	return chi.Spec.Backup.IsEnabled() && chiInstallation(chi).state == chiv1.StatusCompleted, nil
+	if !chi.Spec.Backup.IsEnabled() || chiInstallation(chi).state != chiv1.StatusCompleted {
+		return false, nil
+	}
+	secret := &corev1.Secret{}
+	if found, err := getOptional(c, secret, autoBackupSecretName(c.Name())); err != nil || !found {
+		return false, err
+	}
+	return len(secret.Data[common.BackupUserKeyPassword]) > 0, nil
 }
 
 // SyncBackup implements controller.BackupProvider: a ClickHouseBackup owned
@@ -417,6 +465,11 @@ func reconcileBackupSchedules(c *controller.Context) error {
 // syncBackups runs once the cluster is up: the schedules, and the restore of
 // the Instance's data source, which the runtime drives through a Restore.
 func syncBackups(c *controller.Context) error {
+	if backupStorageName(c.Instance()) != "" {
+		if err := ensureBackupUser(c); err != nil {
+			return err
+		}
+	}
 	if err := reconcileBackupSchedules(c); err != nil {
 		return err
 	}

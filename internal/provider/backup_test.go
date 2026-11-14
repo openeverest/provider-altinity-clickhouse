@@ -153,11 +153,52 @@ func coreBackup(name, storage, params string) *backupv1alpha1.Backup {
 	return b
 }
 
-// backupReadyCHI is a CHI the operator reconciled with the backup sidecar on.
-func backupReadyCHI() *chiv1.ClickHouseInstallation {
+// autoBackupSecret is the operator's Secret of the sidecars, with the REST
+// API credentials it generates and the backup user's when withUser.
+func autoBackupSecret(withUser bool) *corev1.Secret {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "db-auto-backup-secret", Namespace: "ns"},
+		Data:       map[string][]byte{"API_USERNAME": []byte("api"), "API_PASSWORD": []byte("api-password")},
+	}
+	if withUser {
+		secret.Data[common.BackupUserKeyUsername] = []byte(common.BackupUserName)
+		secret.Data[common.BackupUserKeyPassword] = []byte("backup-password")
+	}
+	return secret
+}
+
+// backupReady is a CHI the operator reconciled with the backup sidecar on,
+// and the sidecars' Secret with the backup user.
+func backupReady() []client.Object {
 	chi := completedCHI()
 	chi.Spec.Backup = &chiv1.ClusterBackup{Enabled: chiv1NewTrue(), ConfigSecretRef: &corev1.LocalObjectReference{Name: "db-backup-storage"}}
-	return chi
+	return []client.Object{chi, autoBackupSecret(true)}
+}
+
+func TestEnsureBackupUser(t *testing.T) {
+	instance := withBackups(newTestInstance("db", "ns", ""))
+
+	// Not before the operator has created its Secret.
+	c := newTestContext(t, instance)
+	require.NoError(t, ensureBackupUser(c))
+	found, err := getOptional(c, &corev1.Secret{}, "db-auto-backup-secret")
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	// Added next to the operator's REST API credentials.
+	c = newTestContext(t, instance, autoBackupSecret(false))
+	require.NoError(t, ensureBackupUser(c))
+	secret := &corev1.Secret{}
+	require.NoError(t, c.Get(secret, "db-auto-backup-secret"))
+	assert.Equal(t, common.BackupUserName, string(secret.Data[common.BackupUserKeyUsername]))
+	assert.Len(t, secret.Data[common.BackupUserKeyPassword], 2*common.AppUserPasswordBytes)
+	assert.Equal(t, "api-password", string(secret.Data["API_PASSWORD"]))
+
+	// Kept once set.
+	c = newTestContext(t, instance, autoBackupSecret(true))
+	require.NoError(t, ensureBackupUser(c))
+	require.NoError(t, c.Get(secret, "db-auto-backup-secret"))
+	assert.Equal(t, "backup-password", string(secret.Data[common.BackupUserKeyPassword]))
 }
 
 func TestSyncBackup(t *testing.T) {
@@ -174,18 +215,23 @@ func TestSyncBackup(t *testing.T) {
 		assert.Equal(t, backupv1alpha1.BackupStateFailed, st.State)
 		assert.Contains(t, st.Message, testStorage)
 	})
-	t.Run("sidecar not rolled out yet", func(t *testing.T) {
-		c := newTestContext(t, instance, completedCHI())
-		st, err := New().SyncBackup(c, coreBackup("b1", testStorage, ""))
-		require.NoError(t, err)
-		assert.Equal(t, backupv1alpha1.BackupStatePending, st.State)
-		found, err := getOptional(c, &chiv1.ClickHouseBackup{}, "b1")
-		require.NoError(t, err)
-		assert.False(t, found, "no backup before the sidecar runs")
-	})
+	for name, live := range map[string][]client.Object{
+		"sidecar not rolled out yet": {completedCHI(), autoBackupSecret(true)},
+		"no backup user yet":         {backupReady()[0], autoBackupSecret(false)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newTestContext(t, instance, live...)
+			st, err := New().SyncBackup(c, coreBackup("b1", testStorage, ""))
+			require.NoError(t, err)
+			assert.Equal(t, backupv1alpha1.BackupStatePending, st.State)
+			found, err := getOptional(c, &chiv1.ClickHouseBackup{}, "b1")
+			require.NoError(t, err)
+			assert.False(t, found, "no backup before the sidecar can run it")
+		})
+	}
 	t.Run("creates the operator backup", func(t *testing.T) {
 		backup := coreBackup("b1", testStorage, `{"replicaSelection":"AllReplicas"}`)
-		c := newTestContext(t, instance, backupReadyCHI(), backup)
+		c := newTestContext(t, instance, append(backupReady(), backup)...)
 		st, err := New().SyncBackup(c, backup)
 		require.NoError(t, err)
 		assert.Equal(t, backupv1alpha1.BackupStatePending, st.State)
@@ -258,14 +304,14 @@ func TestSyncRestore(t *testing.T) {
 	instance := withBackups(newTestInstance("db", "ns", ""))
 
 	t.Run("backup in another storage", func(t *testing.T) {
-		c := newTestContext(t, instance, append(succeededBackup("elsewhere"), backupReadyCHI())...)
+		c := newTestContext(t, instance, append(succeededBackup("elsewhere"), backupReady()...)...)
 		st, err := New().SyncRestore(c, coreRestore(""))
 		require.NoError(t, err)
 		assert.Equal(t, backupv1alpha1.RestoreStateFailed, st.State)
 	})
 	t.Run("restores another Instance's backup", func(t *testing.T) {
 		restore := coreRestore(`{"overwrite":true}`)
-		c := newTestContext(t, instance, append(succeededBackup(testStorage), backupReadyCHI(), restore)...)
+		c := newTestContext(t, instance, append(append(succeededBackup(testStorage), backupReady()...), restore)...)
 		st, err := New().SyncRestore(c, restore)
 		require.NoError(t, err)
 		assert.Equal(t, backupv1alpha1.RestoreStatePending, st.State)
