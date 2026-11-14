@@ -26,6 +26,11 @@ permissions:
 
 env:
   OPENEVEREST_VERSION: ${{ github.event.inputs.openeverest_version || '2.0.0-dev.4' }}
+  # Until the next core release, run core main instead of OPENEVEREST_VERSION:
+  # the openeverest/helm-charts chart at this ref and the image core's CI
+  # publishes from main. Empty installs the released OPENEVEREST_VERSION.
+  OPENEVEREST_CHARTS_REF: main
+  OPENEVEREST_MAIN_IMAGE: ghcr.io/openeverest/openeverest-dev:0.0.0
 
 jobs:
   cases:
@@ -116,6 +121,24 @@ jobs:
               echo "$name: $result in $(( ($(date +%s%N) - start) / 1000000 ))ms"
             done'
           kubectl delete pod dnscheck --wait=false
+
+      - name: Check out the OpenEverest core chart
+        if: env.OPENEVEREST_CHARTS_REF != ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: openeverest/helm-charts
+          ref: ${{ env.OPENEVEREST_CHARTS_REF }}
+          path: _helm-charts
+          persist-credentials: false
+
+      - name: Use the core chart and the core main image
+        if: env.OPENEVEREST_CHARTS_REF != ''
+        run: |
+          # The chart's pmm dependency comes from this repository.
+          helm repo add percona https://percona.github.io/percona-helm-charts
+          helm dependency build _helm-charts/charts/everest
+          echo "OPENEVEREST_CHART_DIR=$GITHUB_WORKSPACE/_helm-charts/charts/everest" >> "$GITHUB_ENV"
+          echo "OPENEVEREST_IMAGE=$OPENEVEREST_MAIN_IMAGE" >> "$GITHUB_ENV"
 
       - name: Bring up OpenEverest core + provider (tilt ci)
         run: tilt ci -f dev/Tiltfile
