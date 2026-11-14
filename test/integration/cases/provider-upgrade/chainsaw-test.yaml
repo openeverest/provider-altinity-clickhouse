@@ -1,0 +1,195 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: provider-upgrade
+spec:
+  description: |
+    Upgrade the provider chart from the last published release to this
+    checkout, the way users do. The provider is first moved to the published
+    chart and image, a replicated Instance is created with rows, and the
+    provider is upgraded back to this build with `helm upgrade` (preflight hook
+    on). The Instance stays Ready and its ClickHouse and Keeper pods do not
+    restart on their own: a change the new release would roll out is held as
+    pending maintenance, which the test then approves. The rows survive and
+    replication keeps working.
+
+    The case swaps the provider out from under the cluster, so it does not run
+    alongside the others.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk,pod -o yaml
+    - script:
+        content: helm list -A; kubectl logs -A -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=150
+  steps:
+    - name: install-published-release
+      try:
+        - script:
+            timeout: 10m
+            content: |
+              set -eu
+              . ./provider.sh
+              mkdir -p "$STATE"
+              set -- $(release)
+              [ "$1" != null ] || { echo "no provider-altinity-clickhouse Helm release found"; exit 1; }
+              echo "$1 $2" > "$STATE/release"
+              # This build's values (its image included), for the upgrade back.
+              helm get values "$1" -n "$2" -o yaml > "$STATE/values.yaml"
+              provider_image > "$STATE/image"
+              # PUBLISHED_VERSION picks an older release, e.g. to exercise the
+              # maintenance approval path; the default is the latest one.
+              published=${PUBLISHED_VERSION:-$(helm show chart "$CHART_OCI" | sed -n 's/^version: //p')}
+              echo "$published" > "$STATE/published"
+              echo "moving $1 in $2 from $(cat "$STATE/image") to the published chart $published"
+              helm upgrade "$1" "$CHART_OCI" --version "$published" -n "$2" --reset-values \
+                --set replicaCount=1 --wait --timeout 8m
+              wait_provider
+              echo "provider runs $(provider_image)"
+      # Whatever happens, leave the cluster on this build for the other cases.
+      cleanup:
+        - script:
+            timeout: 10m
+            content: |
+              set -eu
+              . ./provider.sh
+              [ -f "$STATE/release" ] || exit 0
+              [ "$(provider_image)" = "$(cat "$STATE/image")" ] && exit 0
+              set -- $(cat "$STATE/release")
+              echo "restoring $1 in $2 to this build"
+              helm upgrade "$1" "$CHART_DIR" -n "$2" --reset-values -f "$STATE/values.yaml" --wait --timeout 8m
+
+    - name: create-instance-on-published-release
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-provider-upgrade
+              . ../../lib/clickhouse.sh
+              . ./provider.sh
+              wait_until "both replicas registered" equals 2 replicas_in_cluster
+              q 0 "CREATE TABLE IF NOT EXISTS default.upgrade_probe ON CLUSTER '{cluster}' (id UInt64)
+                   ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/upgrade_probe', '{replica}') ORDER BY id"
+              q 0 "INSERT INTO default.upgrade_probe SELECT number FROM numbers(1000)"
+              wait_until "rows replicated" equals 1000 q 1 "SELECT count() FROM default.upgrade_probe"
+              i=0
+              until pod_uids > "$STATE/pods" && [ "$(wc -l < "$STATE/pods")" -eq 5 ]; do
+                i=$((i + 1))
+                [ "$i" -lt 24 ] || fail "could not list the 2 ClickHouse and 3 Keeper pods"
+                sleep 5
+              done
+              cat "$STATE/pods"
+
+      # Always, also when a later step fails: re-runs on the same cluster
+      # must not find this Instance's volumes.
+      cleanup:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-provider-upgrade
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-provider-upgrade
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse-keeper.altinity.com/chk=itest-ch-provider-upgrade-keeper
+              - --ignore-not-found
+              - --wait=false
+
+    - name: upgrade-to-this-build
+      try:
+        - script:
+            timeout: 10m
+            content: |
+              set -eu
+              . ./provider.sh
+              set -- $(cat "$STATE/release")
+              echo "upgrading $1 in $2 to $CHART_DIR with $(cat "$STATE/image")"
+              helm upgrade "$1" "$CHART_DIR" -n "$2" --reset-values -f "$STATE/values.yaml" \
+                --set upgradePreflight.enabled=true --wait --timeout 8m
+              wait_provider
+              [ "$(provider_image)" = "$(cat "$STATE/image")" ] || { echo "provider runs $(provider_image)"; exit 1; }
+        # The new provider leaves the running cluster alone for a while: the
+        # Instance stays Ready and no pod is replaced.
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              NAME=itest-ch-provider-upgrade
+              . ../../lib/clickhouse.sh
+              . ./provider.sh
+              # Reads that fail (a flaky API server) are skipped, not compared.
+              checks=0
+              end=$(($(date +%s) + 120))
+              while [ "$(date +%s)" -lt "$end" ]; do
+                if p=$(phase) && [ -n "$p" ] && now=$(pod_uids); then
+                  [ "$p" = Ready ] || fail "Instance is $p after the provider upgrade"
+                  [ "$now" = "$(cat "$STATE/pods")" ] || {
+                    echo "$now"
+                    fail "pods were replaced without maintenance approval"
+                  }
+                  checks=$((checks + 1))
+                fi
+                sleep 5
+              done
+              [ "$checks" -ge 6 ] || fail "only $checks of the checks could read the API"
+              echo "no pod restarted in the 2 minutes after the upgrade ($checks checks)"
+              kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.pendingMaintenance}' > "$STATE/pending"
+              echo "pending maintenance: $(cat "$STATE/pending")"
+
+    - name: approve-held-maintenance
+      try:
+        # Approve whatever the new release holds, then wait for it to roll out.
+        - script:
+            timeout: 15m
+            content: |
+              set -eu
+              NAME=itest-ch-provider-upgrade
+              . ../../lib/clickhouse.sh
+              . ./provider.sh
+              tokens=$(jq -r '.[].approvalToken // empty' "$STATE/pending" 2>/dev/null || true)
+              if [ -z "$tokens" ]; then
+                echo "the new release renders the cluster unchanged: nothing to approve"
+                exit 0
+              fi
+              for token in $tokens; do
+                echo "approving $token"
+                patch_instance "{\"spec\":{\"maintenance\":{\"approved\":\"$token\"}}}"
+                wait_until "maintenance $token applied" sh -c \
+                  "! kubectl get instances.core.openeverest.io $NAME -n $NS -o jsonpath='{.status.pendingMaintenance}' | grep -qF '$token'"
+              done
+              wait_until "the Instance is Ready" ready
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-provider-upgrade
+              . ../../lib/clickhouse.sh
+              wait_until "rows intact on replica 0" equals 1000 q 0 "SELECT count() FROM default.upgrade_probe"
+              q 0 "INSERT INTO default.upgrade_probe VALUES (1000000)"
+              wait_until "new row replicated" equals 1001 q 1 "SELECT count() FROM default.upgrade_probe"

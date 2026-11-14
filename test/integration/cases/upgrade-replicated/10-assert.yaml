@@ -1,0 +1,37 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-upgrade-repl
+  namespace: default
+status:
+  phase: Ready
+---
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-upgrade-repl-keeper
+  namespace: default
+spec:
+  templates:
+    podTemplates:
+      - spec:
+          containers:
+            - name: clickhouse-keeper
+              image: clickhouse/clickhouse-keeper:26.3.56.2
+status:
+  status: Completed
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-upgrade-repl
+  namespace: default
+spec:
+  templates:
+    podTemplates:
+      - spec:
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:26.3.56.2
+status:
+  status: Completed

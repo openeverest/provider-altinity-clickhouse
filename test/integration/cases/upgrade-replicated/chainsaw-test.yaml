@@ -1,0 +1,137 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: upgrade-replicated
+spec:
+  description: |
+    Upgrade a replicated Instance (2 ClickHouse replicas, 3 Keeper nodes) from
+    the 26.3 to the 26.8 bundle while a client inserts a row a second through
+    the client Service. Keeper and ClickHouse roll one node at a time, so
+    writes never stop for long; both end up on 26.8 and every row written
+    during the upgrade reaches both replicas.
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk,pod -o yaml
+    - script:
+        content: kubectl logs -n $NAMESPACE itest-ch-upgrade-repl-writer --tail=200 || true
+    - script:
+        content: kubectl logs -A -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+  steps:
+    - name: create-on-26.3
+      try:
+        - apply:
+            file: 10-create-cluster.yaml
+        - assert:
+            file: 10-assert.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-upgrade-repl
+              . ../../lib/clickhouse.sh
+              wait_until "both replicas registered" equals 2 replicas_in_cluster
+              q 0 "CREATE TABLE IF NOT EXISTS default.rollout_probe ON CLUSTER '{cluster}' (t UInt64)
+                   ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/rollout_probe', '{replica}') ORDER BY t"
+        - apply:
+            file: 15-writer.yaml
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-upgrade-repl
+              . ../../lib/clickhouse.sh
+              wait_until "the writer is inserting" sh -c \
+                "kubectl logs -n $NS itest-ch-upgrade-repl-writer | grep -q '^ok '"
+
+      # Always, also when a later step fails: re-runs on the same cluster
+      # must not find this Instance's volumes.
+      cleanup:
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pod
+              - itest-ch-upgrade-repl-writer
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - instances.core.openeverest.io
+              - itest-ch-upgrade-repl
+              - -n
+              - default
+              - --ignore-not-found
+              - --wait=false
+        # Volumes are retained by default (storageReclaimPolicy: Retain); drop
+        # them so re-runs on the same cluster start from empty storage.
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse.altinity.com/chi=itest-ch-upgrade-repl
+              - --ignore-not-found
+              - --wait=false
+        - command:
+            entrypoint: kubectl
+            args:
+              - delete
+              - pvc
+              - -n
+              - default
+              - -l
+              - clickhouse-keeper.altinity.com/chk=itest-ch-upgrade-repl-keeper
+              - --ignore-not-found
+              - --wait=false
+
+    - name: upgrade-to-26.8-under-writes
+      try:
+        - patch:
+            file: 20-upgrade.yaml
+        - assert:
+            file: 20-assert-updating.yaml
+        - assert:
+            timeout: 20m
+            file: 20-assert-upgraded.yaml
+        - script:
+            timeout: 5m
+            content: |
+              set -eu
+              NAME=itest-ch-upgrade-repl
+              . ../../lib/clickhouse.sh
+              # Let the writer run a little past the rollout, then stop it.
+              sleep 15
+              kubectl logs -n "$NS" itest-ch-upgrade-repl-writer > /tmp/itest-ch-upgrade-repl-writer.log
+              kubectl delete pod -n "$NS" itest-ch-upgrade-repl-writer --wait=true
+              # The longest stretch without a successful insert.
+              stats=$(awk '
+                $1 == "ok" { if (last && $2 - last > gap) gap = $2 - last; last = $2; ok++ }
+                $1 == "fail" { failed++ }
+                END { printf "%d %d %d", ok, failed + 0, gap + 0 }' /tmp/itest-ch-upgrade-repl-writer.log)
+              set -- $stats
+              echo "inserts: $1 ok, $2 failed; longest gap between successful inserts: ${3}s"
+              [ "$1" -ge 60 ] || fail "too few successful inserts: $1"
+              [ "$3" -le 60 ] || fail "writes stopped for ${3}s during the upgrade"
+              echo "$1" > /tmp/itest-ch-upgrade-repl-ok
+        - script:
+            content: |
+              set -eu
+              NAME=itest-ch-upgrade-repl
+              . ../../lib/clickhouse.sh
+              for r in 0 1; do
+                v=$(q "$r" "SELECT version()")
+                case "$v" in 26.8.*) echo "replica $r runs $v" ;; *) fail "replica $r runs $v" ;; esac
+                q "$r" "SYSTEM SYNC REPLICA default.rollout_probe"
+              done
+              ok=$(cat /tmp/itest-ch-upgrade-repl-ok)
+              r0=$(q 0 "SELECT count() FROM default.rollout_probe")
+              r1=$(q 1 "SELECT count() FROM default.rollout_probe")
+              echo "rows: replica 0 has $r0, replica 1 has $r1, the writer saw $ok succeed"
+              [ "$r0" = "$r1" ] || fail "replicas diverged"
+              # A timed-out insert may still have committed, so rows >= successes.
+              [ "$r0" -ge "$ok" ] || fail "rows the writer saw committed are missing"

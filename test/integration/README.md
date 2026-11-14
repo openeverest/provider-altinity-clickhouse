@@ -139,9 +139,46 @@ default) and asserts (needs cert-manager, installed by the dev stack):
    new certificate without restarting.
 5. Switching to `mode: optional` restores the plaintext ports on the client
    Service and removes both NetworkPolicies.
+6. Turning TLS off (`enabled: disabled`) leaves only the plaintext ports on the
+   client Service, and ClickHouse reaches Keeper on `2181`. Once no pod mounts
+   them, the server and CA certificates, their Secrets and the issuers are
+   deleted. The connection Secret reports `http` on `8123` without a CA, and
+   replication and a distributed query work over the plaintext ports.
 
 The CI cluster does not enforce NetworkPolicies, so blocking the plaintext
 ports is only asserted through the policies themselves.
+
+### `upgrade-replicated`
+
+Provisions a replicated Instance (2 replicas, 3 Keeper nodes) on the `26.3`
+bundle and starts a client pod that inserts a row a second through the client
+Service. Moving it to `26.8` reports `Updating`, then `Ready` with ClickHouse
+and Keeper on the 26.8 images, and:
+
+1. Writes never stop for more than 60 seconds while the nodes roll one at a
+   time.
+2. Both replicas run 26.8, hold the same rows, and none of the rows the client
+   saw committed is missing.
+
+### `provider-upgrade`
+
+Upgrades the provider chart from the last published release to this checkout,
+the way users do:
+
+1. Moves the provider's Helm release to the published chart and image (the
+   latest version in `oci://ghcr.io/openeverest/charts`; set `PUBLISHED_VERSION`
+   to start from an older one).
+2. Creates a replicated Instance and writes rows.
+3. Runs `helm upgrade` back to this checkout's chart and image, with the
+   preflight hook on.
+4. For two minutes the Instance stays `Ready` and no ClickHouse or Keeper pod is
+   replaced: a change the new release would roll out is held as pending
+   maintenance.
+5. Approves whatever is held, waits for it to roll out, and checks the rows
+   and replication.
+
+A step cleanup restores this build if the case fails. The case swaps the
+provider out from under the cluster, so it does not run alongside the others.
 
 ### `scale`
 

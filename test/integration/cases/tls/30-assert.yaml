@@ -1,0 +1,32 @@
+# TLS off: only the plaintext ports are left on the client Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-itest-ch-tls
+  namespace: default
+spec:
+  (ports[*].port): [8123, 9000]
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-tls
+  namespace: default
+status:
+  phase: Ready
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-tls
+  namespace: default
+status:
+  status: Completed
+---
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-tls-keeper
+  namespace: default
+status:
+  status: Completed

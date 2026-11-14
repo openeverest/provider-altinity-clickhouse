@@ -1,0 +1,25 @@
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-upgrade-repl
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  version: "26.3"
+  topology:
+    type: replicated
+  components:
+    engine:
+      type: clickhouse
+      replicas: 2
+      resources:
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      storage:
+        size: 5Gi
+    keeper:
+      type: clickhouse-keeper
+      storage:
+        size: 5Gi

@@ -1,0 +1,41 @@
+# Inserts a row a second through the client Service, which routes to the
+# replicas that are ready, and logs each attempt as "ok <epoch>" or
+# "fail <epoch>".
+apiVersion: v1
+kind: Pod
+metadata:
+  name: itest-ch-upgrade-repl-writer
+  namespace: default
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: writer
+      image: clickhouse/clickhouse-server:26.3.56.2
+      command:
+        - sh
+        - -c
+        - |
+          while true; do
+            t=$(date +%s)
+            if clickhouse-client --host clickhouse-itest-ch-upgrade-repl --user admin --password "$PW" \
+                --connect_timeout 2 --receive_timeout 5 --send_timeout 5 \
+                -q "INSERT INTO default.rollout_probe VALUES ($t)" >/dev/null 2>&1; then
+              echo "ok $t"
+            else
+              echo "fail $t"
+            fi
+            sleep 1
+          done
+      env:
+        - name: PW
+          valueFrom:
+            secretKeyRef:
+              name: itest-ch-upgrade-repl-credentials
+              key: password
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 256Mi

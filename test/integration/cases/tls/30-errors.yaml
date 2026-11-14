@@ -1,0 +1,37 @@
+# Once no pod mounts them, the certificates, their Secrets and the issuers of
+# the provider-managed CA are deleted.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-tls-server
+  namespace: default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-tls-server-tls
+  namespace: default
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-tls-ca
+  namespace: default
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-tls-ca-tls
+  namespace: default
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: itest-ch-tls-ca
+  namespace: default
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: itest-ch-tls-selfsign
+  namespace: default
