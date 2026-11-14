@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/typed"
 	"sigs.k8s.io/yaml"
 
+	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
@@ -65,6 +66,7 @@ func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *
 	require.NoError(t, chiv1.AddToScheme(scheme))
 	require.NoError(t, chkv1.AddToScheme(scheme))
 	require.NoError(t, cmapi.AddToScheme(scheme))
+	require.NoError(t, backupv1alpha1.AddToScheme(scheme))
 	require.NoError(t, monitoringv1.AddToScheme(scheme))
 
 	all := append([]client.Object{instance, testProvider(t)}, objs...)

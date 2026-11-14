@@ -75,10 +75,10 @@ Stateful workloads additionally report:
 |---|---|---|
 | Persistent storage | ✅ | `spec.components.engine.storage`; volumes are retained on deletion by default, see [Data retention](#data-retention) |
 | Storage expansion | ✅ | when the StorageClass allows volume expansion; growing volumes on one that does not is rejected |
-| Backups (on demand) | ❌ | planned |
-| Backups (scheduled) | ❌ | planned |
+| Backups (on demand) | ✅ | `Backup` of class `altinity-clickhouse-backup` into an S3 `BackupStorage`; see [Backups](#backups) |
+| Backups (scheduled) | ⚠️ | `spec.backup.storages[].schedules` run with count retention; their runs are not listed as `Backup`s yet |
 | Point-in-time recovery | ❌ | planned |
-| Restore | ❌ | planned |
+| Restore | ✅ | into a new Instance (`spec.dataSource`) or a running one (`Restore`, `overwrite` to replace existing tables) |
 
 ## Prerequisites
 
@@ -426,6 +426,48 @@ the provider stamps each change it applies with a `spec.taskID`
 (`openeverest-<hash>`) on the `ClickHouseInstallation` and `ClickHouseKeeperInstallation`,
 and waits until the operator lists it in `status.taskIDsCompleted`. Until then the
 operator's `Completed` still describes the previous change.
+
+## Backups
+
+Backups are made by [clickhouse-backup](https://github.com/Altinity/clickhouse-backup), which
+the Altinity operator (0.28.0+, bundled) runs as a sidecar of the ClickHouse pods. They need an
+S3 `BackupStorage` in the Instance's namespace; one storage per Instance:
+
+```yaml
+spec:
+  backup:
+    enabled: true                  # turns the schedules on
+    classRef:
+      name: altinity-clickhouse-backup
+    storages:
+      - storageRef:
+          name: my-s3
+        schedules:
+          - name: nightly
+            enabled: true
+            cron: "0 2 * * *"
+            retention:
+              type: count
+              count: 7
+```
+
+- A storage turns the sidecar on (adding or removing it rolls the ClickHouse pods once). The
+  provider renders the clickhouse-backup configuration into the `<instance>-backup-storage`
+  Secret; a changed `BackupStorage` restarts nothing. Backups land under
+  `backup/<namespace>/<instance>/<cluster>/<shard>` in the bucket.
+- A `Backup` becomes a `ClickHouseBackup` of one replica per shard (complete for `Replicated*`
+  tables; set `parameters.replicaSelection: AllReplicas` for non-replicated tables).
+- Schedules become `ClickHouseBackupSchedule`s. Count retention keeps that many of the
+  schedule's backups; the operator has no time-based retention, so a time retention keeps every
+  backup. Scheduled runs are not listed as `Backup` resources yet.
+- A new Instance with a `Backup` as `spec.dataSource` is restored from it once it is up, and
+  reports `Restoring` meanwhile. It needs `spec.backup.enabled: true` with the backup's storage. A `Restore` into a running Instance refuses to
+  replace existing tables unless `parameters.overwrite: true`.
+- Deleting a `Backup` keeps the backup in the storage, whatever its `deletionPolicy`.
+- Point-in-time recovery is not supported.
+
+The operator's backup resources are experimental upstream and may change. See its
+[backup documentation](https://github.com/Altinity/clickhouse-operator/blob/0.28.0/docs/backup.md).
 
 ## Topologies
 

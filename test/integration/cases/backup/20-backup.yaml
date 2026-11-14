@@ -1,0 +1,14 @@
+apiVersion: backup.openeverest.io/v1alpha1
+kind: Backup
+metadata:
+  name: itest-ch-backup-once
+  namespace: default
+spec:
+  origin:
+    type: Instance
+    instanceRef:
+      name: itest-ch-backup
+  classRef:
+    name: altinity-clickhouse-backup
+  storageRef:
+    name: itest-seaweedfs

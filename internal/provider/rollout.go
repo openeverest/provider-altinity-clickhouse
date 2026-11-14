@@ -213,13 +213,17 @@ func inputsHash(c *controller.Context) (string, error) {
 	} else if found {
 		credentials = userCredentialsRevision(secret)
 	}
+	// Adding a backup storage turns the sidecar on, a change the user asked
+	// for; omitted without one, so the inputs of other Instances keep their
+	// recorded hash.
 	return hashJSON(struct {
-		Version     string `json:"version,omitempty"`
-		Topology    any    `json:"topology,omitempty"`
-		Parameters  any    `json:"parameters,omitempty"`
-		Components  any    `json:"components,omitempty"`
-		Credentials string `json:"credentials,omitempty"`
-	}{spec.Version, spec.Topology, spec.Parameters, spec.Components, credentials})
+		Version       string `json:"version,omitempty"`
+		Topology      any    `json:"topology,omitempty"`
+		Parameters    any    `json:"parameters,omitempty"`
+		Components    any    `json:"components,omitempty"`
+		Credentials   string `json:"credentials,omitempty"`
+		BackupStorage string `json:"backupStorage,omitempty"`
+	}{spec.Version, spec.Topology, spec.Parameters, spec.Components, credentials, backupStorageName(stored)})
 }
 
 // specHash fingerprints a rendered object's spec.

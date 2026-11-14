@@ -1,0 +1,27 @@
+# BackupClass of the Altinity ClickHouse provider.
+# This file is the source of truth for the generated BackupClass manifest.
+#
+# Backups run in the Altinity operator (0.28.0+): the provider turns on its
+# clickhouse-backup sidecar on the ClickHouseInstallation and maps Backup and
+# Restore CRs to ClickHouseBackup and ClickHouseRestore.
+
+displayName: "ClickHouse Backup (Altinity)"
+description: |
+  Backups of ClickHouse Instances made by clickhouse-backup, run by the
+  Altinity operator. One replica of each shard is backed up by default, which
+  is complete for Replicated* tables.
+supportedProviders:
+  - altinity-clickhouse
+executionMode: ProviderManaged
+
+providerManaged:
+  supportsPITR: false
+  limits:
+    # clickhouse-backup keeps backups in one remote storage per cluster.
+    maxStorages: 1
+
+parametersSchema:
+  openAPIV3Schema: BackupParameters
+
+restoreParametersSchema:
+  openAPIV3Schema: RestoreParameters

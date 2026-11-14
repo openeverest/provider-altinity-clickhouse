@@ -1,0 +1,23 @@
+apiVersion: backup.openeverest.io/v1alpha1
+kind: Backup
+metadata:
+  name: itest-ch-backup-once
+  namespace: default
+status:
+  state: Succeeded
+  operatorBackupRef:
+    kind: ClickHouseBackup
+    name: itest-ch-backup-once
+---
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseBackup
+metadata:
+  name: itest-ch-backup-once
+  namespace: default
+  ownerReferences:
+    - kind: Backup
+      name: itest-ch-backup-once
+spec:
+  clickHouseInstallation: itest-ch-backup
+status:
+  phase: Completed

@@ -49,6 +49,17 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 		clickhouse = chiInstallation(chi)
 	}
 
+	// Seeding from a data source holds the Instance in Restoring until the
+	// restore is done; a failed one fails it.
+	if ds := c.GetDataSourceStatus(); ds != nil {
+		if !ds.Done {
+			return controller.Restoring(ds.Message), nil
+		}
+		if ds.State == controller.DataSourceStateFailed {
+			return controller.Failed(ds.Message), nil
+		}
+	}
+
 	// A cluster the operator has finished reconciling once is serving; every
 	// later change is an update of it, Keeper and TLS changes included.
 	var conn controller.ConnectionDetails

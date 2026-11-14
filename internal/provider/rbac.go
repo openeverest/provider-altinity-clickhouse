@@ -42,6 +42,15 @@ package provider
 // Prometheus operator PodMonitor for exposing ClickHouse metrics
 // +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
 
+// Operator-managed backups (Altinity operator 0.28.0+), and the OpenEverest
+// backup resources they map from
+// +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhousebackups;clickhouserestores;clickhousebackupschedules,verbs=get;list;watch;create;update;patch;delete
+// (the runtime's Backup and Restore reconcilers run in the provider and
+// create the Restore of an Instance's data source)
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backups;restores,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backups/status;restores/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=backup.openeverest.io,resources=backupclasses;backupstorages,verbs=get;list;watch
+
 // cert-manager resources for provisioning TLS certificates
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers,verbs=get;list;watch;create;update;patch;delete

@@ -1,0 +1,8 @@
+{{/*
+Renders every BackupClass manifest produced by `provider-sdk generate` from
+definition/backupclasses/.
+*/}}
+{{- range $path, $_ := .Files.Glob "generated/backupclasses/*.yaml" }}
+---
+{{ $.Files.Get $path }}
+{{- end }}

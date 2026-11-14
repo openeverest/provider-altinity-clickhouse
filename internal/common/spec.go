@@ -135,6 +135,31 @@ const (
 	// Altinity operator does not create a usable external user, so we create one.
 	AppUserName = "admin"
 
+	// BackupConfigSecretSuffix names the Secret holding the clickhouse-backup
+	// configuration of an Instance's backup sidecar.
+	BackupConfigSecretSuffix = "-backup-storage"
+
+	// BackupConfigKey is the key of that configuration in the Secret, as the
+	// Altinity operator reads it.
+	BackupConfigKey = "config.yml"
+
+	// BackupUserName is the ClickHouse user the backup sidecars log in as;
+	// the operator limits it to localhost. BackupUserKeyUsername and
+	// BackupUserKeyPassword are its keys in the operator's
+	// <chi>-auto-backup-secret, which the provider sets under
+	// BackupUserFieldOwner.
+	BackupUserName        = "clickhouse_backup"
+	BackupUserKeyUsername = "CLICKHOUSE_USERNAME"
+	BackupUserKeyPassword = "CLICKHOUSE_PASSWORD"
+	BackupUserFieldOwner  = "provider-altinity-clickhouse-backup"
+
+	// BackupAPIKeyUsername and BackupAPIKeyPassword are the REST API
+	// credentials of the sidecars in that Secret, set by the provider when
+	// it creates the Secret.
+	BackupAPIUserName    = "backup"
+	BackupAPIKeyUsername = "API_USERNAME"
+	BackupAPIKeyPassword = "API_PASSWORD"
+
 	// RolloutStateSuffix is appended to the Instance name to form the Secret
 	// recording what the provider last applied (see rolloutGate).
 	RolloutStateSuffix = "-provider-state"

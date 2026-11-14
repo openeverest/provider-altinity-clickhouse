@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/yaml"
 
+	backupv1alpha1 "github.com/openeverest/openeverest/v2/api/backup/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
@@ -66,6 +67,7 @@ func New() *Provider {
 			SchemeFuncs: []func(*runtime.Scheme) error{
 				chiv1.AddToScheme,
 				chkv1.AddToScheme,
+				backupv1alpha1.AddToScheme,
 				monitoringv1.AddToScheme,
 				cmapi.AddToScheme,
 				networkingv1.AddToScheme,
@@ -185,6 +187,12 @@ func (p *Provider) sync(c *controller.Context) error {
 		}
 	}
 
+	// The backup sidecar reads its storage from this Secret; it may follow
+	// the CHI, which starts without it.
+	if err := reconcileBackupConfig(c); err != nil {
+		return err
+	}
+
 	var syncErr error
 	switch topology {
 	case common.TopologyReplicated:
@@ -192,6 +200,9 @@ func (p *Provider) sync(c *controller.Context) error {
 	default:
 		// standalone (and any unknown topology falls through to standalone)
 		syncErr = p.syncStandalone(c)
+	}
+	if syncErr == nil {
+		syncErr = syncBackups(c)
 	}
 
 	// The PodMonitor is independent of CHI readiness, so reconcile it even while
@@ -636,6 +647,8 @@ func buildCHIWired(c *controller.Context, l clusterLayout, keeper keeperWiring) 
 	if l.keeper {
 		spec.Configuration.Zookeeper = keeperZookeeper(c, keeper.port)
 	}
+
+	spec.Backup = chiBackup(c)
 
 	return &chiv1.ClickHouseInstallation{
 		ObjectMeta: c.ObjectMeta(c.Name()),
