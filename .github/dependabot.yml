@@ -1,0 +1,14 @@
+# The Altinity clickhouse-operator is tracked as the bundled Helm subchart
+# (charts/provider-altinity-clickhouse/Chart.yaml). Its Go module is pinned to a
+# commit (pseudo-version), so Dependabot cannot follow it; bump it by hand.
+version: 2
+
+updates:
+  - package-ecosystem: "helm"
+    directory: "/charts/provider-altinity-clickhouse"
+    schedule:
+      interval: "daily"
+    allow:
+      - dependency-name: "altinity-clickhouse-operator"
+    labels:
+      - "dependencies"
