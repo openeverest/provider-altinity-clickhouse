@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -262,26 +261,26 @@ func TestRolloutReplicatedHeldAsOneAction(t *testing.T) {
 	assert.Empty(t, c.GetPendingMaintenance())
 }
 
-func TestRolloutPublishesPendingMaintenanceWhileWaiting(t *testing.T) {
+// A change held for approval while the operator is busy: Sync does not
+// wait, so the runtime publishes the hold; once approved, the change is
+// applied and nothing is held any more.
+func TestRolloutHoldWhileOperatorBusy(t *testing.T) {
 	instance := newTestInstance("db", "ns", "")
 	state := providerChanged(recordedState(t, instance))
 	rolling := completedCHI()
 	rolling.EnsureStatus().Status = chiv1.StatusInProgress
 
-	// Held while the operator is still busy: Sync waits, yet the hold is shown.
-	_, c := syncStandalone(t, instance, rolling, state)
-	live := &corev1alpha1.Instance{}
-	require.NoError(t, c.Get(live, "db"))
-	require.Len(t, live.Status.PendingMaintenance, 1)
-	assert.True(t, meta.IsStatusConditionTrue(live.Status.Conditions, corev1alpha1.ConditionMaintenancePending))
+	var applied []*chiv1.ClickHouseInstallation
+	c := newInterceptedTestContext(t, captureCHIApply(t, &applied), instance, withCredentials([]client.Object{rolling, state})...)
+	require.NoError(t, New().Sync(c))
+	assert.Empty(t, applied)
+	require.Len(t, c.GetPendingMaintenance(), 1)
 
-	// Approved: the rollout starts and Sync waits on it; the hold is cleared
-	// at once rather than when the cluster is Ready again.
-	live.Spec.Maintenance = &corev1alpha1.MaintenanceSpec{Approved: live.Status.PendingMaintenance[0].ApprovalToken}
-	_, c = syncStandalone(t, live, rolling, state)
-	require.NoError(t, c.Get(live, "db"))
-	assert.Empty(t, live.Status.PendingMaintenance)
-	assert.True(t, meta.IsStatusConditionFalse(live.Status.Conditions, corev1alpha1.ConditionMaintenancePending))
+	instance.Spec.Maintenance = &corev1alpha1.MaintenanceSpec{Approved: c.GetPendingMaintenance()[0].ApprovalToken}
+	c = newInterceptedTestContext(t, captureCHIApply(t, &applied), instance, withCredentials([]client.Object{rolling, state})...)
+	require.NoError(t, New().Sync(c))
+	assert.Len(t, applied, 1)
+	assert.Empty(t, c.GetPendingMaintenance())
 }
 
 func TestCleanupRemovesRolloutState(t *testing.T) {
@@ -416,19 +415,16 @@ func TestRolledOut(t *testing.T) {
 }
 
 // Right after a change is applied the CHI still reads Completed for the
-// previous rendering; Sync keeps waiting until the operator finished the
+// previous rendering: it has rolled out only once the operator finished the
 // applied one.
-func TestWaitForCHIWaitsForAppliedTask(t *testing.T) {
+func TestInstallationRolledOutWaitsForAppliedTask(t *testing.T) {
 	id := chtypes.Id(taskIDPrefix + "abc")
 	chi := chiIn(completed)
 	chi.Spec.TaskID = &id
-	c := newTestContext(t, newTestInstance("db", "ns", ""))
-
-	err := waitForCHI(c, chi)
-	assert.True(t, controller.IsWaitError(err), "got %v", err)
+	assert.False(t, chiInstallation(chi).rolledOut())
 
 	chi.Status.TaskIDsCompleted = append([]string{string(id)}, chi.Status.TaskIDsCompleted...)
-	assert.NoError(t, waitForCHI(c, chi))
+	assert.True(t, chiInstallation(chi).rolledOut())
 }
 
 func TestStatusUpdatingUntilAppliedTaskCompletes(t *testing.T) {
@@ -437,5 +433,6 @@ func TestStatusUpdatingUntilAppliedTaskCompletes(t *testing.T) {
 	chi.Spec.TaskID = &id
 	st, err := New().Status(newTestContext(t, newTestInstance("db", "ns", ""), chi))
 	require.NoError(t, err)
-	assert.Equal(t, corev1alpha1.InstancePhaseUpdating, st.Phase)
+	assert.False(t, st.Converged)
+	assert.Equal(t, "Waiting for the operator to pick up the change to ClickHouse", st.Message)
 }

@@ -15,7 +15,6 @@
 package provider
 
 import (
-	"cmp"
 	"fmt"
 	"testing"
 
@@ -24,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -360,6 +360,26 @@ func TestValidateConfiguration(t *testing.T) {
 	}
 }
 
+// beforeFirstSync is the status of an Instance the provider has not run for yet.
+func beforeFirstSync(s *corev1alpha1.InstanceStatus) {
+	s.Phase = corev1alpha1.InstancePhasePending
+}
+
+// beingCreated is the status of an Instance whose cluster the provider is
+// creating: it has run, and the cluster has not been available yet.
+func beingCreated(s *corev1alpha1.InstanceStatus) {
+	beforeFirstSync(s)
+	meta.SetStatusCondition(&s.Conditions, metav1.Condition{
+		Type: corev1alpha1.ConditionSynced, Status: metav1.ConditionTrue, Reason: corev1alpha1.ReasonSynced,
+	})
+}
+
+// wasAvailable is the status of an Instance whose cluster has been available.
+func wasAvailable(s *corev1alpha1.InstanceStatus) {
+	beingCreated(s)
+	s.Phase = corev1alpha1.InstancePhaseProvisioned
+}
+
 // TestValidateTransitions runs the pipeline as admission does on an update,
 // with the stored Instance as the previous one.
 func TestValidateTransitions(t *testing.T) {
@@ -372,8 +392,8 @@ func TestValidateTransitions(t *testing.T) {
 	tests := []struct {
 		name    string
 		fixture string
-		// phase of the stored Instance, Ready when empty.
-		phase  corev1alpha1.InstancePhase
+		// stored sets the status of the stored Instance, wasAvailable when nil.
+		stored func(*corev1alpha1.InstanceStatus)
 		before func(*corev1alpha1.Instance)
 		after  func(*corev1alpha1.Instance)
 		want   []string
@@ -392,9 +412,9 @@ func TestValidateTransitions(t *testing.T) {
 			after:   component(common.ComponentEngine, storage("20Gi", nil)),
 		},
 		{
-			name:    "engine storage class changes on a failed cluster",
+			name:    "engine storage class changes while the cluster is created",
 			fixture: standaloneFixture,
-			phase:   corev1alpha1.InstancePhaseFailed,
+			stored:  beingCreated,
 			before:  component(common.ComponentEngine, storage("25Gi", new("fast"))),
 			after:   component(common.ComponentEngine, storage("25Gi", new("slow"))),
 			want:    []string{"spec.components[engine].storage.storageClass"},
@@ -402,13 +422,21 @@ func TestValidateTransitions(t *testing.T) {
 		{
 			name:    "engine storage class changes before the cluster is created",
 			fixture: standaloneFixture,
-			phase:   corev1alpha1.InstancePhasePending,
+			stored:  beforeFirstSync,
 			before:  component(common.ComponentEngine, storage("25Gi", new("fast"))),
 			after:   component(common.ComponentEngine, storage("25Gi", new("slow"))),
 		},
 		{
 			name:    "engine storage class changes",
 			fixture: standaloneFixture,
+			before:  component(common.ComponentEngine, storage("25Gi", new("fast"))),
+			after:   component(common.ComponentEngine, storage("25Gi", new("slow"))),
+			want:    []string{"spec.components[engine].storage.storageClass"},
+		},
+		{
+			name:    "engine storage class changes on a status of an earlier runtime",
+			fixture: standaloneFixture,
+			stored:  func(s *corev1alpha1.InstanceStatus) { s.Phase = "Ready" },
 			before:  component(common.ComponentEngine, storage("25Gi", new("fast"))),
 			after:   component(common.ComponentEngine, storage("25Gi", new("slow"))),
 			want:    []string{"spec.components[engine].storage.storageClass"},
@@ -442,9 +470,9 @@ func TestValidateTransitions(t *testing.T) {
 			want: []string{"spec.topology.type"},
 		},
 		{
-			name:    "replicated to standalone while provisioning",
+			name:    "replicated to standalone while the cluster is created",
 			fixture: replicatedFixture,
-			phase:   corev1alpha1.InstancePhaseProvisioning,
+			stored:  beingCreated,
 			after: func(in *corev1alpha1.Instance) {
 				in.Spec.Topology.Type = common.TopologyStandalone
 				delete(in.Spec.Components, common.ComponentKeeper)
@@ -567,7 +595,11 @@ func TestValidateTransitions(t *testing.T) {
 			if tt.before != nil {
 				tt.before(old)
 			}
-			old.Status.Phase = cmp.Or(tt.phase, corev1alpha1.InstancePhaseReady)
+			stored := wasAvailable
+			if tt.stored != nil {
+				stored = tt.stored
+			}
+			stored(&old.Status)
 			in := old.DeepCopy()
 			if tt.after != nil {
 				tt.after(in)

@@ -19,5 +19,9 @@ metadata:
   name: itest-ch-upgrade
   namespace: default
 status:
-  phase: Ready
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
+  # The new image was reported as rolling out, and is no longer.
+  (conditions[?type == 'Upgrading'].status | [0]): "False"
+  (conditions[?type == 'Upgrading'].reason | [0]): Succeeded
   version: "26.8"

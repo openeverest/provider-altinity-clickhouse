@@ -40,9 +40,9 @@ Provisions a standalone (single-replica) Instance and asserts:
 - Custom engine `configuration` propagates to the CHI's
   `spec.configuration.settings`.
 - No `ClickHouseKeeperInstallation` is provisioned for it.
-- Changing the memory limit of the running cluster reports the Instance as
-  `Updating` while the pod rolls, then `Ready` again with the CHI at the new
-  limit.
+- Changing the memory limit of the running cluster leaves the Instance
+  `Provisioned` and not `Ready` while the pod rolls, then `Ready` again with
+  the CHI at the new limit.
 
 ### `replicated`
 
@@ -72,8 +72,9 @@ Provisions a standalone Instance with the default `storageReclaimPolicy` and:
 
 Provisions a standalone Instance on the `26.3` bundle, writes rows, then:
 
-1. Moves it to `26.8` and asserts it reports `Updating`, then `Ready` on the
-   26.8 image, with the rows intact and `version()` reporting 26.8.
+1. Moves it to `26.8` and asserts it is not `Ready` while the image rolls out,
+   then `Ready` on the 26.8 image, with the `Upgrading` condition back to
+   `False`, the rows intact and `version()` reporting 26.8.
 2. Moves it back to `26.3` and asserts admission rejects the downgrade: the
    CHI stays on 26.8.
 
@@ -152,8 +153,8 @@ ports is only asserted through the policies themselves.
 
 Provisions a replicated Instance (2 replicas, 3 Keeper nodes) on the `26.3`
 bundle and starts a client pod that inserts a row a second through the client
-Service. Moving it to `26.8` reports `Updating`, then `Ready` with ClickHouse
-and Keeper on the 26.8 images, and:
+Service. Moving it to `26.8` makes the Instance not `Ready` while the images
+roll out, then `Ready` with ClickHouse and Keeper on the 26.8 images, and:
 
 1. Writes never stop for more than 60 seconds while the nodes roll one at a
    time.

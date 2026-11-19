@@ -4,4 +4,6 @@ metadata:
   name: itest-ch-upgrade
   namespace: default
 status:
-  phase: Updating
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "False"
+  (conditions[?type == 'Reconciling'].status | [0]): "True"

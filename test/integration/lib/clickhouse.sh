@@ -43,10 +43,19 @@ equals() {
   [ "$("$@" 2>/dev/null)" = "$want" ]
 }
 
-phase() { kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.phase}'; }
+ready_status() { kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'; }
 ready_reason() { kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Ready")].reason}'; }
 chi() { kubectl get clickhouseinstallations.clickhouse.altinity.com "$NAME" -n "$NS" -o jsonpath="$1"; }
-ready() { [ "$(phase)" = Ready ] && [ "$(chi '{.status.status}')" = Completed ]; }
+
+# instance_ready: the Instance's Ready condition is True for its latest
+# generation, so not left over from before the last change.
+instance_ready() {
+  out=$(kubectl get instances.core.openeverest.io "$NAME" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status} {.status.conditions[?(@.type=="Ready")].observedGeneration} {.metadata.generation}') || return 1
+  set -- $out
+  [ "${1:-}" = True ] && [ -n "${2:-}" ] && [ "${2:-}" = "${3:-}" ]
+}
+
+ready() { instance_ready && [ "$(chi '{.status.status}')" = Completed ]; }
 
 # patch_instance <json merge patch>: remembers the task ID of the applied
 # ClickHouseInstallation, which the provider renews with every change.
@@ -62,7 +71,7 @@ rolled_out() {
   task=$(chi '{.spec.taskID}')
   [ -n "$task" ] && [ "$task" != "$BEFORE_TASK" ] &&
     chi '{.status.taskIDsCompleted}' | grep -qF "\"$task\"" &&
-    [ "$(phase)" = Ready ]
+    instance_ready
 }
 
 # wait_ready: waits for the change made with patch_instance to roll out.

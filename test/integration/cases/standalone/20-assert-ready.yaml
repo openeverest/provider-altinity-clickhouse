@@ -21,4 +21,5 @@ metadata:
   name: itest-ch-standalone
   namespace: default
 status:
-  phase: Ready
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"

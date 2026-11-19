@@ -306,7 +306,7 @@ Disabling TLS removes the certificates once no ClickHouse or Keeper pod mounts t
 Turning TLS on or off on a running `replicated` Instance switches Keeper in steps, so
 ClickHouse never loses it: Keeper opens the new client port next to the old one,
 ClickHouse moves to it, then Keeper closes the old one. Each step is a rolling restart
-of Keeper or ClickHouse; the Instance stays `Updating` until the last one is done. A
+of Keeper or ClickHouse; the Instance is not `Ready` until the last one is done. A
 held switch (see below) needs a single approval.
 
 Instances that enabled TLS with an earlier provider version receive the parts that
@@ -414,18 +414,60 @@ error names the Instance field at fault, such as
 
 ### Status
 
-| Phase | When |
+The provider reports what it observes, and OpenEverest derives the `Instance` conditions from
+it the same way for every provider.
+
+| Condition | What this provider reports |
 |---|---|
-| `Provisioning` | The cluster is being created; `status.message` shows progress, e.g. `Creating ClickHouse: 1 of 2 hosts ready` |
-| `Updating` | A running cluster is being changed — version, settings, resources, scaling, an approved maintenance action, Keeper or TLS. It keeps serving, so connection details stay published |
-| `Ready` | ClickHouse (and Keeper) are reconciled |
-| `Failed` | The operator aborted a change; `status.message` carries its error. The operator retries, and the phase follows when it recovers |
+| `Available` | `True` while the client Service routes to a ClickHouse host in every shard and, when ClickHouse uses Keeper, a Keeper node is ready. A host counts when its pod is `Ready` and carries the operator's `clickhouse.altinity.com/ready: yes` mark, which the client Service selects on: the operator takes the mark off a host it is about to restart and puts it back once the host has caught up with its replicas. A Keeper node is ready only while it follows a leader, so one ready node means the ensemble has a quorum; without one, ClickHouse makes replicated tables read-only. Otherwise `False`, with reason `NoReplicaReady` (naming the shards without a host) or `KeeperUnavailable`, and `Stopped` while `spec.stop` is set on the `ClickHouseInstallation`. |
+| `Ready` | `True` once the operator runs what the `Instance` asks for: it reports `Completed` for the change the provider applied last to the `ClickHouseInstallation` and, in the `replicated` topology, to the `ClickHouseKeeperInstallation`, and with TLS the server certificate has been issued. Until then the message says what is being waited for, e.g. `Creating ClickHouse Keeper: 1 of 3 hosts ready`. |
+| `Upgrading` | `True` while ClickHouse or Keeper pods still run another image than their installation asks for, as during a [version upgrade](#upgrading-clickhouse). |
 
 `Ready` follows the change the provider applied last, not just the operator's status:
 the provider stamps each change it applies with a `spec.taskID`
 (`openeverest-<hash>`) on the `ClickHouseInstallation` and `ClickHouseKeeperInstallation`,
 and waits until the operator lists it in `status.taskIDsCompleted`. Until then the
-operator's `Completed` still describes the previous change.
+operator's `Completed` still describes the previous change. The provider reads both objects
+from the API server rather than its cache for the same reason.
+
+The connection details Secret is written the first time the database is available, and kept
+current while a change rolls out.
+
+Each component reports `desiredReplicas`, the pods it will have once the cluster runs the
+`Instance`'s current spec, defaults included: `engine` counts the shards times the replicas
+of each (1 in the `standalone` topology, 2 replicas per shard unless set in the `replicated`
+one), and `keeper` the 3 Keeper nodes of the `replicated` topology.
+
+A problem makes the `Instance` not `Ready`, with a reason that says what is wrong:
+
+| Reason | Cause |
+|---|---|
+| `StoppedOutsideOpenEverest` | `spec.stop` is set on the `ClickHouseInstallation` or the `ClickHouseKeeperInstallation`. The provider never sets it, so only unsetting it there starts the database again. |
+| `SuspendedOutsideOpenEverest` | `spec.suspend` is set on one of them. The operator then leaves the object alone, and no change to the `Instance` reaches the cluster until it is unset. |
+| `FIPSValidationFailed`, `FIPSImagePolicyViolation`, `RootCAConflict`, `RootCASecretUnresolved`, `RemovedSecretRefSyntax`, `NoKeeperListener` | The operator refuses the spec it was given, and does not try again until it changes. |
+| `HostsFailed` | The operator completed the change the provider applied last without some of the hosts, whose StatefulSet it could not reconcile; the message quotes its latest error. It tries them again only when it next reconciles the installation. |
+| `EngineError` | The operator aborted the change the provider applied last; the message quotes its latest error. The operator tries again when a pod becomes ready, and with the next change. |
+
+The first two, and the operator refusing the spec, are reported as needing attention at once:
+nothing the provider does resolves them. When the operator holds a host's restart back
+because the other replicas of its shard (`ShardHasNoHealthyPeer`) or the Keeper ensemble
+(`RaftQuorumUnsafe`) could not take it, the `Instance` waits and says so: the operator goes on
+once the peer is ready again.
+
+What the provider cannot know:
+
+- **A shard counts from the moment the operator creates its first host.** While a shard is
+  added, the `Instance` reads as unavailable until a replica of the new shard is ready.
+- **Keeper's quorum is read from the readiness of its pods**, which lags behind: the
+  operator's readiness probe tolerates a minute of failures before a Keeper pod turns
+  unready.
+- **The operator's latest error is the one reported.** The operator keeps its errors after a
+  later success and tags only some of them with a reason, so an abort that records no error of
+  its own shows the one before.
+- **`Upgrading` compares images.** The operator does not report the version a host runs, so
+  any image change counts, also one set with `image` rather than `version`.
+- **A volume resize is not reported as `StorageResizing`.** The operator grows the volume
+  claims in place and neither reports nor waits for the resize.
 
 ## Topologies
 
@@ -539,8 +581,8 @@ condition urging an upgrade.
 ### Upgrading ClickHouse
 
 Set `spec.version` to a newer bundle (or pick it in the UI). Keeper is upgraded first, one
-node at a time, then ClickHouse, one replica at a time; the Instance reports `Updating`
-until both are done. Upgrades may skip bundles. Downgrades are rejected, since a newer
+node at a time, then ClickHouse, one replica at a time; the Instance reports `Upgrading`
+while the new images roll out, and is `Ready` again once both are done. Upgrades may skip bundles. Downgrades are rejected, since a newer
 ClickHouse may have written data an older one cannot read.
 
 When a provider release moves a bundle to a newer patch (for example a security fix),
@@ -633,8 +675,8 @@ kubectl logs -n everest-system deploy/provider-altinity-clickhouse -f
 
 | Symptom | Where to look |
 |---|---|
-| `Instance` stuck in `Provisioning` or `Updating` | `status.message` names the step (`Creating ClickHouse Keeper: 1 of 3 hosts ready`); then the `ClickHouseInstallation` / `ClickHouseKeeperInstallation` status and the provider logs |
-| `Instance` is `Failed` with a `ClickHouse:` or `ClickHouse Keeper:` message | The operator aborted the last change; the message is its error. It retries on its own, and the Instance recovers when it succeeds |
+| `Instance` not `Ready` for long | The `Ready` condition's message names the step (`Creating ClickHouse Keeper: 1 of 3 hosts ready`); then the `ClickHouseInstallation` / `ClickHouseKeeperInstallation` status and the provider logs |
+| `Ready` reason `EngineError` with a `ClickHouse:` or `ClickHouse Keeper:` message | The operator aborted the last change; the message is its error. It retries when a pod becomes ready or with the next change, and the Instance recovers when it succeeds |
 | No `Provider` resource in the cluster | Is the chart installed? Check the provider deployment logs |
 | `Instance` ignored entirely | `spec.providerRef.name` must be `altinity-clickhouse` |
 | `ClickHouseInstallation` created but no pods | Inspect its status — the failure is upstream in the operator |

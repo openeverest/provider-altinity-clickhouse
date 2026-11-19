@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -231,7 +232,7 @@ func validateConfiguration(configuration string) error {
 // validateTransitions rejects, on an update of an Instance whose cluster the
 // provider has started creating, the changes the cluster cannot take.
 func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.Instance) field.ErrorList {
-	if old == nil || old.Status.Phase == "" || old.Status.Phase == corev1alpha1.InstancePhasePending {
+	if old == nil || !clusterStarted(old) {
 		return nil
 	}
 	wasReplicated := old.GetTopologyType() == common.TopologyReplicated
@@ -260,6 +261,19 @@ func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.
 	}
 	errs = append(errs, validateStorageClassTransition(keeperPath.Child("storage", "storageClass"), oldClass, class)...)
 	return append(errs, validateVersionTransition(spec, common.ComponentKeeper, in, old)...)
+}
+
+// clusterStarted reports whether the provider has started creating the
+// cluster of the stored Instance. The runtime records the outcome of every
+// pass that runs the provider in the Synced condition; the phase stays
+// Pending until the cluster is first available, so it cannot tell. A phase
+// other than Pending is still a sign, for a status written by an earlier
+// runtime, which set no Synced condition.
+func clusterStarted(old *corev1alpha1.Instance) bool {
+	if old.Status.Phase != "" && old.Status.Phase != corev1alpha1.InstancePhasePending {
+		return true
+	}
+	return meta.FindStatusCondition(old.Status.Conditions, corev1alpha1.ConditionSynced) != nil
 }
 
 // validateShardsTransition rejects removing shards: a removed shard's data
@@ -525,7 +539,7 @@ func currentEngineImage(chi *chiv1.ClickHouseInstallation) string {
 			continue
 		}
 		for _, container := range tmpl.Spec.Containers {
-			if container.Name == "clickhouse" {
+			if container.Name == common.ContainerClickHouse {
 				return container.Image
 			}
 		}
@@ -542,7 +556,7 @@ func currentKeeperImage(chk *chkv1.ClickHouseKeeperInstallation) string {
 			continue
 		}
 		for _, container := range tmpl.Spec.Containers {
-			if container.Name == "clickhouse-keeper" {
+			if container.Name == common.ContainerKeeper {
 				return container.Image
 			}
 		}

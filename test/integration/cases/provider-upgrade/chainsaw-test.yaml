@@ -146,8 +146,8 @@ spec:
               checks=0
               end=$(($(date +%s) + 120))
               while [ "$(date +%s)" -lt "$end" ]; do
-                if p=$(phase) && [ -n "$p" ] && now=$(pod_uids); then
-                  [ "$p" = Ready ] || fail "Instance is $p after the provider upgrade"
+                if r=$(ready_status) && [ -n "$r" ] && now=$(pod_uids); then
+                  [ "$r" = True ] || fail "Instance is not Ready after the provider upgrade: $(ready_reason)"
                   [ "$now" = "$(cat "$STATE/pods")" ] || {
                     echo "$now"
                     fail "pods were replaced without maintenance approval"

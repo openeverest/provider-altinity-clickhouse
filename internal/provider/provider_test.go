@@ -28,6 +28,7 @@ import (
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -60,6 +61,7 @@ func newInterceptedTestContext(t *testing.T, funcs interceptor.Funcs, instance *
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1alpha1.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, appsv1.AddToScheme(scheme))
 	require.NoError(t, networkingv1.AddToScheme(scheme))
 	require.NoError(t, storagev1.AddToScheme(scheme))
 	require.NoError(t, chiv1.AddToScheme(scheme))
