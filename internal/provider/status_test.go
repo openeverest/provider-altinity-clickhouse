@@ -381,6 +381,47 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+func TestStatusDesiredReplicas(t *testing.T) {
+	addKeeper := func(in *corev1alpha1.Instance) *corev1alpha1.Instance {
+		return withKeeper(in, func(*corev1alpha1.ComponentSpec) {})
+	}
+	for _, tc := range []struct {
+		name     string
+		instance *corev1alpha1.Instance
+		want     []controller.ComponentReplicas
+	}{
+		{"standalone", newTestInstance("db", "ns", ""),
+			[]controller.ComponentReplicas{{Component: common.ComponentEngine, Desired: 1}}},
+		{"replicated, defaults", addKeeper(newReplicatedTestInstance("")),
+			[]controller.ComponentReplicas{
+				{Component: common.ComponentEngine, Desired: common.DefaultReplicasCount},
+				{Component: common.ComponentKeeper, Desired: common.KeeperReplicas},
+			}},
+		{"replicated, three shards of two", addKeeper(shardedInstance(3, 2)),
+			[]controller.ComponentReplicas{
+				{Component: common.ComponentEngine, Desired: 6},
+				{Component: common.ComponentKeeper, Desired: common.KeeperReplicas},
+			}},
+		{"replicated, two shards of one", addKeeper(shardedInstance(2, 1)),
+			[]controller.ComponentReplicas{
+				{Component: common.ComponentEngine, Desired: 2},
+				{Component: common.ComponentKeeper, Desired: common.KeeperReplicas},
+			}},
+		// Keeper runs with its defaults, but only components of the
+		// Instance carry a count.
+		{"replicated without a keeper component", shardedInstance(2, 3),
+			[]controller.ComponentReplicas{{Component: common.ComponentEngine, Desired: 6}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// What the operator runs does not matter: here it still runs a
+			// single host.
+			st, err := New().Status(newTestContext(t, tc.instance, objects([]client.Object{chiIn(updating)}, servingHost())...))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, st.DesiredReplicas)
+		})
+	}
+}
+
 // Status reads the installations past the cache: right after Sync applied a
 // change, the cache may still hold the object the operator finished.
 func TestStatusReadsInstallationsPastTheCache(t *testing.T) {

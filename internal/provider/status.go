@@ -95,14 +95,15 @@ var (
 
 // Status reports what the provider observes about the cluster: whether the
 // operator runs what the Instance asks for, whether clients can connect, what
-// is wrong and which image is rolling out. The runtime derives the Instance's
-// phase and conditions from these facts.
+// is wrong, which image is rolling out, and how many pods each component will
+// have. The runtime derives the Instance's phase and conditions from these
+// facts.
 func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 	o, err := observeCluster(c)
 	if err != nil {
 		return controller.Status{}, err
 	}
-	status := observe(o)
+	status := withDesiredReplicas(c, observe(o))
 
 	// The connection details are reported as soon as clients can connect,
 	// not only once the cluster has converged: whoever is told the database
@@ -112,6 +113,24 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 		status.ConnectionDetails = buildConnectionDetails(c, o.chi)
 	}
 	return status, nil
+}
+
+// withDesiredReplicas reports how many pods each component will have once
+// the cluster runs what the Instance asks for: for the engine, the shards
+// times the replicas of each, with the defaults Sync applies; for Keeper, the
+// fixed ensemble of the replicated topology. The counts come from the
+// Instance, not from the installations, which may still describe an earlier
+// spec.
+func withDesiredReplicas(c *controller.Context, status controller.Status) controller.Status {
+	l := layout(c)
+	components := c.Instance().Spec.Components
+	if _, ok := components[common.ComponentEngine]; ok {
+		status = status.WithDesiredReplicas(common.ComponentEngine, int32(l.hosts()))
+	}
+	if _, ok := components[common.ComponentKeeper]; ok && l.keeper {
+		status = status.WithDesiredReplicas(common.ComponentKeeper, common.KeeperReplicas)
+	}
+	return status
 }
 
 // observation is what Status reads about the cluster.
