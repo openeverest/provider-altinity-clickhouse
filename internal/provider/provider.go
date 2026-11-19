@@ -26,6 +26,7 @@ import (
 	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -68,6 +69,9 @@ func New() *Provider {
 				cmapi.AddToScheme,
 				networkingv1.AddToScheme,
 				storagev1.AddToScheme,
+				// The StatefulSets of the ClickHouse hosts name the shards
+				// the cluster has.
+				appsv1.AddToScheme,
 			},
 			// Safe to watch: server-side apply of an unchanged CHI/CHK is a
 			// no-op, so operator status/finalizer writes do not loop back.
@@ -85,24 +89,28 @@ func New() *Provider {
 				controller.WatchExternal(&corev1.Service{},
 					handler.EnqueueRequestsFromMapFunc(instanceForClientService),
 					loadBalancerAddressChanged()),
+				// Whether clients can connect follows the readiness of the
+				// ClickHouse and Keeper pods and the operator's ready mark,
+				// which the installations' status does not show.
+				controller.WatchExternal(&corev1.Pod{},
+					handler.EnqueueRequestsFromMapFunc(instanceForPod),
+					podServingChanged()),
 			},
 		},
 	}
 }
 
-// Sync provisions the required resources. While it waits on the operator the
-// runtime publishes what it waits for; it owns the Instance status.
-func (p *Provider) Sync(c *controller.Context) error {
-	return p.sync(c)
-}
-
-// sync applies and polls the required resources for the selected topology.
+// Sync applies the resources the selected topology needs.
 //
 // CHI/CHK are server-side applied on every reconcile, so spec changes on the
 // Instance roll out while fields written by the Altinity operator are left
-// alone. WaitError is returned while provisioning is in progress so the
-// runtime requeues after 15s.
-func (p *Provider) sync(c *controller.Context) error {
+// alone. Sync does not wait for the operator to roll them out: Status reports
+// what the operator is doing, which the runtime only asks for once Sync has
+// returned without waiting, and the CHI and CHK watches bring the next
+// reconcile once the operator is done. Sync waits only where it cannot go on
+// by itself: for a certificate to be issued, for the operator to create an
+// object, and between the steps of a Keeper TLS switch.
+func (p *Provider) Sync(c *controller.Context) error {
 	l := log.FromContext(c.Context())
 	topology := c.Instance().GetTopologyType()
 	l.Info("Syncing ClickHouse instance", "name", c.Name(), "topology", topology)
@@ -138,7 +146,7 @@ func (p *Provider) sync(c *controller.Context) error {
 	return syncErr
 }
 
-// syncStandalone applies and waits on the CHI for a single-node deployment.
+// syncStandalone applies the CHI for a single-node deployment.
 func (p *Provider) syncStandalone(c *controller.Context) error {
 	chi, err := buildCHI(c, layout(c))
 	if err != nil {
@@ -148,10 +156,11 @@ func (p *Provider) syncStandalone(c *controller.Context) error {
 	if err != nil {
 		return err
 	}
-	return applyAndWaitForCHI(c, gate, chi)
+	_, err = applyCHI(c, gate, chi)
+	return err
 }
 
-// syncReplicated applies and waits on a CHK (Keeper) + CHI pair.
+// syncReplicated applies a CHK (Keeper) + CHI pair.
 //
 // Keeper TLS switches in steps (see keeperWiring): the CHK and CHI rendered
 // here are the next step, and the approval covers the whole switch.
@@ -188,12 +197,15 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 	if err := c.Get(chk, keeperCRName(c.Name())); err != nil {
 		return controller.WaitForDuration("waiting for Keeper to initialize", 15*time.Second)
 	}
-	// ClickHouse needs a Keeper quorum to start, so hold the CHI until it is ready.
-	if err := waitForCHK(c, chk); err != nil {
-		return err
+	// ClickHouse needs a Keeper quorum to start, so hold the CHI until Keeper
+	// has rolled out.
+	if !chkInstallation(chk).rolledOut() {
+		log.FromContext(c.Context()).Info("Keeper still rolling out", "name", chk.Name, "status", chk.Status.GetStatus())
+		return nil
 	}
 
-	if err := applyAndWaitForCHI(c, gate, desiredCHI); err != nil {
+	rolled, err := applyCHI(c, gate, desiredCHI)
+	if err != nil || !rolled {
 		return err
 	}
 	if step != target {
@@ -202,73 +214,29 @@ func (p *Provider) syncReplicated(c *controller.Context) error {
 	return nil
 }
 
-// applyAndWaitForCHI server-side applies the CHI, unless the rollout gate holds
-// it, and returns a WaitError until the operator reports it Completed.
-func applyAndWaitForCHI(c *controller.Context, gate *rolloutGate, chi *chiv1.ClickHouseInstallation) error {
+// applyCHI server-side applies the CHI, unless the rollout gate holds it, and
+// reports whether the operator has rolled it out. What follows the rollout,
+// removing the certificates of TLS turned off, waits until then.
+func applyCHI(c *controller.Context, gate *rolloutGate, chi *chiv1.ClickHouseInstallation) (bool, error) {
 	if _, err := gate.apply(c, chi, "chi"); err != nil {
-		return fmt.Errorf("apply ClickHouseInstallation: %w", err)
+		return false, fmt.Errorf("apply ClickHouseInstallation: %w", err)
 	}
 
 	current := &chiv1.ClickHouseInstallation{}
 	if err := c.Get(current, c.Name()); err != nil {
-		return controller.WaitForDuration("waiting for Altinity operator to provision ClickHouseInstallation", 15*time.Second)
+		return false, controller.WaitForDuration("waiting for Altinity operator to provision ClickHouseInstallation", 15*time.Second)
 	}
 	if err := reconcilePlaintextPolicy(c, current); err != nil {
-		return err
+		return false, err
 	}
-	if err := waitForCHI(c, current); err != nil {
-		return err
+	if !chiInstallation(current).rolledOut() {
+		log.FromContext(c.Context()).Info("ClickHouseInstallation still rolling out", "name", current.Name, "status", current.Status.GetStatus())
+		return false, nil
 	}
 	if !tlsEnabled(c) {
-		return cleanupTLS(c, current)
+		return true, cleanupTLS(c, current)
 	}
-	return nil
-}
-
-// waitForCHI checks CHI status and returns a WaitError if not yet Completed.
-func waitForCHI(c *controller.Context, chi *chiv1.ClickHouseInstallation) error {
-	l := log.FromContext(c.Context())
-
-	if chi.Status == nil {
-		return controller.WaitForDuration("waiting for Altinity operator to initialize CHI", 15*time.Second)
-	}
-	switch chi.Status.GetStatus() {
-	case chiv1.StatusCompleted:
-		if !rolledOut(chi.Spec.TaskID, chi.Status.GetTaskIDsCompleted()) {
-			return controller.WaitForDuration("waiting for Altinity operator to pick up the ClickHouseInstallation change", 15*time.Second)
-		}
-		l.Info("ClickHouseInstallation is Completed", "name", chi.Name)
-		return nil
-	case chiv1.StatusAborted:
-		// The operator retries aborted reconciles, so keep watching; Sync's
-		// wait path reports the failure (a plain error would publish nothing).
-		return controller.WaitForDuration("ClickHouseInstallation aborted: "+chi.Status.GetError(), 30*time.Second)
-	default:
-		l.Info("ClickHouseInstallation still provisioning", "name", chi.Name, "status", chi.Status.GetStatus())
-		return controller.WaitForDuration("waiting for Altinity operator to complete CHI provisioning", 15*time.Second)
-	}
-}
-
-// waitForCHK checks CHK status and returns a WaitError if not yet Completed.
-func waitForCHK(c *controller.Context, chk *chkv1.ClickHouseKeeperInstallation) error {
-	l := log.FromContext(c.Context())
-
-	if chk.Status == nil {
-		return controller.WaitForDuration("waiting for Keeper to initialize", 15*time.Second)
-	}
-	switch chk.Status.GetStatus() {
-	case chkv1.StatusCompleted:
-		if !rolledOut(chk.Spec.TaskID, chk.Status.GetTaskIDsCompleted()) {
-			return controller.WaitForDuration("waiting for Altinity operator to pick up the Keeper change", 15*time.Second)
-		}
-		l.Info("ClickHouseKeeperInstallation is Completed", "name", chk.Name)
-		return nil
-	case chkv1.StatusAborted:
-		return controller.WaitForDuration("ClickHouseKeeperInstallation aborted: "+chk.Status.GetError(), 30*time.Second)
-	default:
-		l.Info("Keeper still provisioning", "name", chk.Name, "status", chk.Status.GetStatus())
-		return controller.WaitForDuration("waiting for Keeper to complete provisioning", 15*time.Second)
-	}
+	return true, nil
 }
 
 // Cleanup removes the CHI (and CHK for replicated) when the Instance is deleted.
@@ -486,7 +454,7 @@ func buildCHIWired(c *controller.Context, l clusterLayout, keeper keeperWiring) 
 	}
 
 	container := corev1.Container{
-		Name:  "clickhouse",
+		Name:  common.ContainerClickHouse,
 		Image: image,
 		// Named port for the native Prometheus endpoint, targeted by the PodMonitor.
 		Ports: []corev1.ContainerPort{
@@ -606,7 +574,7 @@ func buildCHKWired(c *controller.Context, wiring keeperWiring) (*chkv1.ClickHous
 	}
 
 	container := corev1.Container{
-		Name:      "clickhouse-keeper",
+		Name:      common.ContainerKeeper,
 		Image:     image,
 		Resources: resources,
 	}

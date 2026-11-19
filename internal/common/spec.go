@@ -90,6 +90,22 @@ const (
 	// by CHK name. Used to spread the Keeper pods of an Instance.
 	LabelCHKName = "clickhouse-keeper.altinity.com/chk"
 
+	// LabelCHIShard is the label the Altinity operator sets on the
+	// StatefulSet and the pod of each ClickHouse host, naming its shard.
+	LabelCHIShard = "clickhouse.altinity.com/shard"
+
+	// LabelCHIReady marks, with LabelCHIReadyValue, the ClickHouse pods the
+	// Altinity operator serves clients from: the client Service selects on
+	// it. The operator takes the mark off a host it is about to restart and
+	// puts it back once the host has caught up.
+	LabelCHIReady      = "clickhouse.altinity.com/ready"
+	LabelCHIReadyValue = "yes"
+
+	// ContainerClickHouse and ContainerKeeper name the ClickHouse and Keeper
+	// containers in their pod templates.
+	ContainerClickHouse = "clickhouse"
+	ContainerKeeper     = "clickhouse-keeper"
+
 	// LabelCHIReclaimPolicy and LabelCHKReclaimPolicy are the PVC labels the
 	// Altinity operator reads a volume's reclaim policy from when deciding
 	// whether to drop a replica or purge the PVC.

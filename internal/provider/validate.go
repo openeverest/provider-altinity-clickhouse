@@ -539,7 +539,7 @@ func currentEngineImage(chi *chiv1.ClickHouseInstallation) string {
 			continue
 		}
 		for _, container := range tmpl.Spec.Containers {
-			if container.Name == "clickhouse" {
+			if container.Name == common.ContainerClickHouse {
 				return container.Image
 			}
 		}
@@ -556,7 +556,7 @@ func currentKeeperImage(chk *chkv1.ClickHouseKeeperInstallation) string {
 			continue
 		}
 		for _, container := range tmpl.Spec.Containers {
-			if container.Name == "clickhouse-keeper" {
+			if container.Name == common.ContainerKeeper {
 				return container.Image
 			}
 		}

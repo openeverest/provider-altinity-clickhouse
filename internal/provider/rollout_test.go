@@ -261,6 +261,28 @@ func TestRolloutReplicatedHeldAsOneAction(t *testing.T) {
 	assert.Empty(t, c.GetPendingMaintenance())
 }
 
+// A change held for approval while the operator is busy: Sync does not
+// wait, so the runtime publishes the hold; once approved, the change is
+// applied and nothing is held any more.
+func TestRolloutHoldWhileOperatorBusy(t *testing.T) {
+	instance := newTestInstance("db", "ns", "")
+	state := providerChanged(recordedState(t, instance))
+	rolling := completedCHI()
+	rolling.EnsureStatus().Status = chiv1.StatusInProgress
+
+	var applied []*chiv1.ClickHouseInstallation
+	c := newInterceptedTestContext(t, captureCHIApply(t, &applied), instance, withCredentials([]client.Object{rolling, state})...)
+	require.NoError(t, New().Sync(c))
+	assert.Empty(t, applied)
+	require.Len(t, c.GetPendingMaintenance(), 1)
+
+	instance.Spec.Maintenance = &corev1alpha1.MaintenanceSpec{Approved: c.GetPendingMaintenance()[0].ApprovalToken}
+	c = newInterceptedTestContext(t, captureCHIApply(t, &applied), instance, withCredentials([]client.Object{rolling, state})...)
+	require.NoError(t, New().Sync(c))
+	assert.Len(t, applied, 1)
+	assert.Empty(t, c.GetPendingMaintenance())
+}
+
 func TestCleanupRemovesRolloutState(t *testing.T) {
 	state := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: rolloutStateName("db"), Namespace: "ns"}}
 	c := newTestContext(t, newTestInstance("db", "ns", ""), state)
@@ -393,19 +415,16 @@ func TestRolledOut(t *testing.T) {
 }
 
 // Right after a change is applied the CHI still reads Completed for the
-// previous rendering; Sync keeps waiting until the operator finished the
+// previous rendering: it has rolled out only once the operator finished the
 // applied one.
-func TestWaitForCHIWaitsForAppliedTask(t *testing.T) {
+func TestInstallationRolledOutWaitsForAppliedTask(t *testing.T) {
 	id := chtypes.Id(taskIDPrefix + "abc")
 	chi := chiIn(completed)
 	chi.Spec.TaskID = &id
-	c := newTestContext(t, newTestInstance("db", "ns", ""))
-
-	err := waitForCHI(c, chi)
-	assert.True(t, controller.IsWaitError(err), "got %v", err)
+	assert.False(t, chiInstallation(chi).rolledOut())
 
 	chi.Status.TaskIDsCompleted = append([]string{string(id)}, chi.Status.TaskIDsCompleted...)
-	assert.NoError(t, waitForCHI(c, chi))
+	assert.True(t, chiInstallation(chi).rolledOut())
 }
 
 func TestStatusUpdatingUntilAppliedTaskCompletes(t *testing.T) {
@@ -415,4 +434,5 @@ func TestStatusUpdatingUntilAppliedTaskCompletes(t *testing.T) {
 	st, err := New().Status(newTestContext(t, newTestInstance("db", "ns", ""), chi))
 	require.NoError(t, err)
 	assert.False(t, st.Converged)
+	assert.Equal(t, "Waiting for the operator to pick up the change to ClickHouse", st.Message)
 }
