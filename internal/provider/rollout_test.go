@@ -26,7 +26,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -262,28 +261,6 @@ func TestRolloutReplicatedHeldAsOneAction(t *testing.T) {
 	assert.Empty(t, c.GetPendingMaintenance())
 }
 
-func TestRolloutPublishesPendingMaintenanceWhileWaiting(t *testing.T) {
-	instance := newTestInstance("db", "ns", "")
-	state := providerChanged(recordedState(t, instance))
-	rolling := completedCHI()
-	rolling.EnsureStatus().Status = chiv1.StatusInProgress
-
-	// Held while the operator is still busy: Sync waits, yet the hold is shown.
-	_, c := syncStandalone(t, instance, rolling, state)
-	live := &corev1alpha1.Instance{}
-	require.NoError(t, c.Get(live, "db"))
-	require.Len(t, live.Status.PendingMaintenance, 1)
-	assert.True(t, meta.IsStatusConditionTrue(live.Status.Conditions, corev1alpha1.ConditionMaintenancePending))
-
-	// Approved: the rollout starts and Sync waits on it; the hold is cleared
-	// at once rather than when the cluster is Ready again.
-	live.Spec.Maintenance = &corev1alpha1.MaintenanceSpec{Approved: live.Status.PendingMaintenance[0].ApprovalToken}
-	_, c = syncStandalone(t, live, rolling, state)
-	require.NoError(t, c.Get(live, "db"))
-	assert.Empty(t, live.Status.PendingMaintenance)
-	assert.True(t, meta.IsStatusConditionFalse(live.Status.Conditions, corev1alpha1.ConditionMaintenancePending))
-}
-
 func TestCleanupRemovesRolloutState(t *testing.T) {
 	state := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: rolloutStateName("db"), Namespace: "ns"}}
 	c := newTestContext(t, newTestInstance("db", "ns", ""), state)
@@ -437,5 +414,5 @@ func TestStatusUpdatingUntilAppliedTaskCompletes(t *testing.T) {
 	chi.Spec.TaskID = &id
 	st, err := New().Status(newTestContext(t, newTestInstance("db", "ns", ""), chi))
 	require.NoError(t, err)
-	assert.Equal(t, corev1alpha1.InstancePhaseUpdating, st.Phase)
+	assert.False(t, st.Converged)
 }

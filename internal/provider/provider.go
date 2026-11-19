@@ -29,9 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	storagev1 "k8s.io/api/storage/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -92,72 +90,10 @@ func New() *Provider {
 	}
 }
 
-// Sync provisions the required resources and, while the operator is still
-// working, publishes the intermediate phase onto the Instance.
-//
-// The runtime only persists status after Sync returns nil; on the WaitError
-// (requeue) path it short-circuits before computing status. Without this the
-// Instance would keep its previous phase for the whole provisioning or update
-// window. We therefore publish what Status() reports (Provisioning, Updating
-// or Failed) each time we ask the runtime to requeue.
+// Sync provisions the required resources. While it waits on the operator the
+// runtime publishes what it waits for; it owns the Instance status.
 func (p *Provider) Sync(c *controller.Context) error {
-	err := p.sync(c)
-	if controller.IsWaitError(err) {
-		if st, statusErr := p.Status(c); statusErr == nil {
-			reportStatus(c, st)
-		}
-	}
-	return err
-}
-
-// reportStatus best-effort publishes the status (Provisioning, Updating or
-// Failed) to the Instance while Sync is still waiting on the operator. The metadata carried by
-// c.Instance() is preserved by the runtime's prepare step, so a status-only
-// update targets the live object safely.
-//
-// Pending maintenance is published here too: the runtime only flushes it after
-// a Sync that returns nil, so an approved change that starts a rollout would
-// otherwise stay listed as pending until the cluster is Ready again.
-func reportStatus(c *controller.Context, st controller.Status) {
-	in := c.Instance()
-	desired := st.ToV2Alpha1()
-	changed := in.Status.Phase != desired.Phase || in.Status.Message != desired.Message
-	in.Status.Phase = desired.Phase
-	in.Status.Message = desired.Message
-	if c.MaintenanceRequested() && setPendingMaintenance(c, in) {
-		changed = true
-	}
-	if changed {
-		_ = c.Client().Status().Update(c.Context(), in)
-	}
-}
-
-// setPendingMaintenance mirrors the runtime's flush of status.pendingMaintenance
-// and the MaintenancePending condition, and reports whether either changed.
-func setPendingMaintenance(c *controller.Context, in *corev1alpha1.Instance) bool {
-	pending := c.GetPendingMaintenance()
-	changed := !equality.Semantic.DeepEqual(in.Status.PendingMaintenance, pending)
-	in.Status.PendingMaintenance = pending
-
-	condition := metav1.Condition{
-		Type:               corev1alpha1.ConditionMaintenancePending,
-		Status:             metav1.ConditionTrue,
-		Reason:             corev1alpha1.ReasonAwaitingApproval,
-		Message:            fmt.Sprintf("%d action(s) require approval to proceed", len(pending)),
-		ObservedGeneration: in.Generation,
-	}
-	if len(pending) == 0 {
-		if meta.FindStatusCondition(in.Status.Conditions, corev1alpha1.ConditionMaintenancePending) == nil {
-			return changed
-		}
-		condition.Status = metav1.ConditionFalse
-		condition.Reason = corev1alpha1.ReasonNoActionsPending
-		condition.Message = "No disruptive actions are held"
-	}
-	if meta.SetStatusCondition(&in.Status.Conditions, condition) {
-		changed = true
-	}
-	return changed
+	return p.sync(c)
 }
 
 // sync applies and polls the required resources for the selected topology.

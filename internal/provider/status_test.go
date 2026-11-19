@@ -74,48 +74,51 @@ func TestStatus(t *testing.T) {
 		name     string
 		instance *corev1alpha1.Instance
 		live     []client.Object
-		phase    corev1alpha1.InstancePhase
-		message  string
+		// converged and failed are what Status reports: the cluster runs the
+		// spec, or the operator aborted the last change.
+		converged, failed bool
+		message           string
 		// conn reports whether connection details are kept.
 		conn bool
 	}{
 		{"nothing created yet", standalone, nil,
-			corev1alpha1.InstancePhaseProvisioning, "Creating ClickHouse", false},
+			false, false, "Creating ClickHouse", false},
 		{"first reconcile running", standalone, []client.Object{chiIn(creating)},
-			corev1alpha1.InstancePhaseProvisioning, "Creating ClickHouse: 1 of 2 hosts ready", false},
+			false, false, "Creating ClickHouse: 1 of 2 hosts ready", false},
 		{"ready", standalone, []client.Object{chiIn(completed)},
-			corev1alpha1.InstancePhaseReady, "", true},
+			true, false, "", true},
 		{"update of a ready cluster", standalone, []client.Object{chiIn(updating)},
-			corev1alpha1.InstancePhaseUpdating, "Updating ClickHouse: 1 of 2 hosts ready", true},
+			false, false, "Updating ClickHouse: 1 of 2 hosts ready", true},
 		{"operator aborted", standalone, []client.Object{chiIn(aborted)},
-			corev1alpha1.InstancePhaseFailed, "ClickHouse: Update Service failed", false},
+			false, true, "ClickHouse: Update Service failed", false},
 		{"aborted without an error message", standalone, []client.Object{chiIn(operatorState{state: chiv1.StatusAborted})},
-			corev1alpha1.InstancePhaseFailed, "ClickHouse: the operator aborted the last change", false},
+			false, true, "ClickHouse: the operator aborted the last change", false},
 
 		{"replicated: nothing created yet", replicated, nil,
-			corev1alpha1.InstancePhaseProvisioning, "Creating ClickHouse Keeper", false},
+			false, false, "Creating ClickHouse Keeper", false},
 		{"replicated: keeper being created", replicated, []client.Object{chkIn(operatorState{state: chiv1.StatusInProgress, hosts: 3, ready: 1})},
-			corev1alpha1.InstancePhaseProvisioning, "Creating ClickHouse Keeper: 1 of 3 hosts ready", false},
+			false, false, "Creating ClickHouse Keeper: 1 of 3 hosts ready", false},
 		{"replicated: keeper ready, clickhouse being created", replicated, []client.Object{chkIn(completed), chiIn(creating)},
-			corev1alpha1.InstancePhaseProvisioning, "Creating ClickHouse: 1 of 2 hosts ready", false},
+			false, false, "Creating ClickHouse: 1 of 2 hosts ready", false},
 		{"replicated: keeper rolling on a ready cluster", replicated, []client.Object{chkIn(operatorState{state: chiv1.StatusInProgress, completedBefore: true, hosts: 3, ready: 2}), chiIn(completed)},
-			corev1alpha1.InstancePhaseUpdating, "Updating ClickHouse Keeper: 2 of 3 hosts ready", true},
+			false, false, "Updating ClickHouse Keeper: 2 of 3 hosts ready", true},
 		{"replicated: keeper added to a standalone cluster", replicated, []client.Object{chiIn(completed)},
-			corev1alpha1.InstancePhaseUpdating, "Creating ClickHouse Keeper", true},
+			false, false, "Creating ClickHouse Keeper", true},
 		{"replicated: keeper aborted", replicated, []client.Object{chkIn(aborted), chiIn(completed)},
-			corev1alpha1.InstancePhaseFailed, "ClickHouse Keeper: Update Service failed", false},
+			false, true, "ClickHouse Keeper: Update Service failed", false},
 		{"replicated: ready", replicated, []client.Object{chkIn(completed), chiIn(completed)},
-			corev1alpha1.InstancePhaseReady, "", true},
+			true, false, "", true},
 
 		{"TLS certificate not issued yet", withTLS, []client.Object{chiIn(completed)},
-			corev1alpha1.InstancePhaseUpdating, "Waiting for the TLS certificate", true},
+			false, false, "Waiting for the TLS certificate", true},
 		{"TLS certificate issued", withTLS, []client.Object{chiIn(completed), issuedCertificate()},
-			corev1alpha1.InstancePhaseReady, "", true},
+			true, false, "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := New().Status(newTestContext(t, tc.instance.DeepCopy(), tc.live...))
 			require.NoError(t, err)
-			assert.Equal(t, tc.phase, st.Phase)
+			assert.Equal(t, tc.converged, st.Converged)
+			assert.Equal(t, tc.failed, len(st.Problems) > 0)
 			assert.Equal(t, tc.message, st.Message)
 			assert.Equal(t, tc.conn, !st.ConnectionDetails.IsEmpty(), "connection details kept")
 		})
@@ -130,17 +133,6 @@ func issuedCertificate() *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{Name: serverSecretName("db"), Namespace: "ns"},
 		Data:       map[string][]byte{"tls.crt": []byte("cert"), "tls.key": []byte("key"), "ca.crt": []byte("ca")},
 	}
-}
-
-// An aborted change used to fail Sync with a plain error, which the runtime
-// does not turn into status: the Instance kept its previous phase.
-func TestSyncPublishesOperatorFailure(t *testing.T) {
-	_, c := syncStandalone(t, newTestInstance("db", "ns", ""), chiIn(aborted))
-
-	live := &corev1alpha1.Instance{}
-	require.NoError(t, c.Get(live, "db"))
-	assert.Equal(t, corev1alpha1.InstancePhaseFailed, live.Status.Phase)
-	assert.Equal(t, "ClickHouse: Update Service failed", live.Status.Message)
 }
 
 func TestSyncWaitsOnAbortedInstallation(t *testing.T) {

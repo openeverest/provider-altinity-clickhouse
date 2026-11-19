@@ -22,7 +22,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
@@ -56,10 +55,9 @@ func (p *Provider) Status(c *controller.Context) (controller.Status, error) {
 		conn = buildConnectionDetails(c, chi)
 	}
 	inProgress := func(message string) controller.Status {
-		if clickhouse.completedBefore {
-			return controller.Status{Phase: corev1alpha1.InstancePhaseUpdating, Message: message, ConnectionDetails: conn}
-		}
-		return controller.Provisioning(message)
+		st := controller.Progressing(message)
+		st.ConnectionDetails = conn
+		return st
 	}
 
 	if c.Instance().GetTopologyType() == common.TopologyReplicated {
