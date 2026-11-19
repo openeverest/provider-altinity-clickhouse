@@ -76,6 +76,13 @@ All settings live in `dev/.env` (see `dev/.env.example`). Common options:
 > skips pre-releases, so you must set `OPENEVEREST_VERSION` explicitly until
 > v2.0.0 is generally available.
 
+> **Note:** The provider reports the `Instance` status as a phase of `Pending`,
+> `Provisioned` or `Terminating` plus conditions. Core releases up to
+> `2.0.0-dev.4` ship an `Instance` CRD that rejects it; with one of them, apply
+> the CRD of the core chart's `main` branch after Tilt has installed the core,
+> as the integration workflow does (see `.github/workflows/integration.yaml`),
+> or develop against the core from source (below).
+
 ## Developing the core and the provider together
 
 When you need to test against a locally built core (not a release), run two

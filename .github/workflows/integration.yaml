@@ -122,6 +122,18 @@ jobs:
         env:
           INSTALL_OPENEVEREST: "true"
 
+      # The released core chart predates the Instance status the provider
+      # reports (a phase of Pending, Provisioned or Terminating, plus
+      # conditions), and its Instance CRD rejects it. Until a core release
+      # carries it, apply the CRD of the helm-charts commit that introduced it.
+      - name: Apply the current Instance CRD
+        run: |
+          kubectl apply --server-side --force-conflicts -f \
+            "https://raw.githubusercontent.com/openeverest/helm-charts/${HELM_CHARTS_INSTANCE_CRD_REF}/charts/everest/charts/everest-crds/templates/apiextensions.k8s.io_v1_customresourcedefinition_instances.core.openeverest.io.yaml"
+          kubectl wait --for=condition=Established crd/instances.core.openeverest.io --timeout=60s
+        env:
+          HELM_CHARTS_INSTANCE_CRD_REF: 49293e64fa626052d89f54ad7c3c6aae3f76fddc
+
       - name: Run integration case (chainsaw)
         run: make test-integration INTEGRATION_CASES=test/integration/cases/${{ matrix.case }}
 
