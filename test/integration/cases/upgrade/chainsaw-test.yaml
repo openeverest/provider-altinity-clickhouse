@@ -5,8 +5,8 @@ metadata:
 spec:
   description: |
     Provision a standalone ClickHouse Instance on the 26.3 bundle and write
-    rows, upgrade it to the 26.8 bundle and assert it reports Updating, then
-    Ready on the new image with the rows intact. Finally assert a downgrade
+    rows, upgrade it to the 26.8 bundle and assert it is not Ready while the
+    new image rolls out, then Ready on it with the rows intact. Finally assert a downgrade
     back to 26.3 is rejected and leaves the cluster on 26.8.
   catch:
     - script:

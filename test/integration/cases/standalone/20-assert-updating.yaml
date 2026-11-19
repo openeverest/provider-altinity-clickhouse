@@ -1,8 +1,11 @@
-# A change to a running cluster reports Updating, not Provisioning.
+# A change to a running cluster leaves it Provisioned, and not Ready until
+# the pod has rolled.
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance
 metadata:
   name: itest-ch-standalone
   namespace: default
 status:
-  phase: Updating
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "False"
+  (conditions[?type == 'Reconciling'].status | [0]): "True"

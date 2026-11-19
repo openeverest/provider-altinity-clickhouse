@@ -23,4 +23,9 @@ metadata:
   name: itest-ch-sharding
   namespace: default
 status:
-  phase: Ready
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
+  (conditions[?type == 'Available'].status | [0]): "True"
+  # Two shards of one replica, and the Keeper ensemble.
+  (components[?name == 'engine'].desiredReplicas | [0]): 2
+  (components[?name == 'keeper'].desiredReplicas | [0]): 3

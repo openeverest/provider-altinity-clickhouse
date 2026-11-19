@@ -13,7 +13,8 @@ metadata:
   name: itest-ch-tls
   namespace: default
 status:
-  phase: Ready
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
 ---
 apiVersion: clickhouse.altinity.com/v1
 kind: ClickHouseInstallation

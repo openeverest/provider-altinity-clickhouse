@@ -3,8 +3,10 @@ kind: Instance
 metadata:
   name: itest-ch-provider-upgrade
   namespace: default
+# Also asserted on the published release, which may still write a phase of
+# the earlier status format: both write the Ready condition.
 status:
-  phase: Ready
+  (conditions[?type == 'Ready'].status | [0]): "True"
 ---
 apiVersion: clickhouse.altinity.com/v1
 kind: ClickHouseInstallation
