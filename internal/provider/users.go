@@ -27,7 +27,6 @@ import (
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	chtypes "github.com/altinity/clickhouse-operator/pkg/apis/common/types"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
@@ -59,17 +58,18 @@ func ensureCredentials(c *controller.Context) (*corev1.Secret, error) {
 
 	existing := &corev1.Secret{}
 	data := map[string][]byte{}
-	switch err := c.Get(existing, name); {
-	case err == nil:
+	found, err := getSecretUncached(c, name, existing)
+	if err != nil {
+		return nil, fmt.Errorf("read credentials secret: %w", err)
+	}
+	if found {
 		maps.Copy(data, existing.Data)
-	case apierrors.IsNotFound(err):
+	} else {
 		seed, err := seedCredentials(c)
 		if err != nil {
 			return nil, err
 		}
 		maps.Copy(data, seed)
-	default:
-		return nil, fmt.Errorf("read credentials secret: %w", err)
 	}
 
 	if len(data[common.CredentialsKeyUsername]) == 0 {
@@ -151,6 +151,15 @@ func seedCredentials(c *controller.Context) (map[string][]byte, error) {
 		common.CredentialsKeyUsername: src.Data[common.CredentialsKeyUsername],
 		common.CredentialsKeyPassword: src.Data[common.CredentialsKeyPassword],
 	}, nil
+}
+
+// getSecretUncached reads the named Secret from the API server. The
+// credentials Secret is applied in the same Sync that renders the CHI from
+// it, and right after creation the cache may not have it yet: the CHI would
+// then get the default user, and a second reconcile would seed or generate
+// the credentials again.
+func getSecretUncached(c *controller.Context, name string, secret *corev1.Secret) (bool, error) {
+	return getUncached(c, corev1.SchemeGroupVersion.WithKind("Secret"), name, secret)
 }
 
 // usernamePattern matches the user names ClickHouse accepts unquoted in its
