@@ -19,4 +19,11 @@ spec:
       storage:
         size: 10Gi
       parameters:
+        # Deprecated and ignored, still accepted: earlier UIs wrote it into
+        # every Instance.
         podMonitor: enabled
+  monitoring:
+    destinations:
+      - name: metrics
+        destinationRef:
+          name: metrics-it

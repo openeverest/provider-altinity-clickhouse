@@ -1,0 +1,13 @@
+# Monitoring contract, published by `provider-sdk generate` as
+# Provider.spec.monitoring.
+#
+# componentTypes: what each component type from provider.yaml exposes (its
+# kind is declared in provider.yaml). ClickHouse serves OpenMetrics itself on
+# every engine pod (port 9363, /metrics), so no exporter runs. Keeper exposes
+# nothing yet. There are no operator-native integrations: monitoring
+# extensions scrape the endpoints the provider publishes in
+# Instance.status.monitoring.sources.
+
+componentTypes:
+  clickhouse:
+    metrics: Native

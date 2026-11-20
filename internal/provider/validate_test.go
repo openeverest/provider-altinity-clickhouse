@@ -266,6 +266,17 @@ func TestValidate(t *testing.T) {
 			mutate:  engineParameters(`{"podmonitor":"enabled"}`),
 			want:    []string{"spec.components[engine].parameters.podmonitor"},
 		},
+		// Earlier UIs wrote podMonitor into every Instance; it is ignored now.
+		{
+			name:    "deprecated podMonitor parameter",
+			fixture: standaloneFixture,
+			mutate:  engineParameters(`{"podMonitor":"disabled"}`),
+		},
+		{
+			name:    "deprecated podMonitor parameter enabled",
+			fixture: replicatedFixture,
+			mutate:  engineParameters(`{"podMonitor":"enabled"}`),
+		},
 		{
 			name:    "unsupported service type",
 			fixture: standaloneFixture,

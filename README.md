@@ -64,7 +64,7 @@ provider itself is covered under [Upgrading the provider](#upgrading-the-provide
 | Vertical scaling (CPU / memory) | ✅ | `spec.components.engine.resources` limits and requests; see [Resources](#resources) |
 | Version upgrades | ✅ | change `spec.version` to a newer bundle; downgrades are rejected; see [Upgrading ClickHouse](#upgrading-clickhouse) |
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
-| Monitoring | ✅ | native Prometheus metrics endpoint always exposed; optional `PodMonitor` via the engine component's `podMonitor` parameter |
+| Monitoring | ✅ | native OpenMetrics endpoint on every engine pod, published for monitoring extensions; send it to a destination through `spec.monitoring.destinations`, see [Monitoring](#monitoring) |
 | Authentication | ✅ | an administrative user, seeded from `spec.userSecretRef` or generated, with password rotation; `default` user and replica-to-replica traffic authenticated (see [Connecting](#connecting)) |
 | TLS | ✅ | opt-in per Instance via the engine component's `tls` parameters; client connections over TLS only by default, distributed queries between replicas over TLS; requires [cert-manager](#prerequisites) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; see [Pod placement](#pod-placement) |
@@ -125,6 +125,13 @@ helm install provider-altinity-clickhouse \
   it: `kubectl` prints a warning, and the `Instance` reports it once created. Changes checked
   against the running cluster, such as volume sizes, are also admitted with a warning, and
   block the `Instance` until they are reverted.
+- The chart installs a `ClusterInstancePreset` per topology, the starting points the UI
+  offers when you create an Instance in any namespace: `clickhouse-standalone` (1 CPU, 4Gi,
+  25Gi) and `clickhouse-replicated` (one shard of 2 replicas with 2 CPU, 8Gi, 50Gi each, and
+  3 Keeper nodes with 1 CPU, 1Gi, 10Gi). Change or disable them, or add your own, under
+  `presets` in the chart values; `provider.shortName` prefixes their names. Presets pin
+  the provider's default [version](#versions) bundle, which a provider upgrade moves with
+  the catalog, and reference no namespaced objects.
 
 Upgrade and uninstall:
 
@@ -196,7 +203,10 @@ Each component's `resources` take CPU and memory limits and requests. An unset l
 falls back to the default (engine: 1 CPU / 4Gi; Keeper: 500m / 1Gi), or to the request
 when that is higher; an unset request equals the limit. Setting only limits, as the UI
 does, therefore gives the pods the Guaranteed QoS class. The engine needs a limit of
-at least 1 CPU and 1Gi, and a request above its limit is rejected.
+at least 1 CPU and 1Gi, and a request above its limit is rejected. The UI takes CPU in
+cores, fractions included (`1.5`, Keeper from `0.5`), and memory and disk in Gi, and
+writes them as quantity strings; a value it did not change keeps its stored form (for
+example `8192Mi`).
 
 Watch it come up, then read the connection details from the Secret named by
 `.status.connectionSecretRef` (`<instance-name>-conn`, see [Connecting](#connecting)):
@@ -469,6 +479,39 @@ What the provider cannot know:
 - **A volume resize is not reported as `StorageResizing`.** The operator grows the volume
   claims in place and neither reports nor waits for the resize.
 
+### Monitoring
+
+Every ClickHouse pod serves its metrics in the OpenMetrics format on port `9363`
+(`/metrics`, named port `metrics`), plain HTTP even with TLS on. The provider declares
+this on the `Provider` (`spec.componentTypes.clickhouse.kind: clickhouse`,
+`spec.monitoring.componentTypes.clickhouse.metrics: Native`) and, once the cluster has
+come up, publishes the endpoint in the Instance's `status.monitoring.sources`. Keeper
+publishes no metrics yet.
+
+The provider creates no scrape objects itself. Install a monitoring extension, such as
+[monitoring-prometheus](https://github.com/openeverest/monitoring-prometheus), create a
+`MonitoringDestination` of its class in the Instance's namespace, and list it on the
+Instance; the extension then creates the scrape objects (for Prometheus, a `PodMonitor`)
+from the published endpoint:
+
+```yaml
+spec:
+  monitoring:
+    destinations:
+      - name: prometheus
+        destinationRef:
+          name: my-prometheus   # a MonitoringDestination in this namespace
+```
+
+Since ClickHouse serves the metrics itself, adding or removing a destination restarts
+nothing. `status.monitoring.destinations` and the `MonitoringConfigured` and
+`MonitoringReady` conditions report each entry.
+
+Releases before the monitoring contract created a `PodMonitor` named
+`<instance>-metrics` for the engine's `podMonitor` parameter. On upgrade the provider
+deletes it; list a destination to keep the metrics flowing. The parameter is still
+accepted, since Instances created from the UI carry it, but has no effect.
+
 ## Topologies
 
 <!-- BEGIN GENERATED: topologies -->
@@ -603,7 +646,7 @@ Besides the shared component fields (`replicas`, `resources`, `storage`, `servic
 | Parameter | Values | See |
 |---|---|---|
 | `configuration` | ClickHouse server settings, one `path: value` per line | [Rejected changes](#rejected-changes) for the settings the provider manages |
-| `podMonitor` | `enabled`, `disabled` (default) | [Capabilities](#capabilities) |
+| `podMonitor` | deprecated, ignored | [Monitoring](#monitoring) |
 | `tls.enabled`, `tls.mode`, `tls.issuerRef` | `enabled` / `disabled` (default); `required` (default) / `optional`; an Issuer or ClusterIssuer | [TLS](#tls) |
 | `storageReclaimPolicy` | `Retain` (default), `Delete` | [Data retention](#data-retention) |
 
