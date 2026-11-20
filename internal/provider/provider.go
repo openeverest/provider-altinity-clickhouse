@@ -917,10 +917,10 @@ func resolveEngineSettings(c *controller.Context, engine corev1alpha1.ComponentS
 
 // credentialsForCHI returns the administrative username and the pod
 // annotations that roll ClickHouse when a credential changes. Before the
-// credentials Secret exists (Validate on a new Instance) the defaults apply.
+// credentials Secret exists the defaults apply.
 func credentialsForCHI(c *controller.Context, secretName string) (string, map[string]string, error) {
 	secret := &corev1.Secret{}
-	found, err := getOptional(c, secret, secretName)
+	found, err := getSecretUncached(c, secretName, secret)
 	if err != nil || !found {
 		return common.AppUserName, nil, err
 	}

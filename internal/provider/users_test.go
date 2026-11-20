@@ -15,13 +15,17 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	commonv1alpha1 "github.com/openeverest/openeverest/v2/api/common/v1alpha1"
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
@@ -79,6 +83,46 @@ func TestEnsureCredentialsSeedsFromUserSecretRef(t *testing.T) {
 	again, err := ensureCredentials(c)
 	require.NoError(t, err)
 	assert.Equal(t, "correct-horse-battery", string(again.Data[common.CredentialsKeyPassword]))
+}
+
+// cacheMissesSecret makes the cached (typed) client miss the named Secret, as
+// right after Sync created it; unstructured reads reach the API server.
+func cacheMissesSecret(name string) interceptor.Funcs {
+	return interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok && key.Name == name {
+				return apierrors.NewNotFound(corev1.Resource("secrets"), name)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}
+}
+
+// The CHI is rendered in the Sync that creates the credentials Secret, before
+// the cache has it: it must still get the seeded user, and a later reconcile
+// must not generate the credentials again.
+func TestCredentialsAreReadPastTheCache(t *testing.T) {
+	src := secretWith("seed", map[string]string{"username": "dba", "password": "correct-horse-battery"})
+	c := newInterceptedTestContext(t, cacheMissesSecret(credentialsSecretName("db")),
+		withUserSecretRef(newTestInstance("db", "ns", ""), "seed"), src)
+
+	created, err := ensureCredentials(c)
+	require.NoError(t, err)
+	chi, err := buildCHI(c, replicasLayout(1))
+	require.NoError(t, err)
+	users := chi.Spec.Configuration.Users
+	assert.True(t, users.Has("dba/password_sha256_hex"), "the seeded user, not the default one")
+	assert.False(t, users.Has(common.AppUserName+"/password_sha256_hex"))
+	assert.Equal(t, string(created.Data[common.CredentialsKeyRevision]),
+		chi.Spec.Templates.PodTemplates[0].ObjectMeta.Annotations[common.AnnotationCredentialsRevision])
+
+	generated := newInterceptedTestContext(t, cacheMissesSecret(credentialsSecretName("gen")), newTestInstance("gen", "ns", ""))
+	first, err := ensureCredentials(generated)
+	require.NoError(t, err)
+	second, err := ensureCredentials(generated)
+	require.NoError(t, err)
+	assert.Equal(t, first.Data[common.CredentialsKeyPassword], second.Data[common.CredentialsKeyPassword])
+	assert.Equal(t, first.Data[common.CredentialsKeyRevision], second.Data[common.CredentialsKeyRevision])
 }
 
 func TestEnsureCredentialsRotatesEditedPassword(t *testing.T) {
