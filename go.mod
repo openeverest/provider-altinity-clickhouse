@@ -154,3 +154,9 @@ tool github.com/openeverest/provider-sdk
 // Then run: go mod tidy
 
 replace github.com/imdario/mergo => github.com/sunsingerus/mergo v0.0.0-20230507185449-fc6fffa94450
+
+// Build against the OpenEverest 2.0.0-alpha.1 release. Without the replace,
+// the provider-sdk tool's requirement on an earlier core pseudo-version
+// (v2.0.0-dev.2.0.*) wins: "dev" sorts after "alpha" in semver. Drop it once
+// provider-sdk requires v2.0.0-alpha.1 or later.
+replace github.com/openeverest/openeverest/v2 => github.com/openeverest/openeverest/v2 v2.0.0-alpha.1
