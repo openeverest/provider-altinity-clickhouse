@@ -11,7 +11,9 @@ NAME=itest-ch-expose
 MODE=$1
 
 conn() { kubectl get secret "$NAME-conn" -n "$NS" -o jsonpath="{.data.$1}" 2>/dev/null | base64 -d 2>/dev/null || true; }
-svc() { kubectl get service "clickhouse-$NAME" -n "$NS" -o jsonpath="$1"; }
+# The operator recreates the Service when its type changes: a missing one reads
+# as empty, and the loop below tries again.
+svc() { kubectl get service "clickhouse-$NAME" -n "$NS" -o jsonpath="$1" 2>/dev/null || true; }
 
 if [ "$MODE" = loadbalancer ]; then
   # Clusters without a LoadBalancer controller (the CI cluster runs without
