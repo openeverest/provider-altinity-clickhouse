@@ -47,9 +47,14 @@ never manages pods directly — all lifecycle work is delegated to the operator.
 
 | provider-altinity-clickhouse | OpenEverest | Altinity ClickHouse operator | Kubernetes |
 |---|---|---|---|
-| `0.3.x` | `>= 2.0.0` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
-| `0.2.x` | `>= 2.0.0` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
-| `0.1.x` | `>= 2.0.0` | `0.27.x` (`0.27.1` bundled) | `1.30` – `1.34` |
+| `0.4.x` | `2.0.0-alpha.1` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
+| `0.3.x` | `2.0.0-dev.4` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
+| `0.2.x` | `2.0.0-dev.4` | `0.27.x` (`>= 0.27.4`, bundled) | `1.30` – `1.34` |
+| `0.1.x` | `2.0.0-dev.1` – `2.0.0-dev.4` | `0.27.x` (`0.27.1` bundled) | `1.30` – `1.34` |
+
+`0.4.x` reports the `Instance` status as a phase of `Pending`, `Provisioned` or
+`Terminating` plus conditions, which OpenEverest `2.0.0-alpha.1` requires:
+earlier releases write phases its `Instance` CRD rejects.
 
 ## Capabilities
 
