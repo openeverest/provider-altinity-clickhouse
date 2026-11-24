@@ -1,6 +1,6 @@
 # cert-manager issues the server certificate into a kubernetes.io/tls Secret
 # from the provider-managed self-signed CA chain. It covers the client
-# Service and each replica's Service.
+# Service, each replica's Service and the additional names.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -19,6 +19,7 @@ metadata:
 spec:
   (contains(dnsNames, 'clickhouse-itest-ch-tls.default.svc.cluster.local')): true
   (contains(dnsNames, 'chi-itest-ch-tls-clickhouse-0-1.default.svc.cluster.local')): true
+  (contains(dnsNames, 'itest-ch-tls.company.com')): true
 ---
 # The CHI serves the secure ports from the mounted certificate, runs
 # distributed queries between the replicas over the secure native port, and
@@ -95,7 +96,7 @@ spec:
   (ingress[0].ports[*].port): [2181, 2281]
   (ingress[1].ports[*].port): [2181, 2281, 9444]
 ---
-# Required mode: the client Service carries only the secure ports...
+# requireTLS: the client Service carries only the secure ports...
 apiVersion: v1
 kind: Service
 metadata:

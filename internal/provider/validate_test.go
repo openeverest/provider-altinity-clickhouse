@@ -79,6 +79,11 @@ func component(name string, mutate func(*corev1alpha1.ComponentSpec)) func(*core
 	}
 }
 
+// parameters sets the instance parameters (spec.parameters) to raw.
+func parameters(raw string) func(*corev1alpha1.Instance) {
+	return func(in *corev1alpha1.Instance) { withParameters(in, raw) }
+}
+
 // engineParameters sets the engine's parameters to raw.
 func engineParameters(raw string) func(*corev1alpha1.Instance) {
 	return component(common.ComponentEngine, func(c *corev1alpha1.ComponentSpec) {
@@ -233,21 +238,56 @@ func TestValidate(t *testing.T) {
 			want:    []string{"spec.components[engine].parameters.storageReclaimPolicy"},
 		},
 		{
-			name:    "optional TLS",
+			name:    "TLS with an issuer and additional names",
 			fixture: standaloneFixture,
-			mutate:  engineParameters(`{"tls":{"enabled":"enabled","mode":"Optional"}}`),
+			mutate: parameters(`{"tls":{"mode":"preferTLS","issuer":{"name":"company-ca","kind":"ClusterIssuer"},` +
+				`"additionalNames":["mydb.company.com","*.db.company.com"]}}`),
 		},
 		{
-			name:    "unknown TLS mode",
+			name:    "TLS with a certificate secret",
 			fixture: standaloneFixture,
-			mutate:  engineParameters(`{"tls":{"enabled":"enabled","mode":"strict"}}`),
-			want:    []string{"spec.components[engine].parameters.tls.mode"},
+			mutate:  parameters(`{"tls":{"mode":"requireTLS","certificateSecretName":"mydb-tls"}}`),
 		},
 		{
-			name:    "issuer without a name",
+			name:    "external issuer of any kind",
 			fixture: standaloneFixture,
-			mutate:  engineParameters(`{"tls":{"enabled":"enabled","issuerRef":{"kind":"ClusterIssuer"}}}`),
-			want:    []string{"spec.components[engine].parameters.tls.issuerRef.name"},
+			mutate:  parameters(`{"tls":{"mode":"requireTLS","issuer":{"name":"pca","kind":"AWSPCAClusterIssuer","group":"awspca.cert-manager.io"}}}`),
+		},
+		{
+			name:    "cert-manager issuer of an unknown kind",
+			fixture: standaloneFixture,
+			mutate:  parameters(`{"tls":{"mode":"requireTLS","issuer":{"name":"pca","kind":"AWSPCAClusterIssuer"}}}`),
+			want:    []string{"spec.parameters.tls.issuer.kind"},
+		},
+		{
+			name:    "certificate source with TLS disabled",
+			fixture: standaloneFixture,
+			mutate:  parameters(`{"tls":{"issuer":{"name":"company-ca"}}}`),
+			want:    []string{"spec.parameters.tls"},
+		},
+		{
+			name:    "certificate secret and issuer",
+			fixture: standaloneFixture,
+			mutate:  parameters(`{"tls":{"mode":"requireTLS","certificateSecretName":"mydb-tls","issuer":{"name":"company-ca"}}}`),
+			want:    []string{"spec.parameters.tls.issuer"},
+		},
+		{
+			name:    "certificate secret named as the provider's",
+			fixture: standaloneFixture,
+			mutate:  parameters(`{"tls":{"mode":"requireTLS","certificateSecretName":"events-server-tls"}}`),
+			want:    []string{"spec.parameters.tls.certificateSecretName"},
+		},
+		{
+			name:    "additional names with a certificate secret",
+			fixture: standaloneFixture,
+			mutate:  parameters(`{"tls":{"mode":"requireTLS","certificateSecretName":"mydb-tls","additionalNames":["mydb.company.com"]}}`),
+			want:    []string{"spec.parameters.tls.additionalNames"},
+		},
+		{
+			name:    "IP address and invalid name among the additional names",
+			fixture: standaloneFixture,
+			mutate:  parameters(`{"tls":{"mode":"requireTLS","additionalNames":["mydb.company.com","203.0.113.7","My_DB"]}}`),
+			want:    []string{"spec.parameters.tls.additionalNames[1]", "spec.parameters.tls.additionalNames[2]"},
 		},
 		{
 			name:    "server settings",
@@ -429,6 +469,58 @@ func TestValidateTransitions(t *testing.T) {
 			before:  component(common.ComponentEngine, storage("25Gi", new("fast"))),
 			after:   component(common.ComponentEngine, storage("25Gi", new("slow"))),
 			want:    []string{"spec.components[engine].storage.storageClass"},
+		},
+		{
+			name:    "TLS turned on",
+			fixture: replicatedFixture,
+			after:   parameters(`{"tls":{"mode":"requireTLS","issuer":{"name":"company-ca"}}}`),
+		},
+		{
+			name:    "TLS required instead of preferred",
+			fixture: replicatedFixture,
+			before:  parameters(tlsOptionalParams),
+			after:   parameters(tlsRequiredParams),
+		},
+		{
+			name:    "additional names change",
+			fixture: replicatedFixture,
+			before:  parameters(tlsOptionalParams),
+			after:   parameters(`{"tls":{"mode":"preferTLS","additionalNames":["mydb.company.com"]}}`),
+		},
+		{
+			name:    "TLS turned off",
+			fixture: replicatedFixture,
+			before:  parameters(tlsOptionalParams),
+			after:   parameters(`{"tls":{"mode":"disabled"}}`),
+			want:    []string{"spec.parameters.tls.mode"},
+		},
+		{
+			name:    "TLS turned off before the cluster is created",
+			fixture: replicatedFixture,
+			stored:  beforeFirstSync,
+			before:  parameters(tlsOptionalParams),
+			after:   parameters(`{"tls":{"mode":"disabled"}}`),
+		},
+		{
+			name:    "issuer added",
+			fixture: replicatedFixture,
+			before:  parameters(tlsOptionalParams),
+			after:   parameters(`{"tls":{"mode":"preferTLS","issuer":{"name":"company-ca"}}}`),
+			want:    []string{"spec.parameters.tls"},
+		},
+		{
+			name:    "issuer kind changes",
+			fixture: replicatedFixture,
+			before:  parameters(`{"tls":{"mode":"preferTLS","issuer":{"name":"company-ca"}}}`),
+			after:   parameters(`{"tls":{"mode":"preferTLS","issuer":{"name":"company-ca","kind":"ClusterIssuer"}}}`),
+			want:    []string{"spec.parameters.tls"},
+		},
+		{
+			name:    "certificate secret instead of the issuer",
+			fixture: replicatedFixture,
+			before:  parameters(`{"tls":{"mode":"preferTLS","issuer":{"name":"company-ca"}}}`),
+			after:   parameters(`{"tls":{"mode":"preferTLS","certificateSecretName":"mydb-tls"}}`),
+			want:    []string{"spec.parameters.tls"},
 		},
 		{
 			name:    "engine storage class changes before the cluster is created",

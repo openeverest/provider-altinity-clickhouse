@@ -12,7 +12,7 @@ OpenEverest provider. Everything related to the provider's **identity**,
 definition/
 ├── provider.yaml                    # Provider name + component→type mapping
 ├── versions.yaml                    # Component types and their version/image catalog
-├── types.go                         # Shared types (e.g. TopologyType)
+├── types.go                         # Shared types: instance parameters (TLS)
 ├── components/
 │   └── types.go                     # Component custom spec types
 └── topologies/
@@ -27,7 +27,7 @@ definition/
 |------|---------|--------------|
 | `provider.yaml` | Names the provider and maps logical component names to types. | When adding/removing a component. |
 | `versions.yaml` | Lists available versions and container images per component type. | When adding operator releases. |
-| `types.go` | Shared Go types used across the provider. | When adding provider-wide types. |
+| `types.go` | Shared Go types used across the provider, among them `Parameters`: the instance-wide `spec.parameters` (TLS). | When adding provider-wide types or instance-wide parameters. |
 | `components/types.go` | Go structs for component custom specs. | When a component needs custom config. |
 | `topologies/<name>/topology.yaml` | Defines a deployment topology and its UI rendering. | When adding a topology or changing its UI. |
 | `topologies/<name>/types.go` | Go struct for topology-specific custom config. | When a topology needs custom config fields. |

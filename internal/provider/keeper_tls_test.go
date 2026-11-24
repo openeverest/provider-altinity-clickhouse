@@ -27,6 +27,7 @@ import (
 
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-altinity-clickhouse/definition"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
@@ -126,7 +127,7 @@ func TestKeeperWiringMigrations(t *testing.T) {
 }
 
 func TestKeeperWiringRendering(t *testing.T) {
-	c := newTestContext(t, newReplicatedTestInstance(tlsRequiredParams))
+	c := newTestContext(t, withParameters(newReplicatedTestInstance(""), tlsRequiredParams))
 
 	chk, err := buildCHKWired(c, keeperWiring{secure: true})
 	require.NoError(t, err)
@@ -247,9 +248,9 @@ func TestRolloutGateRecordsApprovalOnlyWithAChange(t *testing.T) {
 
 func TestKeeperPolicy(t *testing.T) {
 	t.Setenv(common.EnvOperatorNamespace, "clickhouse-provider")
-	c := newTestContext(t, newReplicatedTestInstance(tlsRequiredParams))
+	c := newTestContext(t, withParameters(newReplicatedTestInstance(""), tlsRequiredParams))
 
-	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), common.TLSModeRequired)))
+	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), definition.TLSModeRequire)))
 	policy := &networkingv1.NetworkPolicy{}
 	require.NoError(t, c.Get(policy, "db"+common.KeeperPolicySuffix))
 	assert.Equal(t, map[string]string{common.LabelCHKName: "db-keeper"}, policy.Spec.PodSelector.MatchLabels)
@@ -259,15 +260,15 @@ func TestKeeperPolicy(t *testing.T) {
 	assert.Equal(t, []int32{2181, 2281, 9444}, policyPorts(policy.Spec.Ingress[1].Ports))
 	assert.Empty(t, policy.Spec.Ingress[2].Ports, "the operator reaches every port")
 
-	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), common.TLSModeOptional)))
+	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), definition.TLSModePrefer)))
 	found, err := getOptional(c, &networkingv1.NetworkPolicy{}, "db"+common.KeeperPolicySuffix)
 	require.NoError(t, err)
 	assert.False(t, found)
 }
 
 func TestServerCertificateCoversKeeper(t *testing.T) {
-	c := newTestContext(t, newReplicatedTestInstance(tlsRequiredParams))
-	require.NoError(t, ensureServerCertificate(c, ensureIssuerRef(t, c)))
+	c := newTestContext(t, withParameters(newReplicatedTestInstance(""), tlsRequiredParams))
+	require.NoError(t, ensureServerCertificate(c, ensureIssuerRef(t, c), nil))
 	names := serverCertificate(t, c).Spec.DNSNames
 	for _, name := range []string{
 		"keeper-db-keeper.ns.svc.cluster.local",
@@ -281,7 +282,7 @@ func TestServerCertificateCoversKeeper(t *testing.T) {
 // Sync applies one step at a time and requeues itself until the switch is
 // done, rather than wait for an unrelated event.
 func TestSyncRequeuesUntilKeeperSwitchDone(t *testing.T) {
-	instance := newReplicatedTestInstance(tlsRequiredParams)
+	instance := withParameters(newReplicatedTestInstance(""), tlsRequiredParams)
 	// A running cluster wired through the operator's Keeper reference.
 	running := completedCHI()
 	running.Spec.Configuration = &chiv1.Configuration{Zookeeper: keeperZookeeper(newTestContext(t, instance), 0)}

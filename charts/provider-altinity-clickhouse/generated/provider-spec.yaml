@@ -64,44 +64,6 @@ spec:
                 are re-attached when an Instance with the same name is created in the same
                 namespace.
               type: string
-            tls:
-              description: |-
-                TLS configures encrypted connections. When enabled, the provider uses
-                cert-manager to issue a server certificate, serves HTTPS (8443) and the
-                secure native protocol (9440), and runs distributed queries between
-                replicas over TLS. See TLSParameters.Mode for the plaintext ports.
-              properties:
-                enabled:
-                  description: |-
-                    Enabled turns on TLS. One of "enabled" or "disabled" (default). Requires
-                    cert-manager to be installed in the cluster.
-                  type: string
-                issuerRef:
-                  description: |-
-                    IssuerRef optionally references an existing cert-manager Issuer or
-                    ClusterIssuer to sign the server certificate. When omitted, the provider
-                    creates a self-signed CA chain scoped to this Instance.
-                  properties:
-                    group:
-                      description: Group is the API group of the issuer. Defaults to "cert-manager.io".
-                      type: string
-                    kind:
-                      description: Kind is the issuer kind, either "Issuer" or "ClusterIssuer". Defaults to "Issuer".
-                      type: string
-                    name:
-                      description: Name is the name of the Issuer or ClusterIssuer.
-                      type: string
-                  required:
-                    - name
-                  type: object
-                mode:
-                  description: |-
-                    Mode is "required" (default) or "optional". Required exposes only the
-                    secure ports to clients and restricts the plaintext ports to the
-                    operator and the Instance's own pods with a NetworkPolicy. Optional
-                    keeps the plaintext ports open alongside the secure ones.
-                  type: string
-              type: object
           type: object
       type: clickhouse
     keeper:
@@ -111,6 +73,70 @@ spec:
     componentTypes:
       clickhouse:
         metrics: Native
+  parametersSchema:
+    openAPIV3Schema:
+      description: |-
+        Parameters defines instance-wide structured parameters that apply to the
+        entire cluster (Instance.spec.parameters).
+      properties:
+        tls:
+          description: |-
+            TLS configures encryption in transit: between clients and ClickHouse,
+            between the replicas, and between ClickHouse and Keeper.
+          properties:
+            additionalNames:
+              description: |-
+                AdditionalNames are DNS names the server certificate is valid for
+                besides those of the instance's Services and its LoadBalancer address,
+                such as an external name clients connect to. Used with issuer or the
+                provider's CA; cannot be combined with certificateSecretName, whose
+                certificate carries its own names. Changing them reissues the
+                certificate without a restart.
+              items:
+                type: string
+              type: array
+            certificateSecretName:
+              description: |-
+                CertificateSecretName names a Secret in the instance namespace with the
+                server certificate, followed by any intermediate CA certificates
+                (tls.crt), its private key (tls.key) and the CA certificate it is
+                verified with (ca.crt). ClickHouse and Keeper both present it, to
+                clients and to each other, so it must be valid for the names of the
+                instance's Services and pods as well as for the names clients connect
+                to. Does not need cert-manager. Cannot be combined with issuer or
+                additionalNames.
+              type: string
+            issuer:
+              description: |-
+                Issuer is the cert-manager issuer that signs the server certificate,
+                instead of the CA the provider creates for the instance. The provider
+                requests it as the Certificate <instance>-server and cert-manager
+                renews it.
+              properties:
+                group:
+                  default: cert-manager.io
+                  description: |-
+                    Group is the API group of an external issuer, such as
+                    awspca.cert-manager.io.
+                  type: string
+                kind:
+                  default: Issuer
+                  description: |-
+                    Kind of the issuer: Issuer or ClusterIssuer, or the kind of an
+                    external issuer of group.
+                  type: string
+                name:
+                  description: Name of the issuer.
+                  type: string
+              required:
+                - name
+              type: object
+            mode:
+              default: disabled
+              description: Mode is disabled, preferTLS or requireTLS.
+              type: string
+          type: object
+      type: object
   release:
     version: 0.1.0
   secrets:
@@ -233,36 +259,10 @@ spec:
                     value: Delete
               path: spec.components.engine.parameters.storageReclaimPolicy
               uiType: select
-            tls:
-              fieldParams:
-                defaultValue: disabled
-                helperText: Encrypt client connections. Requires cert-manager in the cluster.
-                label: TLS
-                options:
-                  - label: Disabled
-                    value: disabled
-                  - label: Enabled
-                    value: enabled
-              path: spec.components.engine.parameters.tls.enabled
-              uiType: select
-            tlsMode:
-              fieldParams:
-                defaultValue: required
-                helperText: Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too.
-                label: TLS mode
-                options:
-                  - label: Required
-                    value: required
-                  - label: Optional
-                    value: optional
-              path: spec.components.engine.parameters.tls.mode
-              uiType: select
           componentsOrder:
             - storageClass
             - storageReclaimPolicy
             - externalAccess
-            - tls
-            - tlsMode
             - configuration
           description: Optional advanced settings.
           label: Advanced
@@ -422,11 +422,90 @@ spec:
             - replicas
           description: Shards split the data; each shard runs the same number of replicas, which copy its data. Shards can be added later, not removed, and existing data is not moved onto new shards.
           label: Scaling
+        tls:
+          components:
+            certificates:
+              components:
+                certificateSecretName:
+                  fieldParams:
+                    helperText: Secret with the server certificate and any intermediate CA certificates (tls.crt), its key (tls.key) and the CA certificate (ca.crt). ClickHouse and Keeper present it to clients and to each other, so it must be valid for the instance's in-cluster names (see the provider README) and the names clients connect to.
+                    label: Certificate secret
+                  path: spec.parameters.tls.certificateSecretName
+                  uiType: text
+                  validation:
+                    celExpressions:
+                      - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == '''' || (has(spec.parameters.tls.mode) && spec.parameters.tls.mode != ''disabled'')'
+                        message: Turn TLS on to use a certificate secret
+                    regex:
+                      message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                issuer:
+                  components:
+                    issuerKind:
+                      fieldParams:
+                        helperText: Issuer when not set
+                        label: Issuer kind
+                        options:
+                          - label: Issuer
+                            value: Issuer
+                          - label: ClusterIssuer
+                            value: ClusterIssuer
+                      path: spec.parameters.tls.issuer.kind
+                      uiType: select
+                    issuerName:
+                      fieldParams:
+                        helperText: Issuer that signs the server certificate for the instance's Services and its LoadBalancer address. Needs cert-manager.
+                        label: cert-manager issuer
+                      path: spec.parameters.tls.issuer.name
+                      uiType: text
+                      validation:
+                        celExpressions:
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '''' || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == '''''
+                            message: Use either an issuer or a certificate secret, not both
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '''' || (has(spec.parameters.tls.mode) && spec.parameters.tls.mode != ''disabled'')'
+                            message: Turn TLS on to use an issuer
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.kind) || spec.parameters.tls.issuer.kind == '''' || (has(spec.parameters.tls.issuer.name) && spec.parameters.tls.issuer.name != '''')'
+                            message: Name the issuer
+                        regex:
+                          message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                  componentsOrder:
+                    - issuerName
+                    - issuerKind
+                  groupType: line
+                  uiType: group
+              componentsOrder:
+                - issuer
+                - certificateSecretName
+              description: Applies with TLS on. Leave empty to have cert-manager issue the certificate from a CA created for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Can't be changed while TLS is on.
+              groupType: bordered
+              label: Certificates
+              uiType: group
+            mode:
+              fieldParams:
+                defaultValue: disabled
+                helperText: Required serves clients over TLS only (HTTPS 8443, native 9440) and blocks the plaintext ports to other pods; Preferred keeps the plaintext ports open too. TLS can be turned on later, but not off again.
+                label: TLS mode
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: 'Preferred: clients choose whether to use TLS'
+                    value: preferTLS
+                  - label: 'Required: clients must use TLS'
+                    value: requireTLS
+              path: spec.parameters.tls.mode
+              uiType: select
+          componentsOrder:
+            - mode
+            - certificates
+          description: Encrypt connections to ClickHouse, between its replicas and to Keeper, and choose the certificate of the instance.
+          label: TLS
       sectionsOrder:
         - databaseVersion
         - scaling
         - resources
         - keeper
+        - tls
         - advanced
     standalone:
       sections:
@@ -479,36 +558,10 @@ spec:
                     value: Delete
               path: spec.components.engine.parameters.storageReclaimPolicy
               uiType: select
-            tls:
-              fieldParams:
-                defaultValue: disabled
-                helperText: Encrypt client connections. Requires cert-manager in the cluster.
-                label: TLS
-                options:
-                  - label: Disabled
-                    value: disabled
-                  - label: Enabled
-                    value: enabled
-              path: spec.components.engine.parameters.tls.enabled
-              uiType: select
-            tlsMode:
-              fieldParams:
-                defaultValue: required
-                helperText: Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too.
-                label: TLS mode
-                options:
-                  - label: Required
-                    value: required
-                  - label: Optional
-                    value: optional
-              path: spec.components.engine.parameters.tls.mode
-              uiType: select
           componentsOrder:
             - storageClass
             - storageReclaimPolicy
             - externalAccess
-            - tls
-            - tlsMode
             - configuration
           description: Optional advanced settings.
           label: Advanced
@@ -577,9 +630,88 @@ spec:
               uiType: group
           description: Configure compute resources and storage for the ClickHouse instance.
           label: Resources
+        tls:
+          components:
+            certificates:
+              components:
+                certificateSecretName:
+                  fieldParams:
+                    helperText: Secret with the server certificate and any intermediate CA certificates (tls.crt), its key (tls.key) and the CA certificate (ca.crt). ClickHouse and Keeper present it to clients and to each other, so it must be valid for the instance's in-cluster names (see the provider README) and the names clients connect to.
+                    label: Certificate secret
+                  path: spec.parameters.tls.certificateSecretName
+                  uiType: text
+                  validation:
+                    celExpressions:
+                      - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == '''' || (has(spec.parameters.tls.mode) && spec.parameters.tls.mode != ''disabled'')'
+                        message: Turn TLS on to use a certificate secret
+                    regex:
+                      message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                issuer:
+                  components:
+                    issuerKind:
+                      fieldParams:
+                        helperText: Issuer when not set
+                        label: Issuer kind
+                        options:
+                          - label: Issuer
+                            value: Issuer
+                          - label: ClusterIssuer
+                            value: ClusterIssuer
+                      path: spec.parameters.tls.issuer.kind
+                      uiType: select
+                    issuerName:
+                      fieldParams:
+                        helperText: Issuer that signs the server certificate for the instance's Services and its LoadBalancer address. Needs cert-manager.
+                        label: cert-manager issuer
+                      path: spec.parameters.tls.issuer.name
+                      uiType: text
+                      validation:
+                        celExpressions:
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '''' || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == '''''
+                            message: Use either an issuer or a certificate secret, not both
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '''' || (has(spec.parameters.tls.mode) && spec.parameters.tls.mode != ''disabled'')'
+                            message: Turn TLS on to use an issuer
+                          - celExpr: '!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.kind) || spec.parameters.tls.issuer.kind == '''' || (has(spec.parameters.tls.issuer.name) && spec.parameters.tls.issuer.name != '''')'
+                            message: Name the issuer
+                        regex:
+                          message: Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                  componentsOrder:
+                    - issuerName
+                    - issuerKind
+                  groupType: line
+                  uiType: group
+              componentsOrder:
+                - issuer
+                - certificateSecretName
+              description: Applies with TLS on. Leave empty to have cert-manager issue the certificate from a CA created for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Can't be changed while TLS is on.
+              groupType: bordered
+              label: Certificates
+              uiType: group
+            mode:
+              fieldParams:
+                defaultValue: disabled
+                helperText: Required serves clients over TLS only (HTTPS 8443, native 9440) and blocks the plaintext ports to other pods; Preferred keeps the plaintext ports open too. TLS can be turned on later, but not off again.
+                label: TLS mode
+                options:
+                  - label: Disabled
+                    value: disabled
+                  - label: 'Preferred: clients choose whether to use TLS'
+                    value: preferTLS
+                  - label: 'Required: clients must use TLS'
+                    value: requireTLS
+              path: spec.parameters.tls.mode
+              uiType: select
+          componentsOrder:
+            - mode
+            - certificates
+          description: Encrypt connections to ClickHouse, between its replicas and to Keeper, and choose the certificate of the instance.
+          label: TLS
       sectionsOrder:
         - databaseVersion
         - resources
+        - tls
         - advanced
   versions:
     - components:

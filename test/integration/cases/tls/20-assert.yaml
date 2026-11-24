@@ -1,4 +1,4 @@
-# Optional mode: the plaintext ports are back on the client Service and the
+# preferTLS: the plaintext ports are back on the client Service and the
 # NetworkPolicy is gone (asserted by the test).
 apiVersion: v1
 kind: Service

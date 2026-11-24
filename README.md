@@ -71,7 +71,7 @@ provider itself is covered under [Upgrading the provider](#upgrading-the-provide
 | Custom configuration | ✅ | ClickHouse server settings via the engine component's `configuration` parameter |
 | Monitoring | ✅ | native OpenMetrics endpoint on every engine pod, published for monitoring extensions; send it to a destination through `spec.monitoring.destinations`, see [Monitoring](#monitoring) |
 | Authentication | ✅ | an administrative user, seeded from `spec.userSecretRef` or generated, with password rotation; `default` user and replica-to-replica traffic authenticated (see [Connecting](#connecting)) |
-| TLS | ✅ | opt-in per Instance via the engine component's `tls` parameters; client connections over TLS only by default, distributed queries between replicas over TLS; requires [cert-manager](#prerequisites) |
+| TLS | ✅ | opt-in per Instance via `spec.parameters.tls`: clients, distributed queries, replication and Keeper over TLS; bring your own CA as a cert-manager issuer or a certificate Secret; see [TLS](#tls) |
 | Pod scheduling | ✅ | `spec.components.engine.schedulingPolicy`; see [Pod placement](#pod-placement) |
 
 Stateful workloads additionally report:
@@ -89,9 +89,10 @@ Stateful workloads additionally report:
 
 - A running OpenEverest core installation.
 - [cert-manager](https://cert-manager.io/docs/installation/) installed in the
-  cluster. It is required for the optional TLS feature — the provider creates
-  cert-manager `Issuer` and `Certificate` resources to issue the ClickHouse
-  server certificate. Install it with CRDs enabled, for example:
+  cluster. It is required for the optional TLS feature, unless the Instance
+  brings its own certificate Secret — the provider creates cert-manager
+  `Issuer` and `Certificate` resources to issue the ClickHouse server
+  certificate. Install it with CRDs enabled, for example:
 
   ```bash
   helm repo add jetstack https://charts.jetstack.io
@@ -243,10 +244,10 @@ The connection Secret holds:
 | `host` | The LoadBalancer hostname or IP once assigned, when exposed through a LoadBalancer; otherwise the in-cluster Service, `clickhouse-<name>.<namespace>.svc.cluster.local` |
 | `internal_host` | The in-cluster Service, always. In-cluster clients can use it to avoid the LoadBalancer and its source ranges |
 | `port`, `uri` | The HTTP interface: `8123`, or HTTPS on `8443` with TLS. In `uri` the credentials are URL-encoded |
-| `http_port`, `native_port` | `8123` and `9000`; left out when TLS is `required` |
+| `http_port`, `native_port` | `8123` and `9000`; left out with TLS mode `requireTLS` |
 | `https_port`, `native_secure_port` | `8443` and `9440`, with TLS |
 | `<port key>_node_port` | The node port of each of the above, when exposed through a NodePort |
-| `ca.crt` | The CA that signed the server certificate, with TLS |
+| `ca.crt` | The CA certificate clients verify the server certificate with, with TLS |
 | `username`, `password` | The administrative user |
 
 To **rotate the password**, edit `password` in `<instance-name>-credentials`. The
@@ -269,22 +270,25 @@ restarted and not-yet-restarted replicas fail and are retried.
 
 ### TLS
 
-TLS is opt-in per Instance. Enable it via the engine component's parameters:
+TLS is opt-in per Instance, through `spec.parameters.tls`, the shape every
+OpenEverest provider uses:
 
 ```yaml
 spec:
-  components:
-    engine:
-      type: clickhouse
-      parameters:
-        tls:
-          enabled: enabled
-          mode: required   # default; or "optional"
+  parameters:
+    tls:
+      mode: requireTLS            # disabled (default) | preferTLS | requireTLS
+      issuer:                     # optional: the cert-manager issuer that signs the certificate
+        name: company-ca
+        kind: ClusterIssuer       # Issuer (default) | ClusterIssuer
+        group: cert-manager.io    # optional, for external issuers (AWS PCA, Google CAS, ...)
+      additionalNames:            # optional: DNS names clients connect by
+        - analytics.company.com
+      # certificateSecretName: analytics-tls   # instead of issuer: your own certificate
 ```
 
-When enabled, the provider uses cert-manager to issue a server certificate,
-ClickHouse serves HTTPS (`8443`) and the secure native protocol (`9440`), and
-traffic between the pods is encrypted too:
+With TLS on, ClickHouse serves HTTPS (`8443`) and the secure native protocol
+(`9440`), and traffic between the pods is encrypted too:
 
 - distributed queries between the replicas run over the secure native port;
 - replicas fetch parts from each other over HTTPS (`9010`, replacing `9009`);
@@ -292,13 +296,14 @@ traffic between the pods is encrypted too:
   the Keeper nodes talk to each other (Raft) over TLS. Keeper serves the same
   certificate and closes its plaintext port (`2181`).
 
-The connection Secret reports the `https` endpoint and carries the CA that signed
-the certificate under `ca.crt`.
+The connection Secret reports the `https` endpoint and carries the CA
+certificate clients verify the server with under `ca.crt`.
 
 | `mode` | Plaintext ports (`8123`, `9000`) |
 |---|---|
-| `required` (default) | Not exposed: the client Service carries only `8443`/`9440`, and a NetworkPolicy (`<name>-plaintext`) lets only the Altinity operator and the Instance's own pods reach `8123`, `9000` and the interserver ports. Everyone can still reach the secure ports and the metrics endpoint (`9363`). Keeper, which authenticates no one, gets a NetworkPolicy too (`<name>-keeper-access`): only the Instance's ClickHouse pods (client ports), Keeper's own nodes (client and Raft ports) and the operator reach it. |
-| `optional` | Exposed alongside the secure ports. |
+| `disabled` (default) | The only ones: no TLS. |
+| `preferTLS` | Exposed alongside the secure ports. |
+| `requireTLS` | Not exposed: the client Service carries only `8443`/`9440`, and a NetworkPolicy (`<name>-plaintext`) lets only the Altinity operator and the Instance's own pods reach `8123`, `9000` and the interserver ports. Everyone can still reach the secure ports and the metrics endpoint (`9363`). Keeper, which authenticates no one, gets a NetworkPolicy too (`<name>-keeper-access`): only the Instance's ClickHouse pods (client ports), Keeper's own nodes (client and Raft ports) and the operator reach it. |
 
 The plaintext ports stay open inside the cluster because the Altinity operator
 only talks to ClickHouse over plain HTTP. The NetworkPolicy is only enforced when
@@ -306,28 +311,137 @@ the cluster's network plugin supports NetworkPolicies. The chart points the
 provider at the bundled operator's pods; if you run the operator separately, set
 `operatorAccess.namespace` and `operatorAccess.podLabels` in the chart values.
 
-The certificate covers the client Service (`clickhouse-<name>`), each replica's
-Service (`chi-<name>-clickhouse-0-<n>`) and pods, Keeper's Services, all with
-their namespace forms, and the LoadBalancer hostname or IP when the Instance is
-exposed through one. Renewed certificates are picked up without restarting
-ClickHouse or Keeper.
+`preferTLS` and `requireTLS` can be switched at any time. TLS can be turned on
+on a running Instance, but not off again: `disabled` can only be set when the
+Instance is created. Turning it on in the `replicated` topology switches Keeper
+in steps, so ClickHouse never loses it: Keeper opens the secure client port next
+to the plaintext one, ClickHouse moves to it, then Keeper closes the plaintext
+one. Each step is a rolling restart of Keeper or ClickHouse; the Instance is not
+`Ready` until the last one is done.
 
-By default the provider manages a self-signed CA chain scoped to the Instance
-(the CA is valid for 10 years). To sign with an existing issuer, set
-`parameters.tls.issuerRef` (`name`, optional `kind`/`group`); issuers such as
-ACME do not provide a CA, so `ca.crt` is then left out of the connection details.
-Disabling TLS removes the certificates once no ClickHouse or Keeper pod mounts them anymore.
+#### Where the certificate comes from
 
-Turning TLS on or off on a running `replicated` Instance switches Keeper in steps, so
-ClickHouse never loses it: Keeper opens the new client port next to the old one,
-ClickHouse moves to it, then Keeper closes the old one. Each step is a rolling restart
-of Keeper or ClickHouse; the Instance is not `Ready` until the last one is done. A
-held switch (see below) needs a single approval.
+In order of precedence:
 
-Instances that enabled TLS with an earlier provider version receive the parts that
-version did not cover (`required` mode, TLS between the replicas and to Keeper) as a
-held [maintenance action](#maintenance-approval). Set `mode: optional` first to
-keep the plaintext client ports.
+1. **`certificateSecretName`**: a Secret of yours in the Instance's namespace,
+   with the server certificate followed by any intermediate CA certificates
+   (`tls.crt`), its key (`tls.key`) and the CA certificate (`ca.crt`).
+   ClickHouse and Keeper mount it as it is; cert-manager is not needed. Renew
+   it by updating the Secret.
+2. **`issuer`**: a cert-manager `Issuer` or `ClusterIssuer` (or, with `group`,
+   an external issuer) that signs the Certificate `<name>-server` the provider
+   requests. Issuers such as ACME do not provide a CA, so `ca.crt` is then left
+   out of the connection details.
+3. Neither: the provider creates a self-signed CA scoped to the Instance with
+   cert-manager (valid for 10 years) and issues the certificate from it.
+
+The source cannot change while TLS is on. Renewed certificates are picked up
+without restarting ClickHouse or Keeper, whichever the source.
+
+The certificate the provider requests (2 and 3) covers the client Service
+(`clickhouse-<name>`), each replica's Service (`chi-<name>-clickhouse-<shard>-<n>`)
+and pods, Keeper's Services, all with their namespace forms, the LoadBalancer
+hostname or IP when the Instance is exposed through one, and the DNS names of
+`additionalNames` (no IP addresses). Changing `additionalNames` reissues the
+certificate; nothing restarts.
+
+A certificate of your own (1) carries its own names, so `additionalNames`
+cannot be combined with it. ClickHouse and Keeper present it to each other as
+well as to clients, so besides the names clients connect by it must be valid
+for:
+
+- `clickhouse-<name>.<namespace>.svc.cluster.local`, the in-cluster endpoint;
+- in the `replicated` topology, the names the pods reach each other by:
+  - for every replica, `chi-<name>-clickhouse-<shard>-<n>` (distributed
+    queries) and its pod, `*.chi-<name>-clickhouse-<shard>-<n>.<namespace>.svc.cluster.local`
+    (replication);
+  - for the Keeper nodes, `chk-<name>-keeper-keeper-0-<0..2>` (Raft) and
+    `chk-<name>-keeper-keeper-0-<0..2>-client.<namespace>.svc.cluster.local`
+    (ClickHouse's sessions; a `*.<namespace>.svc.cluster.local` wildcard
+    covers these and the endpoint).
+
+The provider checks this, and that `ca.crt` verifies the certificate, before it
+creates or changes the cluster, and reports what is missing on the Instance
+(`Ready` is `False` with reason `InvalidReference`).
+Add the names of new replicas and shards to the certificate before scaling.
+
+#### Bring your own CA
+
+To have the company CA sign the certificate and clients connect to
+`analytics.company.com` with full verification:
+
+1. Make the CA a cert-manager issuer (here from a Secret with its key pair;
+   Vault, AWS PCA and other issuers work the same way):
+
+   ```yaml
+   apiVersion: cert-manager.io/v1
+   kind: ClusterIssuer
+   metadata:
+     name: company-ca
+   spec:
+     ca:
+       secretName: company-ca   # tls.crt and tls.key of the CA, in the cert-manager namespace
+   ```
+
+2. Name it in the Instance, with the name clients use (see
+   [`examples/instance-tls.yaml`](examples/instance-tls.yaml)):
+
+   ```yaml
+   spec:
+     parameters:
+       tls:
+         mode: requireTLS
+         issuer:
+           name: company-ca
+           kind: ClusterIssuer
+         additionalNames:
+           - analytics.company.com
+     components:
+       engine:
+         service:
+           serviceType: LoadBalancer
+   ```
+
+3. Point `analytics.company.com` at the address in `host` of the connection
+   Secret, and connect trusting the company CA only:
+
+   ```bash
+   curl --cacert company-ca.crt https://analytics.company.com:8443/ping
+   clickhouse-client --secure --host analytics.company.com --port 9440 --user admin --password ...
+   ```
+
+If the company's PKI hands out certificates rather than an issuer, put one in a
+Secret (`kubectl create secret generic analytics-tls --from-file=tls.crt
+--from-file=tls.key --from-file=ca.crt`) and set `certificateSecretName:
+analytics-tls` instead of `issuer` and `additionalNames`.
+
+#### Migrating from `components.engine.parameters.tls`
+
+Releases up to `0.4.x` configured TLS in the engine component's parameters.
+Those fields are removed. After the provider upgrade an Instance that still
+carries them keeps running, untouched, but fails validation (`Ready` is
+`False` with reason `ValidationFailed`) and is not reconciled until it is
+moved to the new fields:
+
+| Before (`spec.components.engine.parameters.tls`) | Now (`spec.parameters.tls`) |
+|---|---|
+| `enabled: disabled`, or no `tls` | `mode: disabled`, or no `tls` |
+| `enabled: enabled` (`mode: required`, the default) | `mode: requireTLS` |
+| `enabled: enabled`, `mode: optional` | `mode: preferTLS` |
+| `issuerRef: {name, kind, group}` | `issuer: {name, kind, group}` |
+
+```bash
+kubectl patch instance <name> --type=json -p '[
+  {"op": "remove", "path": "/spec/components/engine/parameters/tls"},
+  {"op": "add", "path": "/spec/parameters", "value": {"tls": {"mode": "requireTLS"}}}
+]'
+```
+
+Keep the same mode and issuer: the cluster then stays as it is, without a
+restart. Removing the old fields without setting the new ones would turn TLS
+off, and naming another issuer would change the certificate source: the
+running Instance takes neither, warns about it when the change is made and
+reports `InvalidReference` until the fields match the cluster.
 
 ### Pod placement
 
@@ -421,7 +535,15 @@ error names the Instance field at fault, such as
 - more than one replica in the `standalone` topology;
 - a `keeper` component outside the `replicated` topology, a Keeper size other than 3,
   or shrinking, moving or downgrading Keeper;
-- a `tls.mode` other than `required` or `optional`;
+- TLS parameters that do not fit together: a certificate source or
+  `additionalNames` with TLS `disabled`, both `issuer` and
+  `certificateSecretName`, `additionalNames` with `certificateSecretName` or
+  holding an IP address, a cert-manager.io issuer that is neither an `Issuer`
+  nor a `ClusterIssuer`;
+- turning TLS off on a running Instance, or changing where its certificate
+  comes from (`issuer`, `certificateSecretName`) while TLS is on;
+- a `certificateSecretName` Secret whose certificate `ca.crt` does not verify,
+  or that is not valid for the in-cluster names (see [TLS](#tls));
 - an engine `configuration` that is not valid YAML or that sets ports, TLS
   (`openSSL/*`), Keeper (`zookeeper/*`), `macros/*`, `remote_servers/*` or the
   metrics endpoint (`prometheus/port`, `prometheus/endpoint`), which the
@@ -652,11 +774,19 @@ Besides the shared component fields (`replicas`, `resources`, `storage`, `servic
 |---|---|---|
 | `configuration` | ClickHouse server settings, one `path: value` per line | [Rejected changes](#rejected-changes) for the settings the provider manages |
 | `podMonitor` | deprecated, ignored | [Monitoring](#monitoring) |
-| `tls.enabled`, `tls.mode`, `tls.issuerRef` | `enabled` / `disabled` (default); `required` (default) / `optional`; an Issuer or ClusterIssuer | [TLS](#tls) |
 | `storageReclaimPolicy` | `Retain` (default), `Delete` | [Data retention](#data-retention) |
 
 The `keeper` component (`replicated` topology) takes `resources` and `storage`; see
 [ClickHouse Keeper](#clickhouse-keeper).
+
+Instance-wide `spec.parameters`:
+
+| Parameter | Values | See |
+|---|---|---|
+| `tls.mode` | `disabled` (default), `preferTLS`, `requireTLS` | [TLS](#tls) |
+| `tls.issuer` | `name`, `kind` (`Issuer` by default, or `ClusterIssuer`), `group` (`cert-manager.io` by default) | [TLS](#tls) |
+| `tls.certificateSecretName` | a Secret with `tls.crt`, `tls.key` and `ca.crt` | [TLS](#tls) |
+| `tls.additionalNames` | DNS names added to the certificate the provider requests | [TLS](#tls) |
 
 ## Development
 

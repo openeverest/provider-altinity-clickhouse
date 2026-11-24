@@ -1,0 +1,12 @@
+# Reported on the Instance, naming what the certificate misses.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-external-only
+  namespace: default
+status:
+  (conditions[?type == 'Ready']):
+    - status: "False"
+      reason: InvalidReference
+      (contains(message, 'spec.parameters.tls.certificateSecretName')): true
+      (contains(message, 'is not valid for clickhouse-itest-ch-external-only.default.svc.cluster.local')): true

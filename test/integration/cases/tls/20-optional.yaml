@@ -4,9 +4,6 @@ metadata:
   name: itest-ch-tls
   namespace: default
 spec:
-  components:
-    engine:
-      parameters:
-        tls:
-          enabled: enabled
-          mode: optional
+  parameters:
+    tls:
+      mode: preferTLS

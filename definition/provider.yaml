@@ -4,6 +4,10 @@
 
 name: provider-altinity-clickhouse
 
+# Instance-wide parameters (Instance.spec.parameters), a Go type in
+# definition/types.go.
+parametersSchema: Parameters
+
 components:
   engine:
     type: clickhouse

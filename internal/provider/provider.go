@@ -44,6 +44,7 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-altinity-clickhouse/definition"
 	"github.com/openeverest/provider-altinity-clickhouse/definition/components"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
@@ -523,12 +524,12 @@ func buildCHIWired(c *controller.Context, l clusterLayout, keeper keeperWiring) 
 	// distributed queries over them.
 	mode := tlsMode(c)
 	switch {
-	case mode != "":
-		applyTLSToCHISpec(&spec, settings, cluster, c.Name())
+	case mode != definition.TLSModeDisabled:
+		applyTLSToCHISpec(&spec, settings, cluster, tlsSecretName(c))
 	case keeper.port == common.KeeperSecurePort:
 		// TLS is being turned off: until ClickHouse is back on Keeper's
 		// plaintext port, it still needs the CA to verify Keeper.
-		spec.Configuration.Files = buildTLSFiles(serverSecretName(c.Name()))
+		spec.Configuration.Files = buildTLSFiles(tlsSecretName(c))
 	}
 
 	// Wire the root Service exposure (ClusterIP / LoadBalancer / NodePort).
@@ -629,7 +630,7 @@ func buildCHKWired(c *controller.Context, wiring keeperWiring) (*chkv1.ClickHous
 	cluster := chk.Spec.Configuration.Clusters[0]
 	if wiring.secure {
 		cluster.Secure = chtypes.NewStringBool(true)
-		chk.Spec.Configuration.Files = buildTLSFiles(serverSecretName(c.Name()))
+		chk.Spec.Configuration.Files = buildTLSFiles(tlsSecretName(c))
 	}
 	if !wiring.plaintext {
 		cluster.Insecure = chtypes.NewStringBool(false)
@@ -655,15 +656,15 @@ func keeperCRName(instanceName string) string {
 // is added only to set the ports for TLS.
 //
 // tlsMode selects the ports: plaintext without TLS, plaintext and secure with
-// "optional", and only the secure ones with "required".
-func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsMode string) {
+// preferTLS, and only the secure ones with requireTLS.
+func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsMode definition.TLSMode) {
 	exposed := service != nil && service.ServiceType != ""
-	if !exposed && tlsMode == "" {
+	if !exposed && tlsMode == definition.TLSModeDisabled {
 		return
 	}
 
 	var ports []corev1.ServicePort
-	if tlsMode != common.TLSModeRequired {
+	if tlsMode != definition.TLSModeRequire {
 		ports = append(ports,
 			corev1.ServicePort{
 				Name:       chiv1.ChDefaultHTTPPortName,
@@ -679,7 +680,7 @@ func configureExpose(spec *chiv1.ChiSpec, service *corev1alpha1.Service, tlsMode
 			},
 		)
 	}
-	if tlsMode != "" {
+	if tlsMode != definition.TLSModeDisabled {
 		ports = append(ports,
 			corev1.ServicePort{
 				Name:       chiv1.ChDefaultHTTPSPortName,

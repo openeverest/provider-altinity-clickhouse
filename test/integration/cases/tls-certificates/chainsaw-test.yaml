@@ -1,0 +1,65 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tls-certificates
+spec:
+  description: |
+    Bring your own CA, both ways. A standalone Instance names a company CA as
+    spec.parameters.tls.issuer, with an additional name: the provider requests
+    the server certificate from it and creates no CA of its own. A replicated
+    Instance names its own certificate Secret (certificateSecretName):
+    ClickHouse and Keeper mount it, and nothing is requested from cert-manager.
+    For both, the connection Secret carries the company CA as ca.crt, and a
+    client trusting only that CA verifies the server by its Service name and
+    by its external name. With the user's certificate, distributed queries,
+    the Keeper sessions and replication run over TLS. A certificate Secret
+    that misses the in-cluster names is reported on the Instance before
+    anything is created, and the certificate source of a running Instance
+    cannot change. Requires cert-manager in the cluster (installed by the dev
+    stack), which also stands in for the company's PKI.
+  timeouts:
+    # Replicated with Keeper: deletion takes longer than the default.
+    exec: 20m
+    cleanup: 5m
+  catch:
+    - script:
+        content: kubectl -n $NAMESPACE get instance,chi,chk,secret,certificate,issuer,service -o yaml
+    - script:
+        content: kubectl logs -n default -l app.kubernetes.io/name=provider-altinity-clickhouse --tail=100
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n default -l clickhouse.altinity.com/chi=itest-ch-own -o name); do
+            echo "===== $pod"
+            kubectl logs -n default "$pod" --tail=100 || true
+          done
+  steps:
+    - name: company-ca
+      try:
+        - apply:
+            file: 00-ca.yaml
+        - assert:
+            file: 00-assert.yaml
+    - name: tls-certificates
+      try:
+        - apply:
+            file: 10-create-clusters.yaml
+        - assert:
+            file: 20-assert.yaml
+        - assert:
+            file: 10-assert.yaml
+        - error:
+            file: 10-errors.yaml
+        - script:
+            timeout: 12m
+            content: sh ./certificates-check.sh
+      finally:
+        - script:
+            content: |
+              kubectl delete instances.core.openeverest.io -n default --ignore-not-found --wait=false \
+                itest-ch-issuer itest-ch-own itest-ch-external-only
+              # Volumes are retained by default (storageReclaimPolicy: Retain);
+              # drop them so re-runs on the same cluster start from empty storage.
+              kubectl delete pvc -n default --ignore-not-found --wait=false \
+                -l 'clickhouse.altinity.com/chi in (itest-ch-issuer, itest-ch-own)'
+              kubectl delete pvc -n default --ignore-not-found --wait=false \
+                -l clickhouse-keeper.altinity.com/chk=itest-ch-own-keeper

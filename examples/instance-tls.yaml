@@ -1,0 +1,53 @@
+# Bring your own CA: the company CA, a cert-manager ClusterIssuer, signs the
+# server certificate, and clients connect to analytics.company.com with full
+# verification.
+#
+# Prerequisites, besides those of instance-example.yaml:
+#   1. cert-manager installed
+#   2. A ClusterIssuer "company-ca" for the company CA, e.g.
+#        apiVersion: cert-manager.io/v1
+#        kind: ClusterIssuer
+#        metadata:
+#          name: company-ca
+#        spec:
+#          ca:
+#            secretName: company-ca   # the CA key pair, in the cert-manager namespace
+#   3. analytics.company.com resolving to "host" of the connection Secret
+#      (analytics-conn) once the LoadBalancer has an address
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: analytics
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: replicated
+  parameters:
+    tls:
+      # requireTLS serves clients over TLS only; preferTLS keeps the plaintext
+      # ports open too.
+      mode: requireTLS
+      issuer:
+        name: company-ca
+        kind: ClusterIssuer
+      additionalNames:
+        - analytics.company.com
+      # Instead of issuer and additionalNames: a Secret of yours with tls.crt,
+      # tls.key and ca.crt. See "Where the certificate comes from" in the
+      # README for the names the certificate needs.
+      # certificateSecretName: analytics-tls
+  components:
+    engine:
+      type: clickhouse
+      replicas: 2
+      resources:
+        limits:
+          cpu: "1"
+          memory: 4Gi
+      storage:
+        size: 25Gi
+      service:
+        serviceType: LoadBalancer
+    keeper:
+      type: clickhouse-keeper

@@ -1,0 +1,104 @@
+# The company CA signs the certificate, which also covers the name clients
+# connect to.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-issuer
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: standalone
+  parameters:
+    tls:
+      mode: requireTLS
+      issuer:
+        name: itest-ch-company-ca
+        kind: ClusterIssuer
+      additionalNames:
+        - itest-ch-issuer.company.com
+  components:
+    engine:
+      type: clickhouse
+      replicas: 1
+      resources:
+        # Two Instances on the single CI node: request less than the limits.
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      storage:
+        size: 10Gi
+---
+# The user's own certificate Secret; replicated, so the replicas and Keeper
+# verify each other with it too.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-own
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: replicated
+  parameters:
+    tls:
+      mode: requireTLS
+      certificateSecretName: itest-ch-own-tls
+  components:
+    engine:
+      type: clickhouse
+      replicas: 2
+      resources:
+        # Two Instances on the single CI node: request less than the limits.
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      storage:
+        size: 10Gi
+    keeper:
+      type: clickhouse-keeper
+      storage:
+        size: 5Gi
+---
+# Refused before anything is created: the certificate does not cover the
+# in-cluster names.
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-external-only
+  namespace: default
+spec:
+  providerRef:
+    name: altinity-clickhouse
+  topology:
+    type: replicated
+  parameters:
+    tls:
+      mode: requireTLS
+      certificateSecretName: itest-ch-external-only-tls
+  components:
+    engine:
+      type: clickhouse
+      replicas: 2
+      resources:
+        # Two Instances on the single CI node: request less than the limits.
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      storage:
+        size: 10Gi
+    keeper:
+      type: clickhouse-keeper
+      storage:
+        size: 5Gi

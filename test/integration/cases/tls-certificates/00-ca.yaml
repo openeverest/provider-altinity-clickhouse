@@ -1,0 +1,70 @@
+# A company CA as a cert-manager ClusterIssuer, as an enterprise would bring.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: itest-ch-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-company-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: itest-ch company CA
+  secretName: itest-ch-company-ca
+  issuerRef:
+    name: itest-ch-selfsigned
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: itest-ch-company-ca
+spec:
+  ca:
+    secretName: itest-ch-company-ca
+---
+# The certificate the user brings for itest-ch-own, in a Secret of their own.
+# cert-manager only stands in for the company's PKI here: the Instance just
+# names the Secret. It carries the names ClickHouse and Keeper reach each
+# other by, the client Service and the name clients connect to.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-own-tls
+  namespace: default
+spec:
+  secretName: itest-ch-own-tls
+  commonName: itest-ch-own.company.com
+  dnsNames:
+    - itest-ch-own.company.com
+    - "*.default.svc.cluster.local"
+    - chi-itest-ch-own-clickhouse-0-0
+    - chi-itest-ch-own-clickhouse-0-1
+    - "*.chi-itest-ch-own-clickhouse-0-0.default.svc.cluster.local"
+    - "*.chi-itest-ch-own-clickhouse-0-1.default.svc.cluster.local"
+    - chk-itest-ch-own-keeper-keeper-0-0
+    - chk-itest-ch-own-keeper-keeper-0-1
+    - chk-itest-ch-own-keeper-keeper-0-2
+  issuerRef:
+    name: itest-ch-company-ca
+    kind: ClusterIssuer
+---
+# A certificate for the external name only: the replicas could not verify
+# each other with it.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-external-only-tls
+  namespace: default
+spec:
+  secretName: itest-ch-external-only-tls
+  commonName: itest-ch-own.company.com
+  dnsNames:
+    - itest-ch-own.company.com
+  issuerRef:
+    name: itest-ch-company-ca
+    kind: ClusterIssuer

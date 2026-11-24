@@ -200,7 +200,7 @@ func keeperQuorum() []client.Object {
 func TestStatus(t *testing.T) {
 	standalone := newTestInstance("db", "ns", "")
 	replicated := newReplicatedTestInstance("")
-	withTLS := newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`)
+	withTLS := newTLSTestInstance(tlsRequiredParams)
 
 	type want struct {
 		converged bool

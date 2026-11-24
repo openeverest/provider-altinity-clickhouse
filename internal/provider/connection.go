@@ -25,6 +25,7 @@ import (
 
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
+	"github.com/openeverest/provider-altinity-clickhouse/definition"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
@@ -65,7 +66,7 @@ func buildConnectionDetails(c *controller.Context, chi *chiv1.ClickHouseInstalla
 	scheme, port := "http", common.HTTPPort
 	if tlsEnabled(c) {
 		scheme, port = "https", common.HTTPSPort
-		// Clients need the CA to verify a provider-managed certificate.
+		// Clients verify the server certificate with its CA.
 		if ca := readCACert(c); ca != "" {
 			additional[common.ConnectionKeyCACert] = ca
 		}
@@ -91,14 +92,14 @@ func buildConnectionDetails(c *controller.Context, chi *chiv1.ClickHouseInstalla
 }
 
 // clientPorts returns the ports clients may use in the TLS mode, by
-// connection details key: required TLS leaves out the plaintext ones.
-func clientPorts(tlsMode string) map[string]int {
+// connection details key: requireTLS leaves out the plaintext ones.
+func clientPorts(tlsMode definition.TLSMode) map[string]int {
 	ports := map[string]int{}
-	if tlsMode != common.TLSModeRequired {
+	if tlsMode != definition.TLSModeRequire {
 		ports[common.ConnectionKeyHTTPPort] = common.HTTPPort
 		ports[common.ConnectionKeyNativePort] = common.TCPPort
 	}
-	if tlsMode != "" {
+	if tlsMode != definition.TLSModeDisabled {
 		ports[common.ConnectionKeyHTTPSPort] = common.HTTPSPort
 		ports[common.ConnectionKeyNativeSecurePort] = common.TCPSecurePort
 	}

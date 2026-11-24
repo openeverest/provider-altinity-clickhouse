@@ -1,0 +1,20 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: itest-ch-company-ca
+status:
+  (conditions[?type == 'Ready'].status | [0]): "True"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-own-tls
+  namespace: default
+type: kubernetes.io/tls
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-external-only-tls
+  namespace: default
+type: kubernetes.io/tls
