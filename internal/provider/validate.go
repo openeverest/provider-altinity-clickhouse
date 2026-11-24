@@ -60,7 +60,6 @@ var minEngineLimits = []struct {
 // The values the engine accepts; the parameters match them in any case.
 var (
 	storageReclaimPolicies = []string{common.StorageReclaimPolicyRetain, common.StorageReclaimPolicyDelete}
-	tlsModes               = []string{common.TLSModeRequired, common.TLSModeOptional}
 	serviceTypes           = []corev1.ServiceType{
 		corev1.ServiceTypeClusterIP, corev1.ServiceTypeLoadBalancer, corev1.ServiceTypeNodePort,
 	}
@@ -77,14 +76,15 @@ func (p *Provider) Validate(in controller.ValidationInput) controller.Validation
 	}
 
 	errs := validateEngine(in.Instance, engine)
+	errs = append(errs, validateTLS(in.Instance)...)
 	errs = append(errs, validateKeeper(in.Instance)...)
 	errs = append(errs, validateTransitions(&in.Provider.Spec, in.Instance, in.Old)...)
 	return controller.ValidationResult{Errors: errs}
 }
 
 // ValidateReferences checks the rules that read other objects: the
-// administrative credentials in the Secrets, and the volumes and versions of
-// the deployed cluster.
+// administrative credentials in the Secrets, the volumes, versions and TLS of
+// the deployed cluster, and the certificate of certificateSecretName.
 func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, error) {
 	errs, err := validateCredentials(c)
 	if err != nil {
@@ -98,7 +98,11 @@ func (p *Provider) ValidateReferences(c *controller.Context) (field.ErrorList, e
 	if err != nil {
 		return nil, err
 	}
-	return slices.Concat(errs, engineErrs, keeperErrs), nil
+	tlsErrs, err := validateDeployedTLS(c)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Concat(errs, engineErrs, keeperErrs, tlsErrs), nil
 }
 
 // validateEngine checks the engine's resources, replicas, parameters and
@@ -139,10 +143,6 @@ func validateEngine(instance *corev1alpha1.Instance, engine corev1alpha1.Compone
 	if policy := params.StorageReclaimPolicy; policy != "" &&
 		!slices.ContainsFunc(storageReclaimPolicies, func(p string) bool { return strings.EqualFold(p, policy) }) {
 		errs = append(errs, field.NotSupported(paramsPath.Child("storageReclaimPolicy"), policy, storageReclaimPolicies))
-	}
-	if params.TLS != nil && params.TLS.Mode != "" &&
-		!slices.ContainsFunc(tlsModes, func(m string) bool { return strings.EqualFold(m, params.TLS.Mode) }) {
-		errs = append(errs, field.NotSupported(paramsPath.Child("tls", "mode"), params.TLS.Mode, tlsModes))
 	}
 	if err := validateConfiguration(params.Configuration); err != nil {
 		errs = append(errs, field.Invalid(paramsPath.Child("configuration"), field.OmitValueType{}, err.Error()))
@@ -241,6 +241,9 @@ func validateTransitions(spec *corev1alpha1.ProviderSpec, in, old *corev1alpha1.
 			"cannot change from %s to %s", common.TopologyReplicated, common.TopologyStandalone))}
 	}
 	if errs := validateShardsTransition(numShards(old), numShards(in)); errs != nil {
+		return errs
+	}
+	if errs := validateTLSTransition(in, old); errs != nil {
 		return errs
 	}
 

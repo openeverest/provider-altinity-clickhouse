@@ -1,0 +1,26 @@
+# With the user's Secret the provider requests nothing from cert-manager.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-own-server
+  namespace: default
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: itest-ch-own-ca
+  namespace: default
+---
+# With an issuer the provider creates no CA of its own.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: itest-ch-issuer-ca
+  namespace: default
+---
+# Nothing is created for the certificate that misses the in-cluster names.
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-external-only-keeper
+  namespace: default

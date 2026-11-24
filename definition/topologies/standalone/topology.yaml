@@ -76,6 +76,85 @@ ui:
             - memory
             - disk
 
+    tls:
+      label: "TLS"
+      description: "Encrypt connections to ClickHouse, between its replicas and to Keeper, and choose the certificate of the instance."
+      components:
+        mode:
+          uiType: select
+          path: spec.parameters.tls.mode
+          fieldParams:
+            label: "TLS mode"
+            helperText: "Required serves clients over TLS only (HTTPS 8443, native 9440) and blocks the plaintext ports to other pods; Preferred keeps the plaintext ports open too. TLS can be turned on later, but not off again."
+            defaultValue: "disabled"
+            options:
+              - label: "Disabled"
+                value: "disabled"
+              - label: "Preferred: clients choose whether to use TLS"
+                value: "preferTLS"
+              - label: "Required: clients must use TLS"
+                value: "requireTLS"
+        certificates:
+          uiType: group
+          groupType: bordered
+          label: "Certificates"
+          description: "Applies with TLS on. Leave empty to have cert-manager issue the certificate from a CA created for the instance. Clients verify the server with the CA certificate the connection Secret holds as ca.crt. Can't be changed while TLS is on."
+          components:
+            issuer:
+              uiType: group
+              groupType: line
+              components:
+                issuerName:
+                  uiType: text
+                  path: spec.parameters.tls.issuer.name
+                  fieldParams:
+                    label: "cert-manager issuer"
+                    helperText: "Issuer that signs the server certificate for the instance's Services and its LoadBalancer address. Needs cert-manager."
+                  validation:
+                    regex:
+                      pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                      message: "Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')"
+                    celExpressions:
+                      - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '' || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == ''"
+                        message: "Use either an issuer or a certificate secret, not both"
+                      - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.name) || spec.parameters.tls.issuer.name == '' || (has(spec.parameters.tls.mode) && spec.parameters.tls.mode != 'disabled')"
+                        message: "Turn TLS on to use an issuer"
+                      - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.issuer) || !has(spec.parameters.tls.issuer.kind) || spec.parameters.tls.issuer.kind == '' || (has(spec.parameters.tls.issuer.name) && spec.parameters.tls.issuer.name != '')"
+                        message: "Name the issuer"
+                issuerKind:
+                  uiType: select
+                  path: spec.parameters.tls.issuer.kind
+                  fieldParams:
+                    label: "Issuer kind"
+                    helperText: "Issuer when not set"
+                    options:
+                      - label: "Issuer"
+                        value: "Issuer"
+                      - label: "ClusterIssuer"
+                        value: "ClusterIssuer"
+              componentsOrder:
+                - issuerName
+                - issuerKind
+            certificateSecretName:
+              uiType: text
+              path: spec.parameters.tls.certificateSecretName
+              fieldParams:
+                label: "Certificate secret"
+                helperText: "Secret with the server certificate and any intermediate CA certificates (tls.crt), its key (tls.key) and the CA certificate (ca.crt). ClickHouse and Keeper present it to clients and to each other, so it must be valid for the instance's in-cluster names (see the provider README) and the names clients connect to."
+              validation:
+                regex:
+                  pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                  message: "Must be a valid Kubernetes object name (lowercase letters, digits, '-' and '.')"
+                celExpressions:
+                  - celExpr: "!has(spec.parameters) || !has(spec.parameters.tls) || !has(spec.parameters.tls.certificateSecretName) || spec.parameters.tls.certificateSecretName == '' || (has(spec.parameters.tls.mode) && spec.parameters.tls.mode != 'disabled')"
+                    message: "Turn TLS on to use a certificate secret"
+          componentsOrder:
+            - issuer
+            - certificateSecretName
+      componentsOrder:
+        - mode
+        - certificates
+
     advanced:
       label: "Advanced"
       description: "Optional advanced settings."
@@ -116,30 +195,6 @@ ui:
                 value: "LoadBalancer"
               - label: "NodePort"
                 value: "NodePort"
-        tls:
-          uiType: select
-          path: spec.components.engine.parameters.tls.enabled
-          fieldParams:
-            label: "TLS"
-            helperText: "Encrypt client connections. Requires cert-manager in the cluster."
-            defaultValue: "disabled"
-            options:
-              - label: "Disabled"
-                value: "disabled"
-              - label: "Enabled"
-                value: "enabled"
-        tlsMode:
-          uiType: select
-          path: spec.components.engine.parameters.tls.mode
-          fieldParams:
-            label: "TLS mode"
-            helperText: "Applies with TLS enabled. Required serves clients over TLS only and blocks the plaintext ports to other pods; Optional keeps them open too."
-            defaultValue: "required"
-            options:
-              - label: "Required"
-                value: "required"
-              - label: "Optional"
-                value: "optional"
         configuration:
           uiType: text
           path: spec.components.engine.parameters.configuration
@@ -155,11 +210,10 @@ ui:
         - storageClass
         - storageReclaimPolicy
         - externalAccess
-        - tls
-        - tlsMode
         - configuration
 
   sectionsOrder:
     - databaseVersion
     - resources
+    - tls
     - advanced

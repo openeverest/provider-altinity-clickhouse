@@ -16,7 +16,9 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,15 +33,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/openeverest/provider-altinity-clickhouse/definition/components"
+	"github.com/openeverest/provider-altinity-clickhouse/definition"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
@@ -53,55 +57,92 @@ const issuerKind = "Issuer"
 // from the connection details, so it must outlive many server certificates.
 const caDuration = 10 * 365 * 24 * time.Hour
 
-// tlsParameters returns the engine's TLS parameters, or nil when unset.
-func tlsParameters(c *controller.Context) *components.TLSParameters {
-	engine := c.Instance().Spec.Components[common.ComponentEngine]
-	var params components.ClickHouseParameters
-	if !c.TryDecodeComponentParameters(engine, &params) {
-		return nil
+// tlsPath is the field path of the TLS parameters.
+var tlsPath = field.NewPath("spec", "parameters", "tls")
+
+// instanceTLS decodes the TLS parameters of in, with the defaults applied:
+// disabled, and an Issuer of cert-manager.io.
+func instanceTLS(in *corev1alpha1.Instance) (definition.TLSParameters, error) {
+	var params definition.Parameters
+	if raw := in.Spec.Parameters; raw != nil && len(raw.Raw) > 0 {
+		if err := json.Unmarshal(raw.Raw, &params); err != nil {
+			return definition.TLSParameters{}, fmt.Errorf("decode spec.parameters: %w", err)
+		}
 	}
-	return params.TLS
-}
-
-// tlsEnabled reports whether TLS is requested for the engine component.
-func tlsEnabled(c *controller.Context) bool {
-	params := tlsParameters(c)
-	return params != nil && strings.EqualFold(params.Enabled, common.TLSEnabled)
-}
-
-// tlsRequired reports whether clients must use TLS: TLS is enabled and the
-// mode is not "optional".
-func tlsRequired(c *controller.Context) bool {
-	return tlsEnabled(c) && !strings.EqualFold(tlsParameters(c).Mode, common.TLSModeOptional)
-}
-
-// tlsMode returns the TLS mode the Instance asks for: "required",
-// "optional", or "" with TLS off.
-func tlsMode(c *controller.Context) string {
-	switch {
-	case !tlsEnabled(c):
-		return ""
-	case tlsRequired(c):
-		return common.TLSModeRequired
-	default:
-		return common.TLSModeOptional
+	var tls definition.TLSParameters
+	if params.TLS != nil {
+		tls = *params.TLS
 	}
+	if tls.Mode == "" {
+		tls.Mode = definition.TLSModeDisabled
+	}
+	if tls.Issuer != nil {
+		issuer := *tls.Issuer
+		if issuer.Kind == "" {
+			issuer.Kind = definition.IssuerKindIssuer
+		}
+		if issuer.Group == "" {
+			issuer.Group = certManagerGroup
+		}
+		tls.Issuer = &issuer
+	}
+	return tls, nil
 }
 
-// ensureTLS provisions the cert-manager resources required for TLS and returns a
-// WaitError until the server certificate has first been issued.
-//
-// When the user supplies an issuerRef override only the leaf certificate is
-// created; otherwise the provider manages a self-signed CA chain scoped to the
-// Instance (self-signed Issuer → CA Certificate → CA Issuer → server Certificate).
-func ensureTLS(c *controller.Context) error {
-	issuerRef, err := ensureIssuer(c, tlsParameters(c).IssuerRef)
+// tlsParameters returns the Instance's TLS parameters. The runtime has
+// checked them against their schema, and Validate reports what does not
+// decode.
+func tlsParameters(c *controller.Context) definition.TLSParameters {
+	tls, err := instanceTLS(c.Instance())
 	if err != nil {
-		return err
+		return definition.TLSParameters{Mode: definition.TLSModeDisabled}
 	}
+	return tls
+}
 
-	if err := ensureServerCertificate(c, issuerRef); err != nil {
-		return err
+// tlsMode returns the TLS mode the Instance asks for.
+func tlsMode(c *controller.Context) definition.TLSMode {
+	return tlsParameters(c).Mode
+}
+
+// tlsEnabled reports whether TLS is on.
+func tlsEnabled(c *controller.Context) bool {
+	return tlsMode(c) != definition.TLSModeDisabled
+}
+
+// tlsSecretName is the Secret ClickHouse and Keeper mount the server
+// certificate from: the user's, or the one cert-manager writes.
+func tlsSecretName(c *controller.Context) string {
+	if name := tlsParameters(c).CertificateSecretName; name != "" {
+		return name
+	}
+	return serverSecretName(c.Name())
+}
+
+// ensureTLS makes the server certificate available and returns a WaitError
+// until its Secret holds one.
+//
+// With certificateSecretName the Secret is the user's. With an issuer only
+// the leaf certificate is created; otherwise the provider manages a
+// self-signed CA chain scoped to the Instance (self-signed Issuer → CA
+// Certificate → CA Issuer → server Certificate).
+func ensureTLS(c *controller.Context) error {
+	tls := tlsParameters(c)
+	wait := "waiting for cert-manager to issue the server certificate"
+	if tls.CertificateSecretName != "" {
+		wait = fmt.Sprintf("waiting for the Secret %s of %s", tls.CertificateSecretName, tlsPath.Child("certificateSecretName"))
+		// Certificates of a source chosen before the cluster was created.
+		if err := deleteManagedCertificates(c); err != nil {
+			return err
+		}
+	} else {
+		issuerRef, err := ensureIssuer(c, tls.Issuer)
+		if err != nil {
+			return err
+		}
+		if err := ensureServerCertificate(c, issuerRef, tls.AdditionalNames); err != nil {
+			return err
+		}
 	}
 
 	// Only the first issuance blocks: a re-issue (renewal, new names) leaves
@@ -112,7 +153,7 @@ func ensureTLS(c *controller.Context) error {
 		return err
 	}
 	if !issued {
-		return controller.WaitForDuration("waiting for cert-manager to issue the server certificate", 15*time.Second)
+		return controller.WaitForDuration(wait, 15*time.Second)
 	}
 	return nil
 }
@@ -121,7 +162,7 @@ func ensureTLS(c *controller.Context) error {
 // a certificate.
 func serverCertificateIssued(c *controller.Context) (bool, error) {
 	secret := &corev1.Secret{}
-	found, err := getOptional(c, secret, serverSecretName(c.Name()))
+	found, err := getOptional(c, secret, tlsSecretName(c))
 	if err != nil {
 		return false, err
 	}
@@ -131,21 +172,13 @@ func serverCertificateIssued(c *controller.Context) (bool, error) {
 // ensureIssuer resolves the issuer that signs the server certificate. If the
 // user provided an override it is used directly; otherwise a provider-managed
 // self-signed CA chain is created and the CA Issuer reference is returned.
-func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta.IssuerReference, error) {
-	if override != nil && override.Name != "" {
-		kind := override.Kind
-		if kind == "" {
-			kind = issuerKind
-		}
-		group := override.Group
-		if group == "" {
-			group = certManagerGroup
-		}
-		// Switching to an own issuer leaves the provider-managed chain unused.
+func ensureIssuer(c *controller.Context, override *definition.IssuerReference) (cmmeta.IssuerReference, error) {
+	if override != nil {
+		// A provider-managed chain of before the issuer was chosen is unused.
 		if err := deleteCAChain(c); err != nil {
 			return cmmeta.IssuerReference{}, err
 		}
-		return cmmeta.IssuerReference{Name: override.Name, Kind: kind, Group: group}, nil
+		return issuerReference(override), nil
 	}
 
 	selfSigned := &cmapi.Issuer{
@@ -186,13 +219,25 @@ func ensureIssuer(c *controller.Context, override *components.IssuerRef) (cmmeta
 		return cmmeta.IssuerReference{}, fmt.Errorf("apply CA issuer: %w", err)
 	}
 
-	return cmmeta.IssuerReference{Name: caIssuerName(c.Name()), Kind: issuerKind, Group: certManagerGroup}, nil
+	return managedIssuerReference(c.Name()), nil
+}
+
+// issuerReference is the cert-manager reference of the issuer the TLS
+// parameters name.
+func issuerReference(issuer *definition.IssuerReference) cmmeta.IssuerReference {
+	return cmmeta.IssuerReference{Name: issuer.Name, Kind: string(issuer.Kind), Group: issuer.Group}
+}
+
+// managedIssuerReference refers to the CA Issuer the provider creates.
+func managedIssuerReference(instanceName string) cmmeta.IssuerReference {
+	return cmmeta.IssuerReference{Name: caIssuerName(instanceName), Kind: issuerKind, Group: certManagerGroup}
 }
 
 // ensureServerCertificate creates the leaf server Certificate signed by the
 // resolved issuer. It covers the client Service, every host's Service (the
-// hosts' names in remote_servers) and the LoadBalancer address, if any.
-func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerReference) error {
+// hosts' names in remote_servers), the LoadBalancer address, if any, and the
+// additional names of the TLS parameters.
+func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerReference, additionalNames []string) error {
 	l := layout(c)
 	dnsNames := serverDNSNames(c.Name(), c.Namespace(), l)
 	if l.keeper {
@@ -207,7 +252,7 @@ func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerRefer
 		Spec: cmapi.CertificateSpec{
 			SecretName:  serverSecretName(c.Name()),
 			CommonName:  dnsNames[0],
-			DNSNames:    append(dnsNames, externalNames...),
+			DNSNames:    uniqueNames(dnsNames, externalNames, additionalNames),
 			IPAddresses: externalIPs,
 			IssuerRef:   issuerRef,
 		},
@@ -216,6 +261,17 @@ func ensureServerCertificate(c *controller.Context, issuerRef cmmeta.IssuerRefer
 		return fmt.Errorf("apply server certificate: %w", err)
 	}
 	return nil
+}
+
+// uniqueNames joins the lists of names, each name once, in order.
+func uniqueNames(lists ...[]string) []string {
+	var names []string
+	for _, name := range slices.Concat(lists...) {
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // serverDNSNames returns the DNS names the server certificate must cover: the
@@ -271,11 +327,11 @@ func hostServiceNames(instanceName string, l clusterLayout) []string {
 	return names
 }
 
-// readCACert returns the CA that signed the server certificate, as issued
-// alongside it. Issuers such as ACME do not provide one.
+// readCACert returns the CA that signed the server certificate, from the
+// Secret that holds it. Issuers such as ACME do not provide one.
 func readCACert(c *controller.Context) string {
 	secret := &corev1.Secret{}
-	if err := c.Get(secret, serverSecretName(c.Name())); err != nil {
+	if err := c.Get(secret, tlsSecretName(c)); err != nil {
 		return ""
 	}
 	return string(secret.Data[cmmeta.TLSCAKey])
@@ -350,8 +406,8 @@ func externalAddresses(c *controller.Context) (names, ips []string, err error) {
 // configuration, and makes distributed queries and replication between
 // replicas use TLS. The plaintext ports stay open: the operator talks to
 // ClickHouse over plain HTTP (see plaintextPolicy for who may reach them).
-func applyTLSToCHISpec(spec *chiv1.ChiSpec, settings *chiv1.Settings, cluster *chiv1.Cluster, instanceName string) {
-	spec.Configuration.Files = buildTLSFiles(serverSecretName(instanceName))
+func applyTLSToCHISpec(spec *chiv1.ChiSpec, settings *chiv1.Settings, cluster *chiv1.Cluster, secretName string) {
+	spec.Configuration.Files = buildTLSFiles(secretName)
 	settings.Set("https_port", chiv1.NewSettingScalar(strconv.Itoa(common.HTTPSPort)))
 	settings.Set("tcp_port_secure", chiv1.NewSettingScalar(strconv.Itoa(common.TCPSecurePort)))
 	cluster.Secure = chtypes.NewStringBool(true)
@@ -365,7 +421,7 @@ func applyTLSToCHISpec(spec *chiv1.ChiSpec, settings *chiv1.Settings, cluster *c
 
 // buildTLSFiles renders the ClickHouse config files that enable TLS: an
 // openssl.xml pointing at the mounted certificate files plus the certificate,
-// key and CA sourced from the cert-manager secret. cert-manager secret keys
+// key and CA sourced from the certificate Secret, whose keys
 // (tls.crt/tls.key/ca.crt) are mapped onto ClickHouse's expected file names.
 func buildTLSFiles(secretName string) *chiv1.Settings {
 	files := chiv1.NewSettings()
@@ -474,7 +530,14 @@ func cleanupTLS(c *controller.Context, chi *chiv1.ClickHouseInstallation) error 
 	if mounted, err := serverSecretMounted(c); err != nil || mounted {
 		return err
 	}
-	found, err = getOptional(c, &corev1.Secret{}, serverSecretName(c.Name()))
+	return deleteManagedCertificates(c)
+}
+
+// deleteManagedCertificates removes the certificates the provider requested
+// from cert-manager, if there are any. The Secret of certificateSecretName
+// is the user's and stays.
+func deleteManagedCertificates(c *controller.Context) error {
+	found, err := getOptional(c, &corev1.Secret{}, serverSecretName(c.Name()))
 	if err != nil {
 		return err
 	}
@@ -482,7 +545,7 @@ func cleanupTLS(c *controller.Context, chi *chiv1.ClickHouseInstallation) error 
 	if err != nil || (!found && !caFound) {
 		return err
 	}
-	log.FromContext(c.Context()).Info("TLS is disabled, deleting its certificates")
+	log.FromContext(c.Context()).Info("Deleting the unused cert-manager certificates")
 	return deleteTLSResources(c)
 }
 

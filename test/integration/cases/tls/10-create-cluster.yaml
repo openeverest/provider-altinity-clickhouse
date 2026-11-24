@@ -1,5 +1,5 @@
 # Replicated, so distributed queries between the replicas run over TLS too.
-# TLS without a mode means "required".
+# Without an issuer or a certificate Secret, the provider creates a CA.
 apiVersion: core.openeverest.io/v1alpha1
 kind: Instance
 metadata:
@@ -10,6 +10,11 @@ spec:
     name: altinity-clickhouse
   topology:
     type: replicated
+  parameters:
+    tls:
+      mode: requireTLS
+      additionalNames:
+        - itest-ch-tls.company.com
   components:
     engine:
       type: clickhouse
@@ -20,9 +25,6 @@ spec:
           memory: 1Gi
       storage:
         size: 10Gi
-      parameters:
-        tls:
-          enabled: enabled
     keeper:
       type: clickhouse-keeper
       storage:

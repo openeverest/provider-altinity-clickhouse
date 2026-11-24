@@ -49,7 +49,7 @@ func clientService(svcType corev1.ServiceType, ingress ...corev1.LoadBalancerIng
 
 func connectionDetails(t *testing.T, params string, objs ...client.Object) controller.ConnectionDetails {
 	t.Helper()
-	c := newTestContext(t, newTestInstance("db", "ns", params), objs...)
+	c := newTestContext(t, newTLSTestInstance(params), objs...)
 	_, err := ensureCredentials(c)
 	require.NoError(t, err)
 	return buildConnectionDetails(c, readyCHI())

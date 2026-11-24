@@ -135,11 +135,13 @@ Provisions a standalone Instance seeded with credentials through
 
 ### `tls`
 
-Provisions a replicated Instance with `tls.enabled: enabled` (required mode by
-default) and asserts (needs cert-manager, installed by the dev stack):
+Provisions a replicated Instance with `spec.parameters.tls` (`mode: requireTLS`,
+the provider's CA, an additional name) and asserts (needs cert-manager,
+installed by the dev stack):
 
 1. cert-manager issues the server certificate into the `<name>-server-tls`
-   `kubernetes.io/tls` Secret, covering the client and replica Services.
+   `kubernetes.io/tls` Secret, covering the client and replica Services and
+   the additional name.
 2. The CHI serves HTTPS `8443` and native `9440`, its cluster is `secure`,
    replicas fetch parts over HTTPS (`9010`), and ClickHouse is wired to Keeper's
    client Services on `2281` over TLS. The CHK is TLS-only and mounts the same
@@ -152,13 +154,32 @@ default) and asserts (needs cert-manager, installed by the dev stack):
    Keeper session runs over TLS, and rows replicate over HTTPS.
 4. After the certificate Secret is re-issued, ClickHouse and Keeper serve the
    new certificate without restarting.
-5. Switching to `mode: optional` restores the plaintext ports on the client
+5. A name added to `additionalNames` is served by ClickHouse and Keeper
+   without any pod being replaced or restarted.
+6. Switching to `mode: preferTLS` restores the plaintext ports on the client
    Service and removes both NetworkPolicies.
-6. Turning TLS off (`enabled: disabled`) leaves only the plaintext ports on the
-   client Service, and ClickHouse reaches Keeper on `2181`. Once no pod mounts
-   them, the server and CA certificates, their Secrets and the issuers are
-   deleted. The connection Secret reports `http` on `8123` without a CA, and
-   replication and a distributed query work over the plaintext ports.
+7. Turning TLS off, an issuer and a certificate Secret are refused at
+   admission.
+
+### `tls-certificates`
+
+Bring your own CA, with a company CA set up as a cert-manager `ClusterIssuer`
+(needs cert-manager):
+
+1. A standalone Instance with `tls.issuer` and an additional name: the server
+   Certificate is requested from the company CA, and the provider creates no CA
+   of its own.
+2. A replicated Instance with `tls.certificateSecretName`: the CHI and the CHK
+   mount the user's Secret, and nothing is requested from cert-manager.
+3. For both, `ca.crt` of the connection Secret is the company CA, and a client
+   trusting only that CA verifies ports `8443` and `9440` by the Service name
+   and by the external name, and not by another name.
+4. With the user's certificate, a distributed query reaches both replicas over
+   TLS, ClickHouse's Keeper session runs over TLS, and rows replicate over
+   HTTPS.
+5. An Instance whose certificate Secret misses the in-cluster names reports
+   `InvalidReference`, naming them, and nothing is created for it.
+6. Another certificate Secret for the running Instance is refused at admission.
 
 The CI cluster does not enforce NetworkPolicies, so blocking the plaintext
 ports is only asserted through the policies themselves.

@@ -4,9 +4,10 @@ metadata:
   name: tls
 spec:
   description: |
-    Provision a replicated ClickHouse Instance with TLS enabled (required mode
-    by default) and assert the provider drives cert-manager to issue a server
-    certificate covering the client and replica Services, serves HTTPS (8443)
+    Provision a replicated ClickHouse Instance with spec.parameters.tls
+    (requireTLS, the provider's CA, an additional name) and assert the provider
+    drives cert-manager to issue a server certificate covering the client and
+    replica Services and the additional name, serves HTTPS (8443)
     and the secure native protocol (9440), runs distributed queries between the
     replicas over TLS, fetches parts between them over HTTPS, reaches Keeper
     over TLS (Keeper serving TLS only, also between its nodes), exposes only
@@ -14,10 +15,10 @@ spec:
     limits the plaintext ports and Keeper with NetworkPolicies and publishes the CA with
     the connection details. Clients connect verifying the certificate, and a
     renewed certificate is served by ClickHouse and Keeper without a restart.
-    Switching to optional mode restores the plaintext ports and lifts the
-    NetworkPolicies. Turning TLS off moves ClickHouse and Keeper back to the
-    plaintext ports, removes the certificates and issuers, and points the
-    connection details at plain HTTP. Requires cert-manager in the cluster
+    A name added to additionalNames is served without a restart either.
+    Switching to preferTLS restores the plaintext ports and lifts the
+    NetworkPolicies. Turning TLS off and changing the certificate source are
+    refused. Requires cert-manager in the cluster
     (installed by the dev stack). The CI cluster does not enforce
     NetworkPolicies, so only the policy itself is asserted.
   timeouts:
@@ -44,6 +45,9 @@ spec:
             file: 10-assert.yaml
         - script:
             content: sh ./tls-check.sh
+        - script:
+            timeout: 12m
+            content: sh ./names-check.sh
         - patch:
             file: 20-optional.yaml
         - assert:
@@ -62,19 +66,8 @@ spec:
               metadata:
                 name: itest-ch-tls-keeper-access
                 namespace: default
-        # Turning TLS off restarts the pods on plaintext and removes the
-        # certificates once nothing mounts them.
-        - patch:
-            file: 30-disable.yaml
-        - assert:
-            timeout: 15m
-            file: 30-assert.yaml
-        - error:
-            timeout: 3m
-            file: 30-errors.yaml
         - script:
-            timeout: 12m
-            content: sh ./plaintext-check.sh
+            content: sh ./refused.sh
       finally:
         - command:
             entrypoint: kubectl

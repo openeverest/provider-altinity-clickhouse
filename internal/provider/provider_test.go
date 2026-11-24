@@ -25,6 +25,7 @@ import (
 	chkv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse-keeper.altinity.com/v1"
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
+	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -46,7 +47,7 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/openeverest/provider-altinity-clickhouse/definition/components"
+	"github.com/openeverest/provider-altinity-clickhouse/definition"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
@@ -253,7 +254,7 @@ func TestStorageReclaimPolicy(t *testing.T) {
 }
 
 func TestBuildCHIWithTLS(t *testing.T) {
-	c := newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`))
+	c := newTestContext(t, newTLSTestInstance(tlsRequiredParams))
 
 	chi, err := buildCHI(c, replicasLayout(2))
 	require.NoError(t, err)
@@ -274,18 +275,18 @@ func TestBuildCHIWithTLS(t *testing.T) {
 
 func TestBuildConnectionDetails(t *testing.T) {
 	tests := []struct {
-		name         string
-		engineParams string
-		wantScheme   string
-		wantPort     string
+		name       string
+		params     string
+		wantScheme string
+		wantPort   string
 	}{
-		{name: "plaintext", engineParams: "", wantScheme: "http", wantPort: "8123"},
-		{name: "tls", engineParams: `{"tls":{"enabled":"enabled"}}`, wantScheme: "https", wantPort: "8443"},
+		{name: "plaintext", params: "", wantScheme: "http", wantPort: "8123"},
+		{name: "tls", params: tlsRequiredParams, wantScheme: "https", wantPort: "8443"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := newTestContext(t, newTestInstance("db", "ns", tt.engineParams))
+			c := newTestContext(t, newTLSTestInstance(tt.params))
 			secret, err := ensureCredentials(c)
 			require.NoError(t, err)
 			password := string(secret.Data[common.CredentialsKeyPassword])
@@ -303,20 +304,20 @@ func TestBuildConnectionDetails(t *testing.T) {
 	}
 }
 
-func TestTLSEnabled(t *testing.T) {
-	assert.False(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", ""))))
-	assert.False(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"disabled"}}`))))
-	assert.True(t, tlsEnabled(newTestContext(t, newTestInstance("db", "ns", `{"tls":{"enabled":"enabled"}}`))))
-}
-
 func TestEnsureIssuerOverride(t *testing.T) {
 	c := newTestContext(t, newTestInstance("db", "ns", ""))
 
-	ref, err := ensureIssuer(c, &components.IssuerRef{Name: "my-issuer"})
+	tls := tlsParameters(newTestContext(t, newTLSTestInstance(`{"tls":{"mode":"preferTLS","issuer":{"name":"my-issuer"}}}`)))
+	ref, err := ensureIssuer(c, tls.Issuer)
 	require.NoError(t, err)
 	assert.Equal(t, "my-issuer", ref.Name)
 	assert.Equal(t, "Issuer", ref.Kind)
 	assert.Equal(t, "cert-manager.io", ref.Group)
+
+	external := &definition.IssuerReference{Name: "pca", Kind: "AWSPCAClusterIssuer", Group: "awspca.cert-manager.io"}
+	ref, err = ensureIssuer(c, external)
+	require.NoError(t, err)
+	assert.Equal(t, cmmeta.IssuerReference{Name: "pca", Kind: "AWSPCAClusterIssuer", Group: "awspca.cert-manager.io"}, ref)
 
 	// No self-signed resources are created when an override is supplied.
 	issuer := &cmapi.Issuer{}

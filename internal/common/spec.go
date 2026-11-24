@@ -126,21 +126,6 @@ const (
 	AntiAffinityHostnameWeight = 100
 	AntiAffinityZoneWeight     = 50
 
-	// TLSEnabled is the parameter value that turns on TLS.
-	TLSEnabled = "enabled"
-
-	// TLSDisabled is the parameter value (default) that keeps TLS off.
-	TLSDisabled = "disabled"
-
-	// TLSModeRequired (default with TLS enabled) serves clients over TLS only:
-	// the client Service and connection details carry only the secure ports,
-	// and a NetworkPolicy limits the plaintext ports to the operator and the
-	// Instance's own pods.
-	TLSModeRequired = "required"
-
-	// TLSModeOptional adds the secure ports alongside the plaintext ones.
-	TLSModeOptional = "optional"
-
 	// AppUserName is the application user provisioned by the provider. The
 	// Altinity operator does not create a usable external user, so we create one.
 	AppUserName = "admin"

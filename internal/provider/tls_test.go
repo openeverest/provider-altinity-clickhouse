@@ -16,7 +16,15 @@ package provider
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"testing"
+	"time"
 
 	chiv1 "github.com/altinity/clickhouse-operator/pkg/apis/clickhouse.altinity.com/v1"
 	cmapi "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
@@ -35,25 +43,40 @@ import (
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
-	"github.com/openeverest/provider-altinity-clickhouse/definition/components"
+	"github.com/openeverest/provider-altinity-clickhouse/definition"
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
 )
 
+// Instance parameters (spec.parameters) turning TLS on.
 const (
-	tlsRequiredParams = `{"tls":{"enabled":"enabled"}}`
-	tlsOptionalParams = `{"tls":{"enabled":"enabled","mode":"optional"}}`
+	tlsRequiredParams = `{"tls":{"mode":"requireTLS"}}`
+	tlsOptionalParams = `{"tls":{"mode":"preferTLS"}}`
 )
 
+// withParameters sets the instance parameters (spec.parameters) of instance.
+func withParameters(instance *corev1alpha1.Instance, raw string) *corev1alpha1.Instance {
+	if raw != "" {
+		instance.Spec.Parameters = &runtime.RawExtension{Raw: []byte(raw)}
+	}
+	return instance
+}
+
+// newTLSTestInstance is the test Instance "db" with the instance parameters.
+func newTLSTestInstance(parameters string) *corev1alpha1.Instance {
+	return withParameters(newTestInstance("db", "ns", ""), parameters)
+}
+
 func TestTLSMode(t *testing.T) {
-	for params, want := range map[string]string{
-		"": "",
-		`{"tls":{"enabled":"disabled","mode":"optional"}}`: "",
-		tlsRequiredParams: common.TLSModeRequired,
-		`{"tls":{"enabled":"enabled","mode":"required"}}`: common.TLSModeRequired,
-		tlsOptionalParams: common.TLSModeOptional,
-		`{"tls":{"enabled":"enabled","mode":"Optional"}}`: common.TLSModeOptional,
+	for params, want := range map[string]definition.TLSMode{
+		"":                            definition.TLSModeDisabled,
+		`{"tls":{}}`:                  definition.TLSModeDisabled,
+		`{"tls":{"mode":"disabled"}}`: definition.TLSModeDisabled,
+		tlsRequiredParams:             definition.TLSModeRequire,
+		tlsOptionalParams:             definition.TLSModePrefer,
 	} {
-		assert.Equal(t, want, tlsMode(newTestContext(t, newTestInstance("db", "ns", params))), params)
+		c := newTestContext(t, newTLSTestInstance(params))
+		assert.Equal(t, want, tlsMode(c), params)
+		assert.Equal(t, want != definition.TLSModeDisabled, tlsEnabled(c), params)
 	}
 }
 
@@ -70,16 +93,16 @@ func TestConfigureExposePorts(t *testing.T) {
 	tests := []struct {
 		name     string
 		service  *corev1alpha1.Service
-		mode     string
+		mode     definition.TLSMode
 		want     []int32
 		headless bool
 	}{
-		{name: "plaintext, not exposed", mode: ""},
-		{name: "plaintext, LoadBalancer", service: lb, want: []int32{8123, 9000}},
-		{name: "optional, LoadBalancer", service: lb, mode: common.TLSModeOptional, want: []int32{8123, 9000, 8443, 9440}},
-		{name: "required, LoadBalancer", service: lb, mode: common.TLSModeRequired, want: []int32{8443, 9440}},
-		{name: "required, not exposed", mode: common.TLSModeRequired, want: []int32{8443, 9440}, headless: true},
-		{name: "optional, not exposed", mode: common.TLSModeOptional, want: []int32{8123, 9000, 8443, 9440}, headless: true},
+		{name: "plaintext, not exposed", mode: definition.TLSModeDisabled},
+		{name: "plaintext, LoadBalancer", service: lb, mode: definition.TLSModeDisabled, want: []int32{8123, 9000}},
+		{name: "optional, LoadBalancer", service: lb, mode: definition.TLSModePrefer, want: []int32{8123, 9000, 8443, 9440}},
+		{name: "required, LoadBalancer", service: lb, mode: definition.TLSModeRequire, want: []int32{8443, 9440}},
+		{name: "required, not exposed", mode: definition.TLSModeRequire, want: []int32{8443, 9440}, headless: true},
+		{name: "optional, not exposed", mode: definition.TLSModePrefer, want: []int32{8123, 9000, 8443, 9440}, headless: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,7 +127,7 @@ func TestConfigureExposePorts(t *testing.T) {
 }
 
 func TestBuildCHITLSModes(t *testing.T) {
-	required, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", tlsRequiredParams)), replicasLayout(2))
+	required, err := buildCHI(newTestContext(t, newTLSTestInstance(tlsRequiredParams)), replicasLayout(2))
 	require.NoError(t, err)
 	assert.True(t, appliedTLSRequired(required))
 	assert.Empty(t, required.Annotations, "the operator copies them onto the pods, restarting them")
@@ -113,7 +136,7 @@ func TestBuildCHITLSModes(t *testing.T) {
 	assert.Contains(t, openssl, "<client>")
 	assert.Contains(t, openssl, "<caConfig>/etc/clickhouse-server/secrets.d/ca.crt/db-server-tls/ca.crt</caConfig>")
 
-	optional, err := buildCHI(newTestContext(t, newTestInstance("db", "ns", tlsOptionalParams)), replicasLayout(2))
+	optional, err := buildCHI(newTestContext(t, newTLSTestInstance(tlsOptionalParams)), replicasLayout(2))
 	require.NoError(t, err)
 	assert.False(t, appliedTLSRequired(optional))
 	assert.True(t, optional.Spec.Configuration.Clusters[0].Secure.Value())
@@ -152,7 +175,7 @@ func serverCertificate(t *testing.T, c *controller.Context) *cmapi.Certificate {
 }
 
 func TestServerCertificateCoversReplicasAndLoadBalancer(t *testing.T) {
-	instance := newTestInstance("db", "ns", tlsRequiredParams)
+	instance := newTLSTestInstance(tlsRequiredParams)
 	instance.Spec.Topology = &corev1alpha1.TopologySpec{Type: common.TopologyReplicated}
 	replicas := int32(3)
 	engine := instance.Spec.Components[common.ComponentEngine]
@@ -167,10 +190,11 @@ func TestServerCertificateCoversReplicasAndLoadBalancer(t *testing.T) {
 	}
 	c := newTestContext(t, instance, lb)
 
-	require.NoError(t, ensureServerCertificate(c, ensureIssuerRef(t, c)))
+	require.NoError(t, ensureServerCertificate(c, ensureIssuerRef(t, c), []string{"db.company.com", "db.example.com"}))
 	cert := serverCertificate(t, c)
 	assert.Contains(t, cert.Spec.DNSNames, "chi-db-clickhouse-0-2.ns.svc.cluster.local")
 	assert.Contains(t, cert.Spec.DNSNames, "db.example.com")
+	assert.Equal(t, "db.company.com", cert.Spec.DNSNames[len(cert.Spec.DNSNames)-1], "the additional names follow, each name once")
 	assert.Equal(t, []string{"203.0.113.7"}, cert.Spec.IPAddresses)
 }
 
@@ -182,7 +206,7 @@ func ensureIssuerRef(t *testing.T, c *controller.Context) cmmeta.IssuerReference
 }
 
 func TestProviderManagedCAOutlivesServerCertificates(t *testing.T) {
-	c := newTestContext(t, newTestInstance("db", "ns", tlsRequiredParams))
+	c := newTestContext(t, newTLSTestInstance(tlsRequiredParams))
 	ensureIssuerRef(t, c)
 	ca := &cmapi.Certificate{}
 	require.NoError(t, c.Get(ca, caCertName("db")))
@@ -194,7 +218,7 @@ func TestProviderManagedCAOutlivesServerCertificates(t *testing.T) {
 // renewal) flips the Certificate's Ready condition while the issued
 // certificate keeps serving.
 func TestEnsureTLSWaitsOnlyForFirstIssuance(t *testing.T) {
-	instance := newTestInstance("db", "ns", tlsRequiredParams)
+	instance := newTLSTestInstance(tlsRequiredParams)
 	err := ensureTLS(newTestContext(t, instance))
 	assert.True(t, controller.IsWaitError(err), "got %v", err)
 
@@ -202,11 +226,11 @@ func TestEnsureTLSWaitsOnlyForFirstIssuance(t *testing.T) {
 }
 
 func TestOwnIssuerRemovesProviderManagedCA(t *testing.T) {
-	c := newTestContext(t, newTestInstance("db", "ns", tlsRequiredParams))
+	c := newTestContext(t, newTLSTestInstance(tlsRequiredParams))
 	ensureIssuerRef(t, c)
 	require.NoError(t, c.Apply(&corev1.Secret{ObjectMeta: c.ObjectMeta(caSecretName("db"))}))
 
-	_, err := ensureIssuer(c, &components.IssuerRef{Name: "corp-ca", Kind: "ClusterIssuer"})
+	_, err := ensureIssuer(c, &definition.IssuerReference{Name: "corp-ca", Kind: definition.IssuerKindClusterIssuer, Group: certManagerGroup})
 	require.NoError(t, err)
 	for _, obj := range []client.Object{&cmapi.Certificate{}, &cmapi.Issuer{}} {
 		found, err := getOptional(c, obj, caCertName("db"))
@@ -268,7 +292,7 @@ func TestCleanupDeletesCertificatesWithTLSOff(t *testing.T) {
 
 func TestConnectionDetailsCarryCA(t *testing.T) {
 	chi := completedCHI()
-	details := buildConnectionDetails(newTestContext(t, newTestInstance("db", "ns", tlsRequiredParams), issuedCertificate()), chi)
+	details := buildConnectionDetails(newTestContext(t, newTLSTestInstance(tlsRequiredParams), issuedCertificate()), chi)
 	assert.Equal(t, "ca", details.AdditionalProperties[common.ConnectionKeyCACert])
 	assert.Equal(t, "8443", details.Port)
 
@@ -277,7 +301,7 @@ func TestConnectionDetailsCarryCA(t *testing.T) {
 }
 
 // withTLSMode renders chi's client Service as for mode.
-func withTLSMode(chi *chiv1.ClickHouseInstallation, mode string) *chiv1.ClickHouseInstallation {
+func withTLSMode(chi *chiv1.ClickHouseInstallation, mode definition.TLSMode) *chiv1.ClickHouseInstallation {
 	configureExpose(&chi.Spec, nil, mode)
 	return chi
 }
@@ -296,13 +320,13 @@ func plaintextPolicyIn(t *testing.T, c *controller.Context) *networkingv1.Networ
 func TestPlaintextPolicyFollowsAppliedCHI(t *testing.T) {
 	t.Setenv(common.EnvOperatorNamespace, "clickhouse-provider")
 	t.Setenv(common.EnvOperatorPodLabels, "app.kubernetes.io/name=operator,app.kubernetes.io/instance=rel")
-	c := newTestContext(t, newTestInstance("db", "ns", tlsRequiredParams))
+	c := newTestContext(t, newTLSTestInstance(tlsRequiredParams))
 
 	// Not applied yet (e.g. held for maintenance): plaintext stays reachable.
 	require.NoError(t, reconcilePlaintextPolicy(c, completedCHI()))
 	assert.Nil(t, plaintextPolicyIn(t, c))
 
-	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), common.TLSModeRequired)))
+	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), definition.TLSModeRequire)))
 	policy := plaintextPolicyIn(t, c)
 	require.NotNil(t, policy)
 	assert.Equal(t, map[string]string{common.LabelCHIName: "db"}, policy.Spec.PodSelector.MatchLabels)
@@ -321,7 +345,7 @@ func TestPlaintextPolicyFollowsAppliedCHI(t *testing.T) {
 	assert.Equal(t, map[string]string{"app.kubernetes.io/name": "operator", "app.kubernetes.io/instance": "rel"}, restricted.From[1].PodSelector.MatchLabels)
 
 	// Back to optional: the policy goes away with the applied CHI.
-	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), common.TLSModeOptional)))
+	require.NoError(t, reconcilePlaintextPolicy(c, withTLSMode(completedCHI(), definition.TLSModePrefer)))
 	assert.Nil(t, plaintextPolicyIn(t, c))
 }
 
@@ -350,8 +374,8 @@ func TestOperatorPeerDefaults(t *testing.T) {
 
 func TestSyncCreatesPlaintextPolicyForRequiredTLS(t *testing.T) {
 	t.Setenv(common.EnvOperatorNamespace, "clickhouse-provider")
-	_, c := syncStandalone(t, newTestInstance("db", "ns", tlsRequiredParams),
-		withTLSMode(completedCHI(), common.TLSModeRequired), issuedCertificate())
+	_, c := syncStandalone(t, newTLSTestInstance(tlsRequiredParams),
+		withTLSMode(completedCHI(), definition.TLSModeRequire), issuedCertificate())
 	assert.NotNil(t, plaintextPolicyIn(t, c))
 }
 
@@ -405,5 +429,176 @@ func TestWatchedTypesAreRegistered(t *testing.T) {
 	for _, obj := range []runtime.Object{&storagev1.StorageClass{}, &networkingv1.NetworkPolicy{}} {
 		_, _, err := scheme.ObjectKinds(obj)
 		assert.NoError(t, err, "%T", obj)
+	}
+}
+
+// certificateSecret is a certificate Secret as a user provides one: a CA and
+// a server certificate it signs, valid for names.
+func certificateSecret(t *testing.T, name string, names ...string) *corev1.Secret {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "company-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	require.NoError(t, err)
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "db"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     names,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, caTemplate, &key.PublicKey, caKey)
+	require.NoError(t, err)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns"},
+		Data: map[string][]byte{
+			"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+			"tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+			"ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
+		},
+	}
+}
+
+const ownCertificateParams = `{"tls":{"mode":"requireTLS","certificateSecretName":"mydb-tls"}}`
+
+// With certificateSecretName, ClickHouse and Keeper mount the user's Secret,
+// no cert-manager object is requested, and the connection details carry the
+// Secret's CA.
+func TestOwnCertificateSecret(t *testing.T) {
+	instance := withParameters(newReplicatedTestInstance(""), ownCertificateParams)
+	err := ensureTLS(newTestContext(t, instance))
+	assert.True(t, controller.IsWaitError(err), "waits for the Secret, got %v", err)
+
+	secret := certificateSecret(t, "mydb-tls")
+	c := newTestContext(t, instance, secret)
+	require.NoError(t, ensureTLS(c))
+	found, err := getOptional(c, &cmapi.Certificate{}, serverCertName("db"))
+	require.NoError(t, err)
+	assert.False(t, found, "no Certificate is requested")
+
+	chi, err := buildCHI(c, replicasLayout(2))
+	require.NoError(t, err)
+	assert.Equal(t, "mydb-tls", appliedTLSSecret(chi))
+	chk, err := buildCHKWired(c, keeperWiring{secure: true, port: common.KeeperSecurePort})
+	require.NoError(t, err)
+	assert.Equal(t, "mydb-tls", chk.Spec.Configuration.Files.Get("server.crt").GetSecretKeyRef().Name)
+
+	details := buildConnectionDetails(c, chi)
+	assert.Equal(t, string(secret.Data["ca.crt"]), details.AdditionalProperties[common.ConnectionKeyCACert])
+}
+
+func TestCheckCertificateSecret(t *testing.T) {
+	names := []string{"clickhouse-db.ns.svc.cluster.local", "chi-db-clickhouse-0-0"}
+	valid := certificateSecret(t, "mydb-tls", "*.ns.svc.cluster.local", "chi-db-clickhouse-0-0")
+	require.NoError(t, checkCertificateSecret(valid, names))
+
+	noCA := valid.DeepCopy()
+	delete(noCA.Data, "ca.crt")
+	assert.ErrorContains(t, checkCertificateSecret(noCA, names), "no ca.crt")
+
+	otherCA := valid.DeepCopy()
+	otherCA.Data["ca.crt"] = certificateSecret(t, "other").Data["ca.crt"]
+	assert.ErrorContains(t, checkCertificateSecret(otherCA, names), "does not verify")
+
+	otherKey := valid.DeepCopy()
+	otherKey.Data["tls.key"] = certificateSecret(t, "other").Data["tls.key"]
+	assert.ErrorContains(t, checkCertificateSecret(otherKey, names), "private key")
+
+	external := certificateSecret(t, "mydb-tls", "mydb.company.com")
+	assert.ErrorContains(t, checkCertificateSecret(external, names),
+		"not valid for clickhouse-db.ns.svc.cluster.local, chi-db-clickhouse-0-0")
+}
+
+// At reconcile time the TLS of the running cluster decides what can change,
+// whatever the previous Instance said.
+func TestValidateDeployedTLS(t *testing.T) {
+	issuerParams := `{"tls":{"mode":"requireTLS","issuer":{"name":"company-ca","kind":"ClusterIssuer"}}}`
+	live := func(params string) *chiv1.ClickHouseInstallation {
+		return deployedCHI(t, newTLSTestInstance(params), 1)
+	}
+	certificate := func(ref cmmeta.IssuerReference) *cmapi.Certificate {
+		return &cmapi.Certificate{
+			ObjectMeta: metav1.ObjectMeta{Name: serverCertName("db"), Namespace: "ns"},
+			Spec:       cmapi.CertificateSpec{SecretName: serverSecretName("db"), IssuerRef: ref},
+		}
+	}
+	managed := certificate(managedIssuerReference("db"))
+	company := certificate(cmmeta.IssuerReference{Name: "company-ca", Kind: "ClusterIssuer", Group: certManagerGroup})
+	// As an earlier release wrote it for issuerRef{name: company-ca, kind: ClusterIssuer}.
+	companyNoGroup := certificate(cmmeta.IssuerReference{Name: "company-ca", Kind: "ClusterIssuer"})
+
+	tests := []struct {
+		name    string
+		params  string
+		objects []client.Object
+		want    []string
+	}{
+		{name: "no cluster yet", params: issuerParams},
+		{name: "TLS turned on", params: issuerParams, objects: []client.Object{live("")}},
+		{name: "unchanged", params: tlsRequiredParams, objects: []client.Object{live(tlsRequiredParams), managed}},
+		{name: "mode changes", params: tlsOptionalParams, objects: []client.Object{live(tlsRequiredParams), managed}},
+		{name: "names added", params: `{"tls":{"mode":"requireTLS","additionalNames":["mydb.company.com"]}}`,
+			objects: []client.Object{live(tlsRequiredParams), managed}},
+		{name: "issuer unchanged", params: issuerParams, objects: []client.Object{live(issuerParams), companyNoGroup}},
+		{name: "TLS turned off", params: "", objects: []client.Object{live(tlsRequiredParams), managed},
+			want: []string{"spec.parameters.tls.mode"}},
+		{name: "issuer instead of the provider's CA", params: issuerParams, objects: []client.Object{live(tlsRequiredParams), managed},
+			want: []string{"spec.parameters.tls.issuer"}},
+		{name: "provider's CA instead of the issuer", params: tlsRequiredParams, objects: []client.Object{live(issuerParams), company},
+			want: []string{"spec.parameters.tls.issuer"}},
+		{name: "certificate secret instead of cert-manager", params: ownCertificateParams,
+			objects: []client.Object{live(tlsRequiredParams), managed}, want: []string{"spec.parameters.tls"}},
+		{name: "another certificate secret", params: `{"tls":{"mode":"requireTLS","certificateSecretName":"other-tls"}}`,
+			objects: []client.Object{live(ownCertificateParams)}, want: []string{"spec.parameters.tls"}},
+		{name: "certificate secret without the in-cluster name", params: ownCertificateParams,
+			objects: []client.Object{certificateSecret(t, "mydb-tls", "mydb.company.com")},
+			want:    []string{"spec.parameters.tls.certificateSecretName"}},
+		{name: "certificate secret with the in-cluster name", params: ownCertificateParams,
+			objects: []client.Object{live(ownCertificateParams), certificateSecret(t, "mydb-tls", "clickhouse-db.ns.svc.cluster.local")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs, err := validateDeployedTLS(newTestContext(t, newTLSTestInstance(tt.params), tt.objects...))
+			require.NoError(t, err)
+			var got []string
+			for _, e := range errs {
+				got = append(got, e.Field)
+			}
+			assert.Equal(t, tt.want, got, "errors: %v", errs)
+		})
+	}
+}
+
+func TestInternalTLSNames(t *testing.T) {
+	standalone := newTestContext(t, newTLSTestInstance(ownCertificateParams))
+	assert.Equal(t, []string{"clickhouse-db.ns.svc.cluster.local"}, internalTLSNames(standalone))
+
+	replicated := newTestContext(t, withEngine(withParameters(newReplicatedTestInstance(""), ownCertificateParams), replicas(2)))
+	names := internalTLSNames(replicated)
+	for _, name := range []string{
+		"clickhouse-db.ns.svc.cluster.local",
+		"chi-db-clickhouse-0-1",
+		"chi-db-clickhouse-0-1-0.chi-db-clickhouse-0-1.ns.svc.cluster.local",
+		"chk-db-keeper-keeper-0-2",
+		"chk-db-keeper-keeper-0-2-client.ns.svc.cluster.local",
+	} {
+		assert.Contains(t, names, name)
 	}
 }

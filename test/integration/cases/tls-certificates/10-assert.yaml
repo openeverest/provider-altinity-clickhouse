@@ -1,0 +1,96 @@
+# The server certificate is requested from the company CA, for the Services
+# and the additional name.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: itest-ch-issuer-server
+  namespace: default
+spec:
+  issuerRef:
+    name: itest-ch-company-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+  (contains(dnsNames, 'clickhouse-itest-ch-issuer.default.svc.cluster.local')): true
+  (contains(dnsNames, 'itest-ch-issuer.company.com')): true
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-issuer
+  namespace: default
+status:
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-issuer-conn
+  namespace: default
+data:
+  port: ODQ0Mw== # base64("8443")
+  ("ca.crt" != null): true
+---
+# ClickHouse and Keeper mount the user's Secret.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: itest-ch-own
+  namespace: default
+spec:
+  configuration:
+    files:
+      server.crt:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-own-tls
+            key: tls.crt
+      server.key:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-own-tls
+            key: tls.key
+      ca.crt:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-own-tls
+            key: ca.crt
+status:
+  status: Completed
+---
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: itest-ch-own-keeper
+  namespace: default
+spec:
+  configuration:
+    clusters:
+      - secure: "True"
+        insecure: "False"
+    files:
+      server.crt:
+        valueFrom:
+          secretKeyRef:
+            name: itest-ch-own-tls
+            key: tls.crt
+status:
+  status: Completed
+---
+apiVersion: core.openeverest.io/v1alpha1
+kind: Instance
+metadata:
+  name: itest-ch-own
+  namespace: default
+status:
+  phase: Provisioned
+  (conditions[?type == 'Ready'].status | [0]): "True"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: itest-ch-own-conn
+  namespace: default
+data:
+  port: ODQ0Mw== # base64("8443")
+  ("ca.crt" != null): true
