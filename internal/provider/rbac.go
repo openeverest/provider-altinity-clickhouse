@@ -29,6 +29,13 @@ package provider
 // Events the provider-runtime records on Instances, such as validation warnings
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
+// Startup gate (provider-runtime holds a new build until the installed
+// OpenEverest supports its contract version, then records that version on
+// this provider's Provider; keep resourceNames in sync with
+// common.ProviderName):
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,resourceNames=providers.core.openeverest.io,verbs=get
+// +kubebuilder:rbac:groups=core.openeverest.io,resources=providers/status,resourceNames=altinity-clickhouse,verbs=patch
+
 // Altinity ClickHouseInstallation
 // +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhouseinstallations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=clickhouse.altinity.com,resources=clickhouseinstallations/status,verbs=get

@@ -78,6 +78,13 @@ All settings live in `dev/.env` (see `dev/.env.example`). Common options:
 > skips pre-releases, so you must set `OPENEVEREST_VERSION` explicitly until
 > v2.0.0 is generally available.
 
+> **Note:** While `go.mod` requires a commit of core `main` whose contract has
+> changed since the last release, the chart's stamp is a development value, such
+> as `2.0.0-alpha.1.next`, and no released core serves this provider: the chart
+> refuses to install on one, and the provider would stay unready there. Run core
+> `main` instead, as described in
+> [Developing against an unreleased core](#developing-against-an-unreleased-core).
+
 > **Note:** The provider reports the `Instance` status as a phase of `Pending`,
 > `Provisioned` or `Terminating` plus conditions. Core releases up to
 > `2.0.0-dev.4` ship an `Instance` CRD that rejects it; develop against an

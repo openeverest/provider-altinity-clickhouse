@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	"github.com/openeverest/openeverest/v2/contract"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
@@ -477,14 +478,14 @@ func TestInstanceForPod(t *testing.T) {
 	pod := chPod(0, 0, podServing, oldImage)
 	assert.Empty(t, instanceForPod(t.Context(), pod), "a pod without the provider's labels")
 
-	pod.Labels[controller.ProviderLabel] = common.ProviderName
+	pod.Labels[contract.ProviderLabel] = common.ProviderName
 	pod.Labels[controller.InstanceLabel] = "db"
 	requests := instanceForPod(t.Context(), pod)
 	require.Len(t, requests, 1)
 	assert.Equal(t, "ns", requests[0].Namespace)
 	assert.Equal(t, "db", requests[0].Name)
 
-	pod.Labels[controller.ProviderLabel] = "another-provider"
+	pod.Labels[contract.ProviderLabel] = "another-provider"
 	assert.Empty(t, instanceForPod(t.Context(), pod))
 }
 

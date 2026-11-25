@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	"github.com/openeverest/openeverest/v2/contract"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/definition"
@@ -81,7 +82,7 @@ func New() *Provider {
 				// this provider's Secrets: other providers' Instances own Secrets
 				// too, and the runtime would reconcile those Instances here.
 				controller.WatchOwned(&corev1.Secret{}, predicate.NewPredicateFuncs(func(o client.Object) bool {
-					return o.GetLabels()[controller.ProviderLabel] == common.ProviderName
+					return o.GetLabels()[contract.ProviderLabel] == common.ProviderName
 				})),
 				controller.WatchOwned(&networkingv1.NetworkPolicy{}),
 				// A LoadBalancer address goes into the server certificate.
