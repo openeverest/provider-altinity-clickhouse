@@ -48,6 +48,12 @@ cert_manager_version = os.getenv('CERT_MANAGER_VERSION', 'v1.20.2')
 cert_manager_namespace = os.getenv('CERT_MANAGER_NAMESPACE', 'cert-manager')
 
 # Released OpenEverest core version to install. Empty means latest.
+#
+# While go.mod requires a commit of core main whose contract has changed since
+# the last release (the chart's stamp is then a development value, such as
+# 2.0.0-alpha.1.next), no released core serves this provider: the chart
+# refuses to install on it, and the provider would stay unready. Run core main
+# instead, with OPENEVEREST_CHART_DIR and OPENEVEREST_IMAGE (see dev/README.md).
 openeverest_version = os.getenv('OPENEVEREST_VERSION', '')
 
 # Helm repository that hosts the OpenEverest core chart.
