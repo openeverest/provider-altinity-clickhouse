@@ -35,6 +35,14 @@ rules:
   verbs:
   - get
 - apiGroups:
+  - apiextensions.k8s.io
+  resourceNames:
+  - providers.core.openeverest.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+- apiGroups:
   - apps
   resources:
   - statefulsets
@@ -143,6 +151,14 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - core.openeverest.io
+  resourceNames:
+  - altinity-clickhouse
+  resources:
+  - providers/status
+  verbs:
+  - patch
 - apiGroups:
   - events.k8s.io
   resources:
