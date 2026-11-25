@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	"github.com/openeverest/openeverest/v2/contract"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/definition"
@@ -198,7 +199,7 @@ func TestSyncLabelsEnginePods(t *testing.T) {
 
 	require.Len(t, applied, 1)
 	assert.Equal(t, map[string]string{
-		controller.ProviderLabel:  common.ProviderName,
+		contract.ProviderLabel:    common.ProviderName,
 		controller.InstanceLabel:  "db",
 		controller.ComponentLabel: common.ComponentEngine,
 	}, applied[0].Spec.Templates.PodTemplates[0].ObjectMeta.Labels)

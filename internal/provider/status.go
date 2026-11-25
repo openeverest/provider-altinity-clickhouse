@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1alpha1 "github.com/openeverest/openeverest/v2/api/core/v1alpha1"
+	"github.com/openeverest/openeverest/v2/contract"
 	"github.com/openeverest/openeverest/v2/provider-runtime/controller"
 
 	"github.com/openeverest/provider-altinity-clickhouse/internal/common"
@@ -599,7 +600,7 @@ func podsOnImage(component, image, container string, pods []corev1.Pod) (string,
 func instanceForPod(_ context.Context, obj client.Object) []reconcile.Request {
 	labels := obj.GetLabels()
 	name := labels[controller.InstanceLabel]
-	if labels[controller.ProviderLabel] != common.ProviderName || name == "" {
+	if labels[contract.ProviderLabel] != common.ProviderName || name == "" {
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: name}}}
