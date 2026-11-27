@@ -43,10 +43,12 @@ podAnnotations: {}
 podLabels: {}
 
 podSecurityContext:
-  # -- Run as non-root
+  # -- Run as non-root. The image sets USER 65532; no runAsUser or fsGroup here, so
+  # OpenShift's restricted-v2 SCC can assign IDs from the namespace range.
   runAsNonRoot: true
-  # -- Security context fsGroup
-  fsGroup: 65534
+  # -- Seccomp profile, required by the restricted Pod Security Standard
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   # -- Disallow privilege escalation
@@ -59,8 +61,6 @@ securityContext:
   readOnlyRootFilesystem: true
   # -- Run as non-root user
   runAsNonRoot: true
-  # -- Run as user ID
-  runAsUser: 65534
 
 service:
   # -- Service type
@@ -221,6 +221,28 @@ operator:
   # The provider chart owns the credentials Secret (see operatorCredentials).
   secret:
     create: false
+  # Hardened operator, metrics-exporter and CRD-hook pods. No user or group
+  # IDs, so OpenShift's restricted-v2 SCC assigns them. The images run as
+  # 'nobody' (operator, exporter) and root (CRD hook), which the kubelet can't
+  # verify as non-root: for the restricted Pod Security Standard on other
+  # clusters, also set runAsNonRoot: true and runAsUser: 65534 in
+  # podSecurityContext and crdHook.podSecurityContext.
+  podSecurityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  operator:
+    containerSecurityContext: &operatorContainerSecurityContext
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+  metrics:
+    containerSecurityContext: *operatorContainerSecurityContext
+  crdHook:
+    podSecurityContext:
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext: *operatorContainerSecurityContext
   # The provider reconciles Instances in any namespace and applies each
   # ClickHouseInstallation into the Instance's own namespace, so the operator
   # must run cluster-wide. Its ClusterRole-scoped RBAC (rbac.namespaceScoped:

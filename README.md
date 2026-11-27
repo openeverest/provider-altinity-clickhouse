@@ -138,6 +138,14 @@ helm install provider-altinity-clickhouse \
   `presets` in the chart values; `provider.shortName` prefixes their names. Presets pin
   the provider's default [version](#versions) bundle, which a provider upgrade moves with
   the catalog, and reference no namespaced objects.
+- The chart pins no user or group IDs, so it runs under OpenShift's default `restricted-v2`
+  SCC, which assigns them from the namespace's range. The provider and its upgrade hook
+  also meet the `restricted` Pod Security Standard. The operator, metrics-exporter and
+  CRD-hook images run as `nobody` and root, which the kubelet can't verify as non-root; to
+  run them under the `restricted` standard outside OpenShift, add
+  `runAsNonRoot: true` and `runAsUser: 65534` to `operator.podSecurityContext` and
+  `operator.crdHook.podSecurityContext`. ClickHouse and Keeper pods set no security
+  context either: on OpenShift they run under the UID the SCC assigns.
 
 Upgrade and uninstall:
 
